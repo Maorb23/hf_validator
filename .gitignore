@@ -1,0 +1,59 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python environments and caches
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local package/tool caches
+.cache/
+.uv-cache/
+.worker_workspace/
+.tmp-codex-tests/
+
+# Generated runs, databases, reports, and experiment logs
+artifacts/
+outputs/
+results/
+reports/
+wandb/
+logs/
+
+# Downloaded models, checkpoints, and adapter weights
+models/
+checkpoints/
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.pth
+*.onnx
+pytorch_model*.bin
+adapter_model*.bin
+adapter_model*.safetensors
+model-*-of-*.bin
+model-*-of-*.safetensors
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+*.swp
+*~

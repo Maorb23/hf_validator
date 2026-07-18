@@ -1,0 +1,18 @@
+ground_truth_dataset:
+  name: openai/gsm8k
+  config_name: main
+  split: test
+  quality:
+    start: 0
+    count: 5
+    max_new_tokens: 256
+  latency:
+    start: 5
+    count: 3
+    max_new_tokens: 128
+latency:
+  warmup_requests: 1
+  measured_requests: 3
+context:
+  enabled: true
+  max_tokens: 4096

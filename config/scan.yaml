@@ -1,0 +1,17 @@
+lookback_days: 2
+max_models_to_scan: 200
+max_candidates_to_run: 5
+pipeline_tags:
+  - text-generation
+max_params_billion: 30
+allow_gated: false
+allow_trust_remote_code: false
+require_safetensors: true
+allowed_licenses:
+  - apache-2.0
+  - mit
+  - llama
+  - other
+blocked_licenses:
+  - unknown-restrictive
+max_download_gb: 150

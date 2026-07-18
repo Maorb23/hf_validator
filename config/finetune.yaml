@@ -1,0 +1,67 @@
+method: qlora
+enabled: true
+default_method: qlora
+bnb_4bit_quant_type: nf4
+bnb_4bit_compute_dtype: bfloat16
+max_train_steps: 20
+eval_steps: 25
+save_strategy: final_only
+seed: 42
+bf16: true
+gradient_checkpointing: true
+learning_rate: 0.0002
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules: all-linear
+max_grad_norm: 1.0
+weight_decay: 0.0
+scheduler: cosine
+warmup_ratio: 0.03
+datasets:
+  json_extraction:
+    source: huggingface
+    hf_dataset_name: paraloq/json_data_extraction
+    hf_config_name: null
+    train_split: train[:384]
+    eval_split: train[384:484]
+    local_jsonl_path: null
+    max_train_examples: 384
+    max_eval_examples: 100
+    column_mapping:
+      prompt_column: text
+      completion_column: item
+      schema_column: schema
+
+  text_to_sql:
+    source: huggingface
+    hf_dataset_name: b-mc2/sql-create-context
+    hf_config_name: null
+    train_split: train[:500]
+    eval_split: train[-100:]
+    local_jsonl_path: null
+    sqlite_db_path: null
+    max_train_examples: 500
+    max_eval_examples: 100
+    column_mapping:
+      prompt_column: question
+      completion_column: answer
+      context_column: context
+
+  financial_analyst_style:
+    source: huggingface
+    hf_dataset_name: bevaya/FinQA
+    hf_config_name: null
+    train_split: train
+    eval_split: test
+    local_jsonl_path: null
+    max_train_examples: 500
+    max_eval_examples: 100
+    column_mapping:
+      prompt_column: question
+      completion_column: answer
+      completion_fallback_column: exe_ans
+      context_columns:
+        - pre_text
+        - table
+        - post_text

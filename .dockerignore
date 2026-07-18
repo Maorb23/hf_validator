@@ -1,0 +1,14 @@
+.venv*/
+.uv-cache/
+.git
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.tmp*/
+.wandb
+.env
+artifacts/
+outputs/
+reports/
+results/

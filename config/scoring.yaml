@@ -1,0 +1,29 @@
+weights:
+  recency: 0.18
+  downloads: 0.14
+  likes: 0.1
+  credible_author: 0.1
+  complete_metadata: 0.12
+  chat_template: 0.08
+  context_length: 0.08
+  lineage: 0.08
+  known_family: 0.06
+  useful_size_band: 0.04
+  uniqueness: 0.02
+minimum_score_to_run: 0.0
+credible_authors:
+  - meta-llama
+  - mistralai
+  - Qwen
+  - google
+  - microsoft
+  - deepseek-ai
+  - 01-ai
+known_families:
+  - Qwen
+  - Llama
+  - Mistral
+  - Gemma
+  - Phi
+  - DeepSeek
+  - Yi

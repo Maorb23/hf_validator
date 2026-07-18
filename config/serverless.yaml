@@ -1,0 +1,10 @@
+gpu_type: gpu-h100-sxm
+image: cr.eu-north1.nebius.cloud/e00xg2vp63hfjt63q9/hf-model-watch:gpu-v8
+preset: 1gpu-16vcpu-96gb
+gpu_memory_gb: 80
+memory_safety_margin: 0.85
+gpu_count: 1
+timeout_minutes: 180
+max_parallel_jobs: 2
+max_params_billion: 30
+max_download_gb: 150
