@@ -184,6 +184,14 @@ SCHEMA_STATEMENTS = (
         created_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS result_sync_state (
+        run_id TEXT PRIMARY KEY,
+        source_uri TEXT NOT NULL,
+        content_fingerprint TEXT NOT NULL,
+        synced_at TEXT NOT NULL
+    )
+    """,
 )
 
 
@@ -650,6 +658,240 @@ class SQLiteStore:
                 (model_id, revision),
             ).fetchone()
         return row is not None
+
+    def get_sync_fingerprint(self, run_id: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT content_fingerprint FROM result_sync_state WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return str(row["content_fingerprint"]) if row else None
+
+    def replace_synced_run(
+        self,
+        payload: dict[str, Any],
+        source_uri: str,
+        content_fingerprint: str,
+    ) -> None:
+        run = payload["run"]
+        run_id = str(run["run_id"])
+        model_id = str(run["model_id"])
+        revision = run.get("revision")
+        now = utc_now_iso()
+        with self._connect() as conn:
+            self._upsert_model_revision(
+                conn,
+                model_id,
+                revision,
+                {
+                    "model_family": run.get("model_family"),
+                    "size_band": run.get("size_band"),
+                },
+            )
+            for table in (
+                "metadata_results",
+                "runtime_results",
+                "latency_results",
+                "quality_results",
+                "context_drift_results",
+                "finetune_runs",
+                "adaptation_results",
+                "failures",
+                "artifacts",
+            ):
+                conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    run_id, model_id, revision, model_family, size_band,
+                    started_at, completed_at, status, failure_category, failure_message,
+                    selected_backend, selected_dtype, selected_quantization,
+                    base_score, adapted_score, adaptation_lift,
+                    latency_summary, context_drift_summary, artifact_uri
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    model_id,
+                    revision,
+                    run.get("model_family"),
+                    run.get("size_band"),
+                    run["started_at"],
+                    run.get("completed_at"),
+                    run["status"],
+                    run.get("failure_category"),
+                    run.get("failure_message"),
+                    run.get("selected_backend"),
+                    run.get("selected_dtype"),
+                    run.get("selected_quantization"),
+                    run.get("base_score"),
+                    run.get("adapted_score"),
+                    run.get("adaptation_lift"),
+                    _json(payload.get("latency_summary") or {}),
+                    _json(payload.get("context_summary") or {}),
+                    source_uri,
+                ),
+            )
+            self._insert_synced_payloads(conn, payload, now)
+            conn.execute(
+                """
+                INSERT INTO result_sync_state (
+                    run_id, source_uri, content_fingerprint, synced_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    source_uri = excluded.source_uri,
+                    content_fingerprint = excluded.content_fingerprint,
+                    synced_at = excluded.synced_at
+                """,
+                (run_id, source_uri, content_fingerprint, now),
+            )
+            conn.commit()
+
+    def _insert_synced_payloads(
+        self,
+        conn: sqlite3.Connection,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> None:
+        run = payload["run"]
+        identity = (run["run_id"], run["model_id"], run.get("revision"))
+        metadata = payload.get("metadata")
+        if metadata is not None:
+            conn.execute(
+                """
+                INSERT INTO metadata_results (
+                    run_id, model_id, revision, claims_vs_observed_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (*identity, _json(metadata), created_at),
+            )
+        runtime = payload.get("runtime")
+        if runtime is not None:
+            decision = runtime.get("decision") or {}
+            conn.execute(
+                """
+                INSERT INTO runtime_results (
+                    run_id, model_id, revision, selected_backend, selected_dtype,
+                    selected_quantization, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    *identity,
+                    decision.get("backend"),
+                    decision.get("dtype"),
+                    decision.get("quantization"),
+                    _json(runtime),
+                    created_at,
+                ),
+            )
+        self._insert_synced_evaluations(conn, payload, identity, created_at)
+        adaptation = payload.get("adaptation")
+        if adaptation is not None:
+            overall = adaptation.get("overall") or {}
+            conn.execute(
+                """
+                INSERT INTO finetune_runs (
+                    run_id, model_id, revision, status, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (*identity, adaptation.get("status", "unknown"), _json(adaptation), created_at),
+            )
+            conn.execute(
+                """
+                INSERT INTO adaptation_results (
+                    run_id, model_id, revision, adapted_score, adaptation_lift,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    *identity,
+                    overall.get("adapted_quality_score"),
+                    overall.get("adaptation_lift"),
+                    _json(adaptation),
+                    created_at,
+                ),
+            )
+        failure = payload.get("failure")
+        if failure:
+            conn.execute(
+                """
+                INSERT INTO failures (
+                    run_id, model_id, revision, failure_category, failure_message, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    *identity,
+                    failure["failure_category"],
+                    failure["failure_message"],
+                    created_at,
+                ),
+            )
+        for artifact_type, artifact_uri in payload.get("artifacts", {}).items():
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    run_id, model_id, revision, artifact_type, artifact_uri, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (*identity, artifact_type, artifact_uri, created_at),
+            )
+
+    @staticmethod
+    def _insert_synced_evaluations(
+        conn: sqlite3.Connection,
+        payload: dict[str, Any],
+        identity: tuple[Any, Any, Any],
+        created_at: str,
+    ) -> None:
+        latency_records = payload.get("latency_records")
+        if latency_records is not None:
+            conn.execute(
+                """
+                INSERT INTO latency_results (
+                    run_id, model_id, revision, latency_summary, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    *identity,
+                    _json(payload.get("latency_summary") or {}),
+                    _json(latency_records),
+                    created_at,
+                ),
+            )
+        quality_records = payload.get("quality_records")
+        if quality_records is not None:
+            quality_summary = payload.get("quality_summary") or {}
+            conn.execute(
+                """
+                INSERT INTO quality_results (
+                    run_id, model_id, revision, base_score, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    *identity,
+                    quality_summary.get("avg_quality_score"),
+                    _json({"summary": quality_summary, "records": quality_records}),
+                    created_at,
+                ),
+            )
+        context_records = payload.get("context_records")
+        if context_records is not None:
+            conn.execute(
+                """
+                INSERT INTO context_drift_results (
+                    run_id, model_id, revision, context_drift_summary,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    *identity,
+                    _json(payload.get("context_summary") or {}),
+                    _json(context_records),
+                    created_at,
+                ),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

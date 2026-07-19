@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from hf_model_watch.orchestration.prefect_flow import build_schedule, run_prefect_controller_flow
+from hf_model_watch.orchestration.result_sync_flow import run_prefect_result_sync_flow
+from hf_model_watch.reporting.result_sync import SyncSummary
 
 
 def test_dry_run_prefect_flow_selects_mock_candidates(tmp_path, monkeypatch) -> None:
@@ -107,3 +109,22 @@ def test_worker_script_uses_immutable_finetune_environment() -> None:
     assert "uv sync --locked --no-dev --extra finetune" in text
     assert "uv run --no-sync python -m hf_model_watch.runtime.capabilities --require-gpu" in text
     assert 'uv run --no-sync hf-watch worker --payload-json "${PAYLOAD_JSON}"' in text
+
+
+def test_prefect_result_sync_flow_uses_storage_config(tmp_path) -> None:
+    calls = []
+
+    def sync_results(**kwargs):
+        calls.append(kwargs)
+        return SyncSummary(discovered_runs=2, imported_runs=1, skipped_runs=1)
+
+    result = run_prefect_result_sync_flow(
+        "config",
+        cache_dir=tmp_path / "cache",
+        sync_results=sync_results,
+    )
+
+    assert calls[0]["bucket"] == "hf-model-watch"
+    assert calls[0]["prefix"] == "hf-model-watch"
+    assert result["imported_runs"] == 1
+    assert result["skipped_runs"] == 1

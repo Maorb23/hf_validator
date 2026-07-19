@@ -81,8 +81,8 @@ and artifact paths.
 
 ## PEFT Adaptation
 
-Default fine-tune config lives in `config/finetune.yaml`. Fixture datasets are enabled by
-default. Real datasets can be configured per task with:
+Default fine-tune config lives in `config/finetune.yaml`. The checked-in configuration uses
+Hugging Face datasets. Each task can instead use a fixture, local JSONL file, or be disabled:
 
 ```yaml
 datasets:
@@ -102,6 +102,76 @@ accepted as a backward-compatible alias.
 
 `peft` is optional. Without it, smoke-only runs record a typed unavailable result instead of
 claiming adaptation happened.
+
+## Finetune workflow
+
+Run fine-tuning from the repository root with:
+
+```bash
+uv run hf-watch run-local --model-id <huggingface-model-id> --config-dir config
+```
+
+`--config-dir config` is resolved relative to the current working directory. When the command
+is run from the repository root, `load_config()` reads `config/finetune.yaml` and stores its
+parsed contents in `config.finetune`. The training code therefore does not construct a path to
+the config directory when it accesses the dataset configuration:
+
+```text
+config/finetune.yaml
+  -> load_config(config_dir)
+  -> config.finetune
+  -> config.finetune["datasets"]
+  -> load_all_adaptation_datasets(...)
+```
+
+The local execution path is:
+
+```text
+hf-watch run-local
+  -> cli.run_local()
+  -> run_peft_adaptation_suite()
+  -> resolve_peft_config(finetune_config=config.finetune)
+  -> load_all_adaptation_datasets(...)
+  -> run_qlora_training()
+  -> LoraConfig + get_peft_model()
+  -> custom PyTorch optimizer loop
+```
+
+Remote model workers invoke `hf-watch worker --payload-json ...` and reach the same adaptation
+suite. A worker payload may override values from `config/finetune.yaml` through its `finetune`
+mapping.
+
+The current configuration starts one independent QLoRA run per task and saves a separate
+adapter for each task; it does not combine all three datasets into one multi-task adapter:
+
+| Task | Dataset | Train rows | Evaluation rows | Reason for the cap |
+| --- | --- | ---: | ---: | --- |
+| JSON extraction | `paraloq/json_data_extraction` | 384 | 100 | Small adaptation subset with a following non-overlapping evaluation slice. |
+| Text-to-SQL | `b-mc2/sql-create-context` | 500 | 100 | Slightly larger subset for the more complex structured-generation task. |
+| Financial analyst style | `bevaya/FinQA` | 500 | 100 | Caps the larger dataset and official test split to limit GPU runtime and cost. |
+
+These sizes are smoke/validation-oriented defaults. They were not derived from a documented
+statistical calculation or tuning experiment and are not intended as production-optimal sample
+sizes.
+
+Top-level LoRA and training parameters are selected in `config/finetune.yaml`, then normalized
+by `resolve_peft_config()`. The resolved values are passed to `LoraConfig`, the optimizer, and
+the scheduler. The current defaults include QLoRA, rank 16, alpha 32, dropout 0.05, learning
+rate `2e-4`, 20 optimizer steps, cosine scheduling, gradient checkpointing, and seed 42.
+
+Current implementation constraints:
+
+- The caller passes `quantization_mode="4bit"`, which forces QLoRA even if the YAML method is
+  changed to regular LoRA.
+- Micro-batch size is hardcoded to 1. Gradient accumulation and effective batch size are
+  selected from the estimated model size rather than read from YAML.
+- Maximum sequence length is capped at 2048 tokens.
+- `eval_steps` and `save_strategy` are currently unused; evaluation happens before and after
+  training, and each adapter is saved once at the end.
+- The 4-bit quantization type and compute dtype are resolved in code; changing their YAML values
+  currently has no effect.
+- Dataset loading happens before the skip decision, so `--skip-finetune` can still attempt to
+  resolve or download configured datasets.
 
 ## Worker Dry Run
 
@@ -194,6 +264,31 @@ uv run hf-watch leaderboard --db results/hf_model_watch.sqlite --out reports/lea
 uv run hf-watch compare --model-id sshleifer/tiny-gpt2 --db results/hf_model_watch.sqlite
 ```
 
+Import downloaded run directories into the application SQLite database and rebuild the
+leaderboard:
+
+```bash
+uv run --no-sync hf-watch ingest-results \
+  --input outputs \
+  --db results/hf_model_watch.sqlite \
+  --out reports/leaderboard.md
+```
+
+Synchronize reporting artifacts from the configured Nebius S3 bucket. This downloads JSON
+results only; model and adapter weights are not downloaded:
+
+```bash
+set -a
+source .env
+set +a
+uv run --no-sync hf-watch sync-nebius-results \
+  --config-dir config \
+  --cache-dir outputs/synced-nebius
+```
+
+Both commands are idempotent. Unchanged runs are skipped, while changed runs replace their
+previous application-database records.
+
 Generated reports:
 
 ```text
@@ -241,6 +336,25 @@ uv run --no-sync python scripts/serve_prefect_controller.py --real-run --cron "0
 ### Terminal 3:
 ```bash
 uv run --no-sync prefect deployment run 'hf-model-watch-controller/hf-model-watch-controller-local'
+```
+
+### Result sync deployment
+
+Serve a separate deployment that imports new Nebius results into the application SQLite
+database and rebuilds the leaderboard every ten minutes:
+
+```bash
+set -a
+source .env
+set +a
+uv run --no-sync python scripts/serve_prefect_result_sync.py --cron "*/10 * * * *"
+```
+
+Trigger it manually:
+
+```bash
+uv run --no-sync prefect deployment run \
+  'hf-model-watch-result-sync/hf-model-watch-result-sync-local'
 ```
 ## Nebius Commands:
 access-permit create requires a group ID as --parent-id, not a user account ID

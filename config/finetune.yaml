@@ -23,10 +23,10 @@ datasets:
     source: huggingface
     hf_dataset_name: paraloq/json_data_extraction
     hf_config_name: null
-    train_split: train[:384]
-    eval_split: train[384:484]
+    train_split: train[:500]
+    eval_split: train[-100:]
     local_jsonl_path: null
-    max_train_examples: 384
+    max_train_examples: 500
     max_eval_examples: 100
     column_mapping:
       prompt_column: text

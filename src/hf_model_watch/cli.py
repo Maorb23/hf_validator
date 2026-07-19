@@ -15,8 +15,10 @@ from hf_model_watch.hub.scan import DEFAULT_SCAN_OUTPUT, scan_models
 from hf_model_watch.hub.scoring import score_jsonl_file
 from hf_model_watch.orchestration.job_payloads import WorkerJobPayload, load_worker_payload
 from hf_model_watch.orchestration.prefect_flow import run_prefect_controller_flow
+from hf_model_watch.orchestration.result_sync_flow import run_prefect_result_sync_flow
 from hf_model_watch.reporting.compare import compare_model
 from hf_model_watch.reporting.leaderboard import generate_leaderboard_markdown
+from hf_model_watch.reporting.result_sync import ingest_local_results, sync_s3_results
 from hf_model_watch.runtime.smoke_tests import run_local_smoke_test
 from hf_model_watch.storage.object_store import (
     ArtifactUploadError,
@@ -253,6 +255,60 @@ def leaderboard(
     )
 
 
+@app.command("ingest-results")
+def ingest_results(
+    input: Annotated[
+        Path,
+        typer.Option("--input", help="Directory containing downloaded run directories."),
+    ] = Path("outputs"),
+    db: Annotated[
+        Path,
+        typer.Option("--db", help="Application results SQLite database."),
+    ] = Path("results/hf_model_watch.sqlite"),
+    out: Annotated[
+        Path,
+        typer.Option("--out", help="Leaderboard Markdown output path."),
+    ] = Path("reports/leaderboard.md"),
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Reimport runs even when their fingerprint is unchanged."),
+    ] = False,
+) -> None:
+    summary = ingest_local_results(input, db, out, force=force)
+    typer.echo(json.dumps(summary.as_dict(), sort_keys=True))
+
+
+@app.command("sync-nebius-results")
+def sync_nebius_results(
+    config_dir: Annotated[
+        Path,
+        typer.Option("--config-dir", help="Configuration directory."),
+    ] = Path("config"),
+    cache_dir: Annotated[
+        Path,
+        typer.Option("--cache-dir", help="Local cache for downloaded reporting artifacts."),
+    ] = Path("outputs/synced-nebius"),
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Redownload and reimport unchanged runs."),
+    ] = False,
+) -> None:
+    config = load_config(config_dir)
+    s3 = config.storage.get("s3") or {}
+    summary = sync_s3_results(
+        bucket=str(s3.get("bucket") or ""),
+        prefix=str(s3.get("prefix") or "hf-model-watch"),
+        endpoint_url=s3.get("endpoint_url"),
+        db_path=Path(str(config.storage.get("results_db", "results/hf_model_watch.sqlite"))),
+        cache_dir=cache_dir,
+        leaderboard_path=(
+            Path(str(config.storage.get("reports_dir", "reports"))) / "leaderboard.md"
+        ),
+        force=force,
+    )
+    typer.echo(json.dumps(summary.as_dict(), sort_keys=True))
+
+
 @app.command()
 def compare(
     model_id: Annotated[str, typer.Option("--model-id", help="Hugging Face model id.")],
@@ -299,6 +355,25 @@ def prefect_flow(
         },
         artifacts={"leaderboard": summary["leaderboard"]},
     )
+
+
+@app.command("prefect-sync-results")
+def prefect_sync_results(
+    config_dir: Annotated[
+        Path,
+        typer.Option("--config-dir", help="Configuration directory."),
+    ] = Path("config"),
+    cache_dir: Annotated[
+        Path,
+        typer.Option("--cache-dir", help="Local cache for synchronized artifacts."),
+    ] = Path("outputs/synced-nebius"),
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Reimport unchanged S3 runs."),
+    ] = False,
+) -> None:
+    summary = run_prefect_result_sync_flow(config_dir, cache_dir, force)
+    typer.echo(json.dumps(summary, sort_keys=True))
 
 def _run_worker_dry_run(
     payload: WorkerJobPayload,
