@@ -1,0 +1,14 @@
+# Lightweight local environment for the Hugging Face recommender notebook.
+# Deliberately excludes torch, transformers, CUDA wheels, benchmark runtimes,
+# training dependencies, and the project itself (which declares GPU torch).
+
+huggingface-hub>=0.24
+pydantic>=2.7
+pyyaml>=6.0
+python-dotenv>=1.0
+typer>=0.12
+rich>=13.7
+
+# Notebook kernel and UI.
+ipykernel>=6.29
+jupyterlab>=4.2

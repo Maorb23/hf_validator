@@ -44,7 +44,7 @@ def test_comparison_similar_below_threshold() -> None:
         "size_band": "small",
         "base_score": 0.705,
         "latency_summary": json.dumps(
-            {"avg_latency_per_1k_output_tokens": 100.0, "total_tokens": 100}
+            {"avg_decode_tokens_per_second": 100.0, "total_tokens": 100}
         ),
         "context_drift_summary": json.dumps({"drift_score": 0.1}),
     }
@@ -55,7 +55,7 @@ def test_comparison_similar_below_threshold() -> None:
         "size_band": "small",
         "base_score": 0.7,
         "latency_summary": json.dumps(
-            {"avg_latency_per_1k_output_tokens": 101.0, "total_tokens": 100}
+            {"avg_decode_tokens_per_second": 101.0, "total_tokens": 100}
         ),
         "context_drift_summary": json.dumps({"drift_score": 0.1}),
         "status": "completed",

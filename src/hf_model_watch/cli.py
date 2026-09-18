@@ -2,42 +2,129 @@ from __future__ import annotations
 
 import json
 import os
+from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from dotenv import load_dotenv
 
-from hf_model_watch.config import load_config, load_yaml_file
-from hf_model_watch.errors import FailureCategory
-from hf_model_watch.finetune.train_peft import run_peft_adaptation_suite
-from hf_model_watch.hub.scan import DEFAULT_SCAN_OUTPUT, scan_models
-from hf_model_watch.hub.scoring import score_jsonl_file
-from hf_model_watch.orchestration.job_payloads import WorkerJobPayload, load_worker_payload
-from hf_model_watch.orchestration.prefect_flow import run_prefect_controller_flow
-from hf_model_watch.orchestration.result_sync_flow import run_prefect_result_sync_flow
-from hf_model_watch.reporting.compare import compare_model
-from hf_model_watch.reporting.leaderboard import generate_leaderboard_markdown
-from hf_model_watch.reporting.result_sync import ingest_local_results, sync_s3_results
-from hf_model_watch.runtime.smoke_tests import run_local_smoke_test
-from hf_model_watch.storage.object_store import (
-    ArtifactUploadError,
-    object_store_config_from_mapping,
-    preflight_object_store_upload,
-    upload_run_artifacts,
-)
-from hf_model_watch.storage.schemas import (
-    RunManifest,
-    build_reproducibility_snapshot,
-    initialize_run_artifacts,
-    new_run_id,
-    utc_now_iso,
-)
-from hf_model_watch.storage.sqlite_store import SQLiteStore
 from hf_model_watch.tracing import emit_trace_event
+
+if TYPE_CHECKING:
+    from hf_model_watch.orchestration.job_payloads import WorkerJobPayload
+    from hf_model_watch.storage.sqlite_store import SQLiteStore
 
 app = typer.Typer(help="hf-model-watch command line interface.")
 load_dotenv()
+
+
+class FrameworkMode(StrEnum):
+    fast = "fast"
+    sweep = "sweep"
+
+
+@app.command()
+def recommend(
+    request: Annotated[str | None, typer.Argument(help="Natural-language task request.")] = None,
+    gpu_memory_gb: Annotated[float | None, typer.Option("--gpu-memory-gb")] = None,
+    gpu_count: Annotated[int, typer.Option("--gpu-count")] = 1,
+    budget_usd_per_hour: Annotated[float | None, typer.Option("--budget-usd-per-hour")] = None,
+    gpu_hourly_cost_usd: Annotated[float | None, typer.Option("--gpu-hourly-cost-usd")] = None,
+    license: Annotated[str | None, typer.Option("--license")] = None,
+    framework_mode: Annotated[FrameworkMode | None, typer.Option("--framework-mode")] = None,
+    model: Annotated[str | None, typer.Option("--nemotron-model")] = None,
+    candidate: Annotated[list[str] | None, typer.Option("--candidate")] = None,
+    json_mode: Annotated[
+        bool, typer.Option("--json", help="Machine-readable, non-interactive output.")
+    ] = False,
+    output_dir: Annotated[Path | None, typer.Option("--output-dir")] = None,
+    config: Annotated[Path, typer.Option("--config")] = Path("config/recommender.yaml"),
+) -> None:
+    from hf_model_watch.recommender.core import (
+        RequestSpec,
+        load_settings,
+    )
+    from hf_model_watch.recommender.core import (
+        recommend as run_recommend,
+    )
+    from hf_model_watch.storage.schemas import new_run_id
+
+    values = {
+        "request": request,
+        "gpu_memory_gb": gpu_memory_gb,
+        "budget_usd_per_hour": budget_usd_per_hour,
+        "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
+        "license": license,
+        "framework_mode": framework_mode.value if framework_mode else None,
+    }
+    missing = [key for key, value in values.items() if value is None]
+    if json_mode and missing:
+        typer.echo(json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True))
+        return
+    for key in missing:
+        values[key] = typer.prompt(key.replace("_", " "))
+    try:
+        spec = RequestSpec(
+            **values,
+            gpu_count=gpu_count,
+            model=model,
+            candidates=candidate or [],
+        )
+        settings = load_settings(config)
+        destination = output_dir or Path("artifacts/recommendations") / new_run_id()
+        result = run_recommend(spec, settings, destination)
+    except Exception as exc:
+        if json_mode:
+            typer.echo(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}))
+            raise typer.Exit(code=1) from None
+        raise typer.BadParameter(str(exc)) from exc
+    if json_mode:
+        typer.echo(
+            json.dumps(
+                {**result, "artifact_path": str(destination / "recommendation.json")},
+                sort_keys=True,
+            )
+        )
+    else:
+        chosen = result["recommendation"]
+        typer.echo(f"{result['status']}: {chosen['model_id'] if chosen else 'none'}")
+        typer.echo(f"Saved: {destination / 'recommendation.json'}")
+
+
+@app.command("benchmark-recommendation")
+def benchmark_recommendation_cli(
+    artifact: Annotated[Path, typer.Argument(help="Saved recommendation.json artifact.")],
+    confirm: Annotated[
+        bool, typer.Option("--confirm", help="Authorize Nebius submission.")
+    ] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+    config_dir: Annotated[Path, typer.Option("--config-dir")] = Path("config"),
+) -> None:
+    from hf_model_watch.recommender.benchmark import benchmark_recommendation
+
+    try:
+        result = benchmark_recommendation(
+            artifact, confirm=confirm, dry_run=dry_run, config_dir=config_dir
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result, sort_keys=True))
+
+
+@app.command("benchmark-report")
+def benchmark_report_cli(
+    artifact: Annotated[Path, typer.Argument(help="Saved recommendation.json artifact.")],
+    results_dir: Annotated[Path, typer.Option("--results-dir", help="Synchronized run folders.")],
+    db: Annotated[Path, typer.Option("--db")] = Path("results/hf_model_watch.sqlite"),
+) -> None:
+    from hf_model_watch.recommender.report import build_benchmark_report
+
+    try:
+        result = build_benchmark_report(artifact, results_dir, db)
+    except (ValueError, FileNotFoundError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result, sort_keys=True))
 
 
 @app.command()
@@ -46,6 +133,9 @@ def scan(
         "config/scan.yaml"
     ),
 ) -> None:
+    from hf_model_watch.config import load_yaml_file
+    from hf_model_watch.hub.scan import DEFAULT_SCAN_OUTPUT, scan_models
+
     scan_config = load_yaml_file(config)
     records = scan_models(scan_config, DEFAULT_SCAN_OUTPUT)
     emit_trace_event(
@@ -58,10 +148,65 @@ def scan(
     )
 
 
+@app.command()
+def lookup(
+    model_id: Annotated[
+        str | None, typer.Option("--model-id", help="Exact Hugging Face model ID.")
+    ] = None,
+    family: Annotated[
+        str | None, typer.Option("--family", help="Case-insensitive model family search.")
+    ] = None,
+    query: Annotated[str | None, typer.Option("--query", help="Model name or tag search.")] = None,
+    fuzzy: Annotated[
+        bool, typer.Option("--fuzzy", help="Allow approximate local matching.")
+    ] = False,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum results (1-100).")] = 20,
+    output: Annotated[Path, typer.Option("--output", help="JSONL result path.")] = Path(
+        "artifacts/scan/lookup_models.jsonl"
+    ),
+) -> None:
+    emit_trace_event(
+        "lookup_started",
+        "lookup",
+        "started",
+        "Hugging Face model lookup started",
+        metadata={
+            "selector": "model_id" if model_id else "family" if family else "query",
+            "fuzzy": fuzzy,
+            "limit": limit,
+        },
+        artifacts={"output_path": str(output)},
+    )
+    from hf_model_watch.hub.lookup import lookup_models
+
+    try:
+        records = lookup_models(
+            model_id=model_id,
+            family=family,
+            query=query,
+            fuzzy=fuzzy,
+            limit=limit,
+            output_path=output,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    emit_trace_event(
+        "lookup_completed",
+        "lookup",
+        "completed",
+        "Hugging Face model lookup completed",
+        metrics={"models_written": len(records)},
+        artifacts={"output_path": str(output)},
+    )
+
+
 @app.command("score-candidates")
 def score_candidates(
     input: Annotated[Path, typer.Option("--input", help="Candidate JSONL input path.")],
 ) -> None:
+    from hf_model_watch.config import load_config
+    from hf_model_watch.hub.scoring import score_jsonl_file
+
     config = load_config("config")
     output = Path("artifacts/scan/scored_candidates.jsonl")
     scored = score_jsonl_file(input, output, config.scan.model_dump(), config.scoring)
@@ -96,6 +241,13 @@ def run_local(
         ),
     ] = False,
 ) -> None:
+    from hf_model_watch.config import load_config
+    from hf_model_watch.errors import FailureCategory
+    from hf_model_watch.finetune.train_peft import run_peft_adaptation_suite
+    from hf_model_watch.runtime.smoke_tests import run_local_smoke_test
+    from hf_model_watch.storage.schemas import new_run_id
+    from hf_model_watch.storage.sqlite_store import SQLiteStore
+
     config = load_config(config_dir)
     run_id = new_run_id()
     db_path = Path(str(config.storage.get("results_db", "results/hf_model_watch.sqlite")))
@@ -171,6 +323,16 @@ def run_local(
 def worker(
     payload_json: Annotated[Path, typer.Option("--payload-json", help="Worker payload JSON path.")],
 ) -> None:
+    from hf_model_watch.config import load_config
+    from hf_model_watch.finetune.train_peft import run_peft_adaptation_suite
+    from hf_model_watch.orchestration.job_payloads import load_worker_payload
+    from hf_model_watch.runtime.smoke_tests import run_local_smoke_test
+    from hf_model_watch.storage.object_store import (
+        object_store_config_from_mapping,
+        preflight_object_store_upload,
+    )
+    from hf_model_watch.storage.sqlite_store import SQLiteStore
+
     payload = load_worker_payload(payload_json)
     config = load_config("config")
     _merge_mapping(config.storage, payload.config.get("storage"))
@@ -208,10 +370,16 @@ def worker(
     try:
         if dry_run:
             _run_worker_dry_run(payload, config.model_dump(), store, run_dir)
+        elif payload.config.get("benchmark_recommendation"):
+            from hf_model_watch.recommender.benchmark_run import run_fixture_benchmark
+
+            run_fixture_benchmark(payload, run_dir, store)
         else:
             result = run_local_smoke_test(payload.run_id, payload.model_id, config, store)
-            if payload.skip_finetune or payload.finetune_smoke_only or config.finetune.get(
-                "enabled", True
+            if (
+                payload.skip_finetune
+                or payload.finetune_smoke_only
+                or config.finetune.get("enabled", True)
             ):
                 run_peft_adaptation_suite(
                     run_id=payload.run_id,
@@ -245,6 +413,8 @@ def leaderboard(
     db: Annotated[Path, typer.Option("--db", help="Results SQLite database path.")],
     out: Annotated[Path, typer.Option("--out", help="Output markdown report path.")],
 ) -> None:
+    from hf_model_watch.reporting.leaderboard import generate_leaderboard_markdown
+
     output = generate_leaderboard_markdown(db, out)
     emit_trace_event(
         "leaderboard_created",
@@ -274,6 +444,8 @@ def ingest_results(
         typer.Option("--force", help="Reimport runs even when their fingerprint is unchanged."),
     ] = False,
 ) -> None:
+    from hf_model_watch.reporting.result_sync import ingest_local_results
+
     summary = ingest_local_results(input, db, out, force=force)
     typer.echo(json.dumps(summary.as_dict(), sort_keys=True))
 
@@ -293,6 +465,9 @@ def sync_nebius_results(
         typer.Option("--force", help="Redownload and reimport unchanged runs."),
     ] = False,
 ) -> None:
+    from hf_model_watch.config import load_config
+    from hf_model_watch.reporting.result_sync import sync_s3_results
+
     config = load_config(config_dir)
     s3 = config.storage.get("s3") or {}
     summary = sync_s3_results(
@@ -314,6 +489,8 @@ def compare(
     model_id: Annotated[str, typer.Option("--model-id", help="Hugging Face model id.")],
     db: Annotated[Path, typer.Option("--db", help="Results SQLite database path.")],
 ) -> None:
+    from hf_model_watch.reporting.compare import compare_model
+
     result = compare_model(db, model_id)
     emit_trace_event(
         "comparison_created",
@@ -342,6 +519,8 @@ def prefect_flow(
         typer.Option("--dry-run", help="Run orchestration without submitting real Nebius jobs."),
     ] = False,
 ) -> None:
+    from hf_model_watch.orchestration.prefect_flow import run_prefect_controller_flow
+
     summary = run_prefect_controller_flow(config_dir, dry_run=dry_run)
     emit_trace_event(
         "prefect_flow_cli_completed",
@@ -372,8 +551,11 @@ def prefect_sync_results(
         typer.Option("--force", help="Reimport unchanged S3 runs."),
     ] = False,
 ) -> None:
+    from hf_model_watch.orchestration.result_sync_flow import run_prefect_result_sync_flow
+
     summary = run_prefect_result_sync_flow(config_dir, cache_dir, force)
     typer.echo(json.dumps(summary, sort_keys=True))
+
 
 def _run_worker_dry_run(
     payload: WorkerJobPayload,
@@ -381,6 +563,13 @@ def _run_worker_dry_run(
     store: SQLiteStore,
     run_dir: Path,
 ) -> None:
+    from hf_model_watch.storage.schemas import (
+        RunManifest,
+        build_reproducibility_snapshot,
+        initialize_run_artifacts,
+        utc_now_iso,
+    )
+
     manifest = RunManifest(
         run_id=payload.run_id,
         model_id=payload.model_id,
@@ -482,6 +671,12 @@ def _upload_worker_artifacts(
     run_dir: Path,
     store: SQLiteStore,
 ):
+    from hf_model_watch.storage.object_store import (
+        ArtifactUploadError,
+        object_store_config_from_mapping,
+        upload_run_artifacts,
+    )
+
     dry_run = _object_store_dry_run(payload)
     upload_config = object_store_config_from_mapping(
         storage_config,

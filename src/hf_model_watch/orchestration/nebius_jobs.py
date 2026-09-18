@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,8 +146,14 @@ def submit_nebius_job(
             f"Nebius job submission failed: {type(exc).__name__}: {exc}",
             FailureCategory.NEBIUS_JOB_FAILED.value,
         ) from exc
+    job_id = _extract_job_id(completed.stdout)
+    if job_id is None:
+        raise NebiusJobError(
+            "Nebius accepted the job submission but did not return a valid aijob ID",
+            FailureCategory.NEBIUS_JOB_FAILED.value,
+        )
     return NebiusJobResult(
-        job_id=_extract_job_id(completed.stdout) or f"submitted-{payload.run_id}",
+        job_id=job_id,
         status="submitted",
         payload=payload.model_dump(),
         command=nebius_command,
@@ -163,24 +170,63 @@ def poll_nebius_job(
 ) -> str:
     if config.dry_run or job_id.startswith("dry-run-"):
         return "completed_dry_run"
+    follow_error: Exception | None = None
+    try:
+        run_command(
+            ["nebius", "ai", "job", "logs", job_id, "--follow"],
+            check=True,
+            text=True,
+            env=env,
+            stderr=subprocess.PIPE,
+        )
+    except Exception as exc:
+        follow_error = exc
+
+    get_command = ["nebius", "ai", "job", "get", job_id, "--format", "json"]
     try:
         completed = run_command(
-            ["nebius", "ai", "job", "get", "--id", job_id, "--format", "json"],
+            get_command,
             check=True,
             capture_output=True,
             text=True,
             env=env,
         )
-    except Exception as exc:
-        raise NebiusJobError(
-            f"Nebius job polling failed: {type(exc).__name__}: {exc}",
-            FailureCategory.NEBIUS_JOB_FAILED.value,
-        ) from exc
-    try:
         payload = json.loads(completed.stdout)
-    except json.JSONDecodeError:
+        return _extract_job_status(payload)
+    except Exception as get_error:
+        if follow_error is None:
+            # `logs --follow` returning successfully means the remote log stream
+            # reached its end. A subsequent control-plane lookup failure must not
+            # turn a successfully observed job into a failed Prefect flow.
+            return "completed_logs_followed"
+        follow_detail = _command_error_detail(follow_error)
+        get_detail = _command_error_detail(get_error)
+        raise NebiusJobError(
+            "Nebius job monitoring failed: "
+            f"logs --follow: {follow_detail}; final status lookup: {get_detail}",
+            FailureCategory.NEBIUS_JOB_FAILED.value,
+        ) from get_error
+
+
+def _extract_job_status(payload: Any) -> str:
+    if not isinstance(payload, dict):
         return "unknown"
-    return str(payload.get("status") or payload.get("state") or "unknown")
+    value: Any = payload.get("state") or payload.get("status")
+    if isinstance(value, dict):
+        value = value.get("state") or value.get("status") or value.get("phase")
+    normalized = str(value or "unknown").strip().lower()
+    if normalized in {"succeeded", "success", "done"}:
+        return "completed"
+    if normalized in {"canceled", "cancelled"}:
+        return "cancelled"
+    return normalized
+
+
+def _command_error_detail(exc: Exception) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        return detail or str(exc)
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _build_nebius_cli_command(
@@ -205,6 +251,8 @@ def _build_nebius_cli_command(
         "--container-command", executable,
         "--disk-size", "450Gi",
         "--timeout", timeout_str,
+        "--format", "json",
+        "--no-progress",
     ]
 
     if config.project_id:
@@ -227,13 +275,25 @@ def _extract_job_id(stdout: str) -> str | None:
     except json.JSONDecodeError:
         payload = {}
     if isinstance(payload, dict):
-        value = payload.get("id") or payload.get("job_id")
-        if value:
-            return str(value)
-    for token in stdout.split():
-        if token.startswith("job-"):
-            return token
-    return None
+        candidates = [
+            payload.get("id"),
+            payload.get("job_id"),
+            (payload.get("metadata") or {}).get("id")
+            if isinstance(payload.get("metadata"), dict)
+            else None,
+        ]
+        for value in candidates:
+            if value and _is_nebius_ai_job_id(str(value)):
+                return str(value)
+    # Large CLI JSON can be truncated while still containing the top-level ID.
+    # Match AI-job IDs specifically: generic `job-*` values may identify nested
+    # resources and are rejected by `nebius ai job logs`.
+    match = re.search(r"(?<![a-z0-9-])(aijob-[a-z0-9]+)(?![a-z0-9-])", stdout.lower())
+    return match.group(1) if match else None
+
+
+def _is_nebius_ai_job_id(value: str) -> bool:
+    return re.fullmatch(r"aijob-[a-z0-9]+", value.lower()) is not None
 
 
 def _public_env(env: dict[str, str]) -> dict[str, str]:

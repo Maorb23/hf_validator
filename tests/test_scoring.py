@@ -25,7 +25,7 @@ def test_scoring_ranks_newer_popular_complete_candidate_above_weak_one() -> None
     weak_score = score_candidate(weak, _scan_config(), _scoring_config())
 
     assert strong_score["eligible"] is True
-    assert weak_score["eligible"] is True
+    assert weak_score["eligible"] is False
     assert strong_score["score"] > weak_score["score"]
 
 
@@ -65,6 +65,7 @@ def _candidate(
 def _scan_config() -> dict[str, object]:
     return {
         "max_candidates_to_run": 5,
+        "min_downloads": 50,
         "max_params_billion": 30,
         "allow_gated": False,
         "allow_trust_remote_code": False,

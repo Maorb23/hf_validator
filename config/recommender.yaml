@@ -1,0 +1,35 @@
+nebius:
+  base_url: https://api.tokenfactory.us-central1.nebius.com/v1
+  default_model: nvidia/nemotron-3-super-120b-a12b
+  allowed_models:
+    - nvidia/nemotron-3-super-120b-a12b
+    - nvidia/Nemotron-3-Ultra-550b-a55b
+  timeout_seconds: 45
+  max_output_tokens: 1600
+  validation_max_tokens: 3000
+  max_prompt_chars: 60000
+  max_tool_calls: 8
+  max_candidates: 8
+tavily:
+  timeout_seconds: 15
+  max_searches: 8
+  max_results: 8
+  search_depth: advanced
+  chunks_per_source: 3
+  include_raw_content: markdown
+  max_extract_chars: 3000
+  cache_dir: artifacts/recommendations/evidence_cache
+  cache_ttl_hours: 48
+  speculative_terms: [Medusa, EAGLE, D-Spark, D-Flash]
+selection:
+  max_alternatives: 3
+  memory_safety_margin: 0.85
+  weights:
+    small_model: 5
+    deployability: 4
+    verified_evidence: 3
+    latency: 3
+framework_images:
+  vllm: null
+  sglang: null
+  trt-llm: null

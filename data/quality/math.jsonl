@@ -1,0 +1,1 @@
+{"id":"math_001","question":"<MATH QUESTION SHOWN TO THE MODEL>","expected_answer":"<CANONICAL FINAL ANSWER>","answer_type":"decimal","absolute_tolerance":"0","difficulty":"easy","max_new_tokens":128,"source_url":"<SOURCE URL OR original>","license":"<LICENSE OR PERMISSION>","notes":""}

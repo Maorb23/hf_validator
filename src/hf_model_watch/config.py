@@ -23,6 +23,8 @@ class ScanConfig(BaseModel):
     lookback_days: int = Field(gt=0)
     max_models_to_scan: int = Field(gt=0)
     max_candidates_to_run: int = Field(gt=0)
+    min_downloads: int = Field(ge=0)
+    fallback_context_length: int = Field(default=2048, gt=0)
     pipeline_tags: list[str] = Field(default_factory=lambda: ["text-generation"])
     max_params_billion: float = Field(gt=0)
     allow_gated: bool
@@ -101,6 +103,12 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
     _set_bool(scan, "allow_trust_remote_code", "HF_MODEL_WATCH_ALLOW_TRUST_REMOTE_CODE")
     _set_int(scan, "max_models_to_scan", "HF_MODEL_WATCH_MAX_MODELS_TO_SCAN")
     _set_int(scan, "max_candidates_to_run", "HF_MODEL_WATCH_MAX_CANDIDATES_TO_RUN")
+    _set_int(scan, "min_downloads", "HF_MODEL_WATCH_MIN_DOWNLOADS")
+    _set_int(
+        scan,
+        "fallback_context_length",
+        "HF_MODEL_WATCH_FALLBACK_CONTEXT_LENGTH",
+    )
     _set_float(scan, "max_params_billion", "HF_MODEL_WATCH_MAX_PARAMS_BILLION")
 
     project_id = os.getenv("NB_PROJECT_ID") or os.getenv("NEBIUS_PROJECT_ID")

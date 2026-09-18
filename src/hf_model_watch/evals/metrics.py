@@ -43,8 +43,6 @@ def add_token_normalized_metrics(record: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(record)
     token_counts = effective_token_counts(enriched)
     enriched.update(token_counts)
-    input_tokens = max(int(token_counts["effective_input_tokens"]), 1)
-    output_tokens = max(int(token_counts["effective_output_tokens"]), 1)
     total_tokens = max(int(token_counts["effective_total_tokens"]), 1)
 
     ttft_ms = float(enriched.get("ttft_ms") or 0.0)
@@ -53,16 +51,10 @@ def add_token_normalized_metrics(record: dict[str, Any]) -> dict[str, Any]:
         enriched.get("decode_latency_ms") or max(total_latency_ms - ttft_ms, 0.0)
     )
     enriched["decode_latency_ms"] = decode_latency_ms
-    enriched["ttft_per_input_token"] = ttft_ms / input_tokens
-    enriched["ttft_per_1k_input_tokens"] = 1000 * ttft_ms / input_tokens
-    enriched["latency_per_1k_input_tokens"] = 1000 * total_latency_ms / input_tokens
-    enriched["latency_per_1k_output_tokens"] = 1000 * total_latency_ms / output_tokens
-    enriched["decode_latency_per_1k_output_tokens"] = 1000 * decode_latency_ms / output_tokens
     enriched["decode_tokens_per_second"] = int(token_counts["effective_output_tokens"]) / max(
         decode_latency_ms / 1000,
         SMALL_EPSILON,
     )
-    enriched["ms_per_output_token"] = decode_latency_ms / output_tokens
     quality_score = enriched.get("quality_score")
     if quality_score is not None:
         enriched["quality_per_1k_tokens"] = 1000 * float(quality_score) / total_tokens
@@ -73,13 +65,10 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     successful = [record for record in records if record.get("success", True)]
     failed = [record for record in records if not record.get("success", True)]
     return {
-        "avg_ttft_per_1k_input_tokens": _avg(records, "ttft_per_1k_input_tokens"),
-        "avg_latency_per_1k_input_tokens": _avg(records, "latency_per_1k_input_tokens"),
-        "avg_latency_per_1k_output_tokens": _avg(records, "latency_per_1k_output_tokens"),
-        "avg_decode_latency_per_1k_output_tokens": _avg(
-            records,
-            "decode_latency_per_1k_output_tokens",
-        ),
+        "avg_total_latency_ms": _avg(records, "total_latency_ms"),
+        "avg_decode_latency_ms": _avg(records, "decode_latency_ms"),
+        "avg_decode_tokens_per_second": _avg(records, "decode_tokens_per_second"),
+        "avg_ttft_ms": _avg(records, "ttft_ms"),
         "avg_quality_per_1k_tokens": _avg(records, "quality_per_1k_tokens"),
         "total_prompt_tokens": sum(
             int(record.get("effective_input_tokens") or 0) for record in records

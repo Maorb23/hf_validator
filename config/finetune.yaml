@@ -1,25 +1,56 @@
-method: qlora
+method: auto
 enabled: true
-default_method: qlora
 bnb_4bit_quant_type: nf4
 bnb_4bit_compute_dtype: bfloat16
+bnb_4bit_use_double_quant: true
 max_train_steps: 20
-eval_steps: 25
+eval_steps: 5
+eval_microbatch_size: 1
+json_eval_generation_token_multiplier: 2.0
+json_eval_min_new_tokens: 32
+json_eval_max_new_tokens: 256
+logging_steps: 1
+wandb_enabled: true
+wandb_project: hf-model-watch
 save_strategy: final_only
 seed: 42
 bf16: true
 gradient_checkpointing: true
-learning_rate: 0.0002
-lora_rank: 16
-lora_alpha: 32
-lora_dropout: 0.05
+packing: null
+packing_strategy: bfd_split
+learning_rate: null
+lora_rank: null
+lora_alpha: null
+lora_dropout: null
+use_rslora: true
 target_modules: all-linear
-max_grad_norm: 1.0
+exclude_modules:
+  - lm_head
+  - classifier
+  - score
+  - reward_head
+  - multi_modal_projector
+  - multimodal_projector
+microbatch_size: null
+gradient_accumulation: null
+target_tokens_per_update: 32768
+candidate_microbatches: [16, 8, 4, 2, 1]
+planning_memory_fraction: 0.75
+max_memory_fraction: 0.85
+qlora_fallback_batch_size: 2
+max_sequence_length: null
+max_sequence_length_cap: 2048
+optimizer: null
+allow_method_fallback: null
+allow_batch_fallback: null
+max_grad_norm: 0.3
 weight_decay: 0.0
 scheduler: cosine
+router_aux_loss_coef: 0.001
 warmup_ratio: 0.03
 datasets:
   json_extraction:
+    task_breadth: narrow
     source: huggingface
     hf_dataset_name: paraloq/json_data_extraction
     hf_config_name: null
@@ -34,6 +65,7 @@ datasets:
       schema_column: schema
 
   text_to_sql:
+    task_breadth: narrow
     source: huggingface
     hf_dataset_name: b-mc2/sql-create-context
     hf_config_name: null
@@ -49,6 +81,7 @@ datasets:
       context_column: context
 
   financial_analyst_style:
+    task_breadth: domain
     source: huggingface
     hf_dataset_name: bevaya/FinQA
     hf_config_name: null

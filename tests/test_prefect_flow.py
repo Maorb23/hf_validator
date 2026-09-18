@@ -128,3 +128,36 @@ def test_prefect_result_sync_flow_uses_storage_config(tmp_path) -> None:
     assert calls[0]["prefix"] == "hf-model-watch"
     assert result["imported_runs"] == 1
     assert result["skipped_runs"] == 1
+
+
+def test_controller_syncs_completed_nebius_results() -> None:
+    sync_calls = []
+
+    def submit_job(payload, config):
+        from hf_model_watch.orchestration.nebius_jobs import NebiusJobResult
+
+        return NebiusJobResult(
+            job_id="aijob-e001",
+            status="submitted",
+            payload=payload.model_dump(),
+            command=[],
+            env={},
+            dry_run=False,
+        )
+
+    def sync_results(**kwargs):
+        sync_calls.append(kwargs)
+        return SyncSummary(discovered_runs=1, imported_runs=1, downloaded_files=7)
+
+    result = run_prefect_controller_flow(
+        "config",
+        dry_run=False,
+        candidates=[{"model_id": "org/model", "revision": "abc", "score": 1}],
+        submit_job=submit_job,
+        poll_job=lambda job_id, config: "completed",
+        sync_results=sync_results,
+    )
+
+    assert sync_calls[0]["bucket"] == "hf-model-watch"
+    assert sync_calls[0]["prefix"] == "hf-model-watch"
+    assert result["result_sync"][0]["imported_runs"] == 1

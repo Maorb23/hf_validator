@@ -9,8 +9,12 @@ from typing import Any
 
 def judge_quality(task_type: str, text: str, expected: dict[str, Any]) -> dict[str, Any]:
     normalized = text.strip()
-    if task_type == "grade_school_math":
-        return judge_numeric_answer(normalized, str(expected.get("final_answer") or ""))
+    if task_type in {"grade_school_math", "custom_math"}:
+        return judge_numeric_answer(
+            normalized,
+            str(expected.get("final_answer") or ""),
+            absolute_tolerance=str(expected.get("absolute_tolerance") or "0"),
+        )
     if task_type == "json_schema_adherence":
         return judge_json_schema(normalized, expected.get("required_keys", []))
     if task_type == "text_to_sql":
@@ -65,17 +69,55 @@ def judge_terms(text: str, terms: list[str], require_any: bool) -> dict[str, Any
     }
 
 
-def judge_numeric_answer(text: str, expected: str) -> dict[str, Any]:
+def judge_numeric_answer(
+    text: str,
+    expected: str,
+    absolute_tolerance: str = "0",
+) -> dict[str, Any]:
     predicted_value = _last_numeric_value(text)
     expected_value = _last_numeric_value(expected)
-    success = predicted_value is not None and predicted_value == expected_value
+    tolerance = _decimal_value(absolute_tolerance)
+    success = (
+        predicted_value is not None
+        and expected_value is not None
+        and _within_tolerance(predicted_value, expected_value, tolerance)
+    )
     return {
         "quality_score": 1.0 if success else 0.0,
         "success": success,
         "reason": "ok" if success else "numeric_answer_mismatch",
         "predicted_answer": str(predicted_value) if predicted_value is not None else None,
         "expected_answer": str(expected_value) if expected_value is not None else expected,
+        "absolute_tolerance": str(tolerance),
     }
+
+
+def _within_tolerance(
+    predicted: Fraction | Decimal,
+    expected: Fraction | Decimal,
+    tolerance: Decimal,
+) -> bool:
+    if tolerance == 0:
+        return predicted == expected
+    predicted_decimal = _as_decimal(predicted)
+    expected_decimal = _as_decimal(expected)
+    return abs(predicted_decimal - expected_decimal) <= tolerance
+
+
+def _as_decimal(value: Fraction | Decimal) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(value.numerator) / Decimal(value.denominator)
+
+
+def _decimal_value(value: str) -> Decimal:
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError(f"invalid absolute tolerance: {value!r}") from exc
+    if not parsed.is_finite() or parsed < 0:
+        raise ValueError("absolute tolerance must be finite and non-negative")
+    return parsed
 
 
 def _last_numeric_value(text: str) -> Fraction | Decimal | None:

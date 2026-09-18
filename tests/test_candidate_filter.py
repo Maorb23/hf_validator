@@ -41,6 +41,54 @@ def test_candidate_filter_allows_valid_mock_causal_lm() -> None:
     assert result.blocking_reasons == []
 
 
+def test_candidate_filter_blocks_explicit_multimodal_pipeline() -> None:
+    candidate = _valid_candidate()
+    candidate["model_id"] = "google/gemma-4-E2B-it"
+    candidate["pipeline_tag"] = "image-text-to-text"
+    candidate["tags"] = ["image-text-to-text", "text-generation", "license:gemma"]
+
+    result = filter_candidate(candidate, _scan_config())
+
+    assert result.eligible is False
+    assert FailureCategory.NOT_CAUSAL_LM.value in result.blocking_reasons
+
+
+def test_candidate_filter_blocks_inference_only_checkpoint_formats() -> None:
+    mlx_candidate = _valid_candidate()
+    mlx_candidate["model_id"] = "org/model-MLX-6bit"
+    compressed_candidate = _valid_candidate()
+    compressed_candidate["tags"] = ["text-generation", "compressed-tensors"]
+
+    mlx_result = filter_candidate(mlx_candidate, _scan_config())
+    compressed_result = filter_candidate(compressed_candidate, _scan_config())
+
+    assert FailureCategory.UNSUPPORTED_FINETUNE_FORMAT.value in mlx_result.blocking_reasons
+    assert (
+        FailureCategory.UNSUPPORTED_FINETUNE_FORMAT.value
+        in compressed_result.blocking_reasons
+    )
+
+
+def test_candidate_filter_requires_complete_selection_metadata() -> None:
+    cases = (
+        ("estimated_params_billion", None, FailureCategory.MISSING_PARAMETER_COUNT.value),
+        ("estimated_download_size_gb", None, FailureCategory.MISSING_DOWNLOAD_SIZE.value),
+        ("license", None, FailureCategory.MISSING_LICENSE.value),
+        ("downloads", 49, FailureCategory.INSUFFICIENT_DOWNLOADS.value),
+        ("chat_template_present", False, FailureCategory.MISSING_CHAT_TEMPLATE.value),
+        ("context_length", None, FailureCategory.MISSING_CONTEXT_LENGTH.value),
+    )
+
+    for field, value, expected_reason in cases:
+        candidate = _valid_candidate()
+        candidate[field] = value
+
+        result = filter_candidate(candidate, _scan_config())
+
+        assert result.eligible is False
+        assert expected_reason in result.blocking_reasons
+
+
 def _valid_candidate() -> dict[str, object]:
     return {
         "model_id": "Qwen/Qwen2.5-7B-Instruct",
@@ -56,14 +104,18 @@ def _valid_candidate() -> dict[str, object]:
         "has_safetensors": True,
         "estimated_params_billion": 7,
         "estimated_download_size_gb": 16,
+        "downloads": 100,
         "architecture": ["Qwen2ForCausalLM"],
         "config": {"architectures": ["Qwen2ForCausalLM"]},
+        "chat_template_present": True,
+        "context_length": 32768,
     }
 
 
 def _scan_config() -> dict[str, object]:
     return {
         "max_params_billion": 30,
+        "min_downloads": 50,
         "allow_gated": False,
         "allow_trust_remote_code": False,
         "require_safetensors": True,

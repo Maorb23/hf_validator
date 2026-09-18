@@ -1,5 +1,5 @@
 gpu_type: gpu-h100-sxm
-image: cr.eu-north1.nebius.cloud/e00xg2vp63hfjt63q9/hf-model-watch:gpu-v8
+image: cr.eu-north1.nebius.cloud/e00xg2vp63hfjt63q9/hf-model-watch:gpu-v11
 preset: 1gpu-16vcpu-96gb
 gpu_memory_gb: 80
 memory_safety_margin: 0.85

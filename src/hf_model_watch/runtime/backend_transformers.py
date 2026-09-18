@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +44,9 @@ class TransformersSession:
             prompt=prompt,
             max_new_tokens=max_new_tokens,
         )
+
+    def score_completion(self, prompt: str, completion: str) -> dict[str, Any]:
+        return score_reference_completion(self.model, self.tokenizer, prompt, completion)
 
 
 def load_tokenizer(
@@ -98,6 +102,10 @@ def load_model(
         load_kwargs["dtype"] = torch.float32
 
     model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+    # This runtime controls output length with max_new_tokens. Clear an inherited
+    # total-length default so Transformers has only one length control.
+    if getattr(model, "generation_config", None) is not None:
+        model.generation_config.max_length = None
     model.eval()
     return model
 
@@ -114,6 +122,8 @@ def deterministic_generate(
     device = next(model.parameters()).device
     encoded = {key: value.to(device) for key, value in encoded.items()}
     prompt_tokens = int(encoded["input_ids"].shape[-1])
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     start = time.perf_counter()
     with torch.no_grad():
         output = model.generate(
@@ -122,9 +132,11 @@ def deterministic_generate(
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     elapsed = time.perf_counter() - start
     generated_tokens = int(output.shape[-1] - prompt_tokens)
-    text = tokenizer.decode(output[0], skip_special_tokens=True)
+    text = tokenizer.decode(output[0, prompt_tokens:], skip_special_tokens=True)
     return GenerationResult(
         prompt=prompt,
         text=text,
@@ -132,6 +144,53 @@ def deterministic_generate(
         generated_tokens=generated_tokens,
         elapsed_seconds=round(elapsed, 6),
     )
+
+
+def score_reference_completion(
+    model: Any,
+    tokenizer: Any,
+    prompt: str,
+    completion: str,
+) -> dict[str, Any]:
+    import torch
+
+    prompt_ids = tokenizer(prompt, add_special_tokens=True, return_tensors="pt")["input_ids"][0]
+    combined_ids = tokenizer(
+        prompt + completion,
+        add_special_tokens=True,
+        return_tensors="pt",
+    )["input_ids"][0]
+    completion_tokens = int(combined_ids.numel() - prompt_ids.numel())
+    if completion_tokens <= 0:
+        raise ValueError("reference completion tokenized to zero tokens")
+    max_context = int(
+        getattr(model.config, "max_position_embeddings", 0)
+        or getattr(model.config, "n_positions", 0)
+        or 2048
+    )
+    available_prompt = max_context - completion_tokens
+    if available_prompt <= 0:
+        raise ValueError("reference completion exceeds the model context window")
+    retained_prompt_tokens = min(int(prompt_ids.numel()), available_prompt)
+    input_ids = combined_ids[-(retained_prompt_tokens + completion_tokens) :].unsqueeze(0)
+    labels = input_ids.clone()
+    labels[:, :retained_prompt_tokens] = -100
+    input_device = model.get_input_embeddings().weight.device
+    input_ids = input_ids.to(input_device)
+    labels = labels.to(input_device)
+    with torch.no_grad():
+        output = model(input_ids=input_ids, labels=labels)
+    cross_entropy = float(output.loss.detach().float().cpu())
+    nll_nats = cross_entropy * completion_tokens
+    byte_count = max(1, len(completion.encode("utf-8")))
+    return {
+        "reference_cross_entropy": cross_entropy,
+        "reference_perplexity": math.exp(min(cross_entropy, 50.0)),
+        "reference_negative_log_likelihood": nll_nats,
+        "reference_bits_per_byte": nll_nats / (math.log(2) * byte_count),
+        "reference_completion_tokens": completion_tokens,
+        "reference_utf8_bytes": byte_count,
+    }
 
 
 def smoke_generate(

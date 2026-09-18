@@ -46,9 +46,15 @@ def filter_candidate(
     revision = candidate.get("revision")
     config = candidate.get("config") if isinstance(candidate.get("config"), dict) else {}
     tags = candidate.get("tags") if isinstance(candidate.get("tags"), list) else []
+    pipeline_tag = candidate.get("pipeline_tag")
+    allowed_pipeline_tags = set(scan_config.get("pipeline_tags") or ["text-generation"])
 
-    if not looks_like_causal_lm(config, candidate.get("pipeline_tag"), tags):
+    if (pipeline_tag and pipeline_tag not in allowed_pipeline_tags) or not looks_like_causal_lm(
+        config, pipeline_tag, tags
+    ):
         reasons.append(FailureCategory.NOT_CAUSAL_LM.value)
+    if _has_unsupported_finetune_format(model_id, config, tags):
+        reasons.append(FailureCategory.UNSUPPORTED_FINETUNE_FORMAT.value)
     if not candidate.get("has_tokenizer"):
         reasons.append(FailureCategory.MISSING_TOKENIZER.value)
     if not candidate.get("has_config"):
@@ -58,6 +64,15 @@ def filter_candidate(
     if scan_config.get("require_safetensors", True) and not candidate.get("has_safetensors"):
         reasons.append(FailureCategory.MISSING_SAFETENSORS.value)
 
+    downloads = _coerce_float(candidate.get("downloads"))
+    min_downloads = _coerce_float(scan_config.get("min_downloads"))
+    if downloads is None or (min_downloads is not None and downloads < min_downloads):
+        reasons.append(FailureCategory.INSUFFICIENT_DOWNLOADS.value)
+    if not candidate.get("chat_template_present"):
+        reasons.append(FailureCategory.MISSING_CHAT_TEMPLATE.value)
+    if _coerce_float(candidate.get("context_length")) is None:
+        reasons.append(FailureCategory.MISSING_CONTEXT_LENGTH.value)
+
     if candidate.get("gated") and not scan_config.get("allow_gated", False):
         reasons.append(FailureCategory.GATED_NO_ACCESS.value)
     if candidate.get("private") and not scan_config.get("allow_gated", False):
@@ -66,17 +81,23 @@ def filter_candidate(
     license_value = _normalize_license(candidate.get("license"))
     allowed = {str(item).lower() for item in scan_config.get("allowed_licenses", [])}
     blocked = {str(item).lower() for item in scan_config.get("blocked_licenses", [])}
-    if license_value in blocked or (license_value and allowed and license_value not in allowed):
+    if license_value is None:
+        reasons.append(FailureCategory.MISSING_LICENSE.value)
+    elif license_value in blocked or (allowed and license_value not in allowed):
         reasons.append(FailureCategory.LICENSE_BLOCKED.value)
 
     params = _coerce_float(candidate.get("estimated_params_billion"))
     max_params = _coerce_float(scan_config.get("max_params_billion"))
-    if params is not None and max_params is not None and params > max_params:
+    if params is None:
+        reasons.append(FailureCategory.MISSING_PARAMETER_COUNT.value)
+    elif max_params is not None and params > max_params:
         reasons.append(FailureCategory.TOO_LARGE_FOR_H100.value)
 
     download_size = _coerce_float(candidate.get("estimated_download_size_gb"))
     max_download = _coerce_float(scan_config.get("max_download_gb"))
-    if download_size is not None and max_download is not None and download_size > max_download:
+    if download_size is None:
+        reasons.append(FailureCategory.MISSING_DOWNLOAD_SIZE.value)
+    elif max_download is not None and download_size > max_download:
         reasons.append(FailureCategory.DOWNLOAD_TOO_LARGE.value)
 
     if revision and (model_id, str(revision)) in (already_tested_revisions or set()):
@@ -101,6 +122,29 @@ def filter_candidate(
         revision=str(revision) if revision else None,
         eligible=not deduped,
         blocking_reasons=deduped,
+    )
+
+
+def _has_unsupported_finetune_format(
+    model_id: str,
+    config: dict[str, Any],
+    tags: list[str],
+) -> bool:
+    searchable = " ".join([model_id, *(str(tag) for tag in tags)]).lower()
+    quantization_config = config.get("quantization_config")
+    quantization_method = ""
+    if isinstance(quantization_config, dict):
+        quantization_method = str(
+            quantization_config.get("quant_method")
+            or quantization_config.get("format")
+            or ""
+        ).lower()
+    return (
+        "mlx" in searchable
+        or "gguf" in searchable
+        or "compressed-tensors" in searchable
+        or "compressed_tensors" in searchable
+        or quantization_method in {"compressed-tensors", "compressed_tensors"}
     )
 
 

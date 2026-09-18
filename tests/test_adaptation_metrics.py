@@ -65,6 +65,8 @@ def test_finetune_unavailable_path_records_typed_result(tmp_path) -> None:
 
     assert result["status"] == "skipped"
     assert (tmp_path / "finetune_config.json").exists()
+    assert (tmp_path / "finetune_plan.json").exists()
+    assert (tmp_path / "model_profiles.json").exists()
     assert (tmp_path / "adaptation_results.json").exists()
     assert (tmp_path / "adapter_eval.json").exists()
     adapter_eval = json.loads((tmp_path / "adapter_eval.json").read_text(encoding="utf-8"))
@@ -105,12 +107,17 @@ def test_finetune_unavailable_dependencies_are_visible_in_trace(
     finished = next(event for event in events if event["event_type"] == "finetune_finished")
     assert result["status"] == "smoke_unavailable"
     assert dependencies["status"] == "failed"
-    assert dependencies["metadata"]["missing_dependencies"] == ["peft", "bitsandbytes"]
+    assert dependencies["metadata"]["missing_dependencies"] == [
+        "peft",
+        "trl",
+        "bitsandbytes",
+        "wandb",
+    ]
     assert finished["status"] == "failed"
     assert finished["metadata"]["training_completed"] is False
 
 
-def test_successful_qlora_training_records_measured_lift(tmp_path, monkeypatch) -> None:
+def test_successful_peft_training_records_measured_lift(tmp_path, monkeypatch) -> None:
     class Serverless:
         gpu_memory_gb = 80
 
@@ -122,14 +129,19 @@ def test_successful_qlora_training_records_measured_lift(tmp_path, monkeypatch) 
         "hf_model_watch.finetune.train_peft._module_available",
         lambda name: True,
     )
+    monkeypatch.setattr(
+        "hf_model_watch.finetune.train_peft._load_profile_tokenizer",
+        lambda model_id, revision: None,
+    )
     calls = []
 
-    def fake_qlora_training(**kwargs):
+    def fake_training_attempt(**kwargs):
         task_type = kwargs["task_type"]
         calls.append(kwargs)
         return {
             "success": True,
-            "message": "QLoRA training completed",
+            "retry_recommended": False,
+            "message": "PEFT training completed",
             "adapter_dir": str(tmp_path / "finetune" / task_type / "adapter"),
             "trainable_params": 10,
             "total_params": 100,
@@ -138,8 +150,8 @@ def test_successful_qlora_training_records_measured_lift(tmp_path, monkeypatch) 
         }
 
     monkeypatch.setattr(
-        "hf_model_watch.finetune.train_peft.run_qlora_training",
-        fake_qlora_training,
+        "hf_model_watch.finetune.train_peft.run_training_attempt_subprocess",
+        fake_training_attempt,
     )
     store = SQLiteStore(tmp_path / "results.sqlite")
     store.initialize()
@@ -165,3 +177,69 @@ def test_successful_qlora_training_records_measured_lift(tmp_path, monkeypatch) 
         "financial_analyst_style",
     }
     assert all(list(call["train_datasets"]) == [call["task_type"]] for call in calls)
+    assert all(call["peft_config"]["target_modules"] == "all-linear" for call in calls)
+
+
+def test_auto_method_retries_once_with_safer_configuration(tmp_path, monkeypatch) -> None:
+    class Serverless:
+        gpu_memory_gb = 80
+        gpu_type = "H100"
+
+    class Config:
+        serverless = Serverless()
+        finetune = {"method": "auto", "max_train_steps": 2}
+
+    monkeypatch.setattr(
+        "hf_model_watch.finetune.train_peft._module_available",
+        lambda name: True,
+    )
+    monkeypatch.setattr(
+        "hf_model_watch.finetune.train_peft._load_profile_tokenizer",
+        lambda model_id, revision: None,
+    )
+    calls = []
+
+    def fake_training_attempt(**kwargs):
+        calls.append(kwargs)
+        task = kwargs["task_type"]
+        if kwargs["attempt_number"] == 1:
+            return {
+                "success": False,
+                "retry_recommended": True,
+                "retry_reason": "cuda_oom",
+                "message": "CUDA out of memory",
+            }
+        return {
+            "success": True,
+            "retry_recommended": False,
+            "message": "QLORA training completed",
+            "adapter_dir": str(tmp_path / "finetune" / task / "adapter"),
+            "trainable_params": 10,
+            "total_params": 100,
+            "base_scores": {task: 0.25},
+            "adapted_scores": {task: 0.75},
+        }
+
+    monkeypatch.setattr(
+        "hf_model_watch.finetune.train_peft.run_training_attempt_subprocess",
+        fake_training_attempt,
+    )
+    store = SQLiteStore(tmp_path / "results.sqlite")
+    store.initialize()
+    store.start_run("run_4", "org/model", "abc123", artifact_uri=str(tmp_path))
+
+    result = run_peft_adaptation_suite(
+        run_id="run_4",
+        model_id="org/model",
+        revision="abc123",
+        run_dir=tmp_path,
+        config=Config(),
+        store=store,
+        metadata={"estimated_params_billion": 1, "context_length": 1024},
+    )
+
+    assert result["status"] == "training_completed"
+    assert len(calls) == 6
+    assert all(calls[index]["peft_config"]["method"] == "lora" for index in (0, 2, 4))
+    assert all(calls[index]["peft_config"]["method"] == "qlora" for index in (1, 3, 5))
+    assert all(calls[index]["peft_config"]["microbatch_size"] <= 2 for index in (1, 3, 5))

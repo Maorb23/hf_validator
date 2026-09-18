@@ -1,0 +1,13 @@
+{
+  "id": "social_scoring",
+  "task": "Score short social-media posts for relevance and urgency with structured output.",
+  "input_tokens": 256,
+  "output_tokens": 64,
+  "scoring": ["label_accuracy", "json_validity", "p95_latency_ms"],
+  "examples": [
+    {
+      "prompt": "Return JSON with urgency high or low for this post: 'The bridge is closed now due to flooding; avoid the area.'",
+      "expected_contains": ["high"]
+    }
+  ]
+}

@@ -17,6 +17,7 @@ from hf_model_watch.orchestration.nebius_jobs import (
     submit_nebius_job,
 )
 from hf_model_watch.reporting.leaderboard import generate_leaderboard_markdown
+from hf_model_watch.reporting.result_sync import sync_s3_results
 from hf_model_watch.storage.schemas import new_run_id
 from hf_model_watch.storage.sqlite_store import SQLiteStore
 from hf_model_watch.tracing import emit_trace_event
@@ -26,8 +27,9 @@ def run_prefect_controller_flow(
     config_dir: str | Path = "config",
     dry_run: bool = False,
     candidates: list[dict[str, Any]] | None = None,
-    submit_job: Any = submit_nebius_job,
-    poll_job: Any = poll_nebius_job,
+    submit_job: Any | None = None,
+    poll_job: Any | None = None,
+    sync_results: Any | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_dir)
     store = SQLiteStore(_db_path(config))
@@ -41,7 +43,11 @@ def run_prefect_controller_flow(
     )
     selected = _select_candidates(config, dry_run, candidates)
     job_config = _job_config_from_app(config, dry_run)
+    submit_function = submit_job or submit_nebius_job
+    poll_function = poll_job or poll_nebius_job
+    sync_function = sync_results or sync_s3_results
     submitted: list[NebiusJobResult] = []
+    sync_summaries: list[dict[str, Any]] = []
     for selection_index, candidate in enumerate(selected, start=1):
         run_id = candidate.get("run_id") or new_run_id()
         selection_metadata = {
@@ -72,9 +78,9 @@ def run_prefect_controller_flow(
             "submitting selected model to Nebius",
             metadata=selection_metadata,
         )
-        result = submit_job(payload, job_config)
+        result = submit_function(payload, job_config)
         submitted.append(result)
-        status = poll_job(result.job_id, job_config)
+        status = poll_function(result.job_id, job_config)
         emit_trace_event(
             "nebius_job_polled",
             "orchestration",
@@ -83,6 +89,8 @@ def run_prefect_controller_flow(
             metadata={"run_id": run_id, "job_id": result.job_id, "status": status},
         )
         _ingest_manifest_reference(config, store, candidate, run_id, result, status)
+        if not dry_run and status.startswith("completed"):
+            sync_summaries.append(_sync_completed_results(config, sync_function))
     leaderboard_path = Path(str(config.storage.get("reports_dir", "reports"))) / "leaderboard.md"
     generate_leaderboard_markdown(_db_path(config), leaderboard_path)
     summary = {
@@ -90,6 +98,7 @@ def run_prefect_controller_flow(
         "selected_candidates": len(selected),
         "submitted_jobs": [result.__dict__ for result in submitted],
         "leaderboard": str(leaderboard_path),
+        "result_sync": sync_summaries,
     }
     emit_trace_event(
         "prefect_flow_completed",
@@ -221,3 +230,30 @@ def _ingest_manifest_reference(
         model_id,
         revision,
     )
+
+
+def _sync_completed_results(config: AppConfig, sync_results: Any) -> dict[str, Any]:
+    storage = config.storage
+    s3 = storage.get("s3") if isinstance(storage.get("s3"), dict) else {}
+    bucket = str(s3.get("bucket") or "")
+    if not bucket:
+        raise ValueError("S3 bucket is required to import a completed Nebius run")
+    leaderboard_path = Path(str(storage.get("reports_dir", "reports"))) / "leaderboard.md"
+    summary = sync_results(
+        bucket=bucket,
+        prefix=_artifact_prefix(config),
+        endpoint_url=s3.get("endpoint_url"),
+        db_path=_db_path(config),
+        cache_dir="outputs/synced-nebius",
+        leaderboard_path=leaderboard_path,
+    )
+    result = summary.as_dict() if hasattr(summary, "as_dict") else dict(summary)
+    emit_trace_event(
+        "nebius_results_ingested",
+        "result_sync",
+        "completed" if not result.get("failed_runs") else "failed",
+        "Nebius S3 results imported into the leaderboard",
+        metrics=result,
+        artifacts={"leaderboard": str(leaderboard_path)},
+    )
+    return result

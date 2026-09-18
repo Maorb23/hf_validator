@@ -146,10 +146,10 @@ def _metric_evidence(current: dict[str, Any], prior: dict[str, Any]) -> list[dic
             higher_is_better=False,
         ),
         _metric_row(
-            "latency_per_1k_output_tokens",
-            current.get("latency_per_1k_output_tokens"),
-            prior.get("latency_per_1k_output_tokens"),
-            higher_is_better=False,
+            "decode_tokens_per_second",
+            current.get("latency_tokens_sec"),
+            prior.get("latency_tokens_sec"),
+            higher_is_better=True,
         ),
         _metric_row(
             "quality_per_1k_tokens",
@@ -181,8 +181,8 @@ def _status_from_metrics(
     quality_delta = _delta(_quality(current), _quality(prior))
     drift_delta = _delta(prior.get("context_drift_score"), current.get("context_drift_score"))
     latency_delta_pct = _pct_delta(
-        prior.get("latency_per_1k_output_tokens"),
-        current.get("latency_per_1k_output_tokens"),
+        current.get("latency_tokens_sec"),
+        prior.get("latency_tokens_sec"),
     )
     token_delta_pct = _pct_delta(
         current.get("quality_per_1k_tokens"),

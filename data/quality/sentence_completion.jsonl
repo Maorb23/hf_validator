@@ -1,0 +1,1 @@
+{"id":"discourse_001","query":"<QUERY OR SENTENCE PREFIX SHOWN TO THE MODEL>","references":["<ACCEPTABLE COMPLETION 1>","<ACCEPTABLE COMPLETION 2>"],"language":"en","domain":"<forum, conversation, news-comment, etc.>","difficulty":"medium","max_new_tokens":64,"source_url":"<SOURCE URL OR original>","license":"<LICENSE OR PERMISSION>","notes":""}

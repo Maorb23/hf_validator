@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from hf_model_watch.evals.metrics import summarize_records
+from hf_model_watch.evals.quality_eval import summarize_quality_records
 from hf_model_watch.reporting.leaderboard import generate_leaderboard_markdown
 from hf_model_watch.storage.schemas import utc_now_iso
 from hf_model_watch.storage.sqlite_store import SQLiteStore
@@ -178,7 +179,11 @@ def parse_run_artifacts(run_dir: str | Path, source_uri: str) -> dict[str, Any]:
             "selected_backend": decision.get("backend"),
             "selected_dtype": decision.get("dtype"),
             "selected_quantization": decision.get("quantization"),
-            "base_score": quality_summary.get("avg_quality_score"),
+            "base_score": (
+                quality_summary.get("math_accuracy")
+                if quality_summary.get("math_accuracy") is not None
+                else quality_summary.get("sentence_embedding_similarity_mean")
+            ),
             "adapted_score": overall.get("adapted_quality_score"),
             "adaptation_lift": overall.get("adaptation_lift"),
         },
@@ -246,10 +251,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]] | None:
 def _quality_summary(records: list[dict[str, Any]] | None) -> dict[str, Any]:
     if records is None:
         return {}
-    summary = summarize_records(records)
-    scores = [float(record.get("quality_score") or 0.0) for record in records]
-    summary["avg_quality_score"] = sum(scores) / max(len(scores), 1)
-    return summary
+    return summarize_quality_records(records)
 
 
 def _latency_summary(records: list[dict[str, Any]] | None) -> dict[str, Any]:

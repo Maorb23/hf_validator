@@ -308,8 +308,10 @@ def _run_phase5_evals(
     if eval_generate_fn is None:
         session = TransformersSession(model_id, revision, decision.get("selected_load_args") or {})
         generate = session.generate
+        reference_score = session.score_completion
     else:
         generate = eval_generate_fn
+        reference_score = None
     backend = str(decision.get("backend") or "transformers")
     latency_path = run_dir / "latency_results.jsonl"
     quality_path = run_dir / "quality_results.jsonl"
@@ -328,7 +330,8 @@ def _run_phase5_evals(
         backend=backend,
         generate_fn=generate,
         output_path=quality_path,
-        dataset_config=_ground_truth_dataset_config(config),
+        dataset_config=_quality_benchmark_config(config),
+        reference_score_fn=reference_score,
     )
     context_records, context_summary = run_context_drift_benchmark(
         model_id=model_id,
@@ -338,7 +341,6 @@ def _run_phase5_evals(
         generate_fn=generate,
         output_path=context_path,
     )
-    quality_summary["avg_quality_score"] = _avg_quality_score(quality_records)
     combined_summary = summarize_records([*latency_records, *quality_records, *context_records])
     store.record_latency_results(run_id, model_id, revision, latency_summary, latency_records)
     store.record_quality_results(run_id, model_id, revision, quality_summary, quality_records)
@@ -349,7 +351,7 @@ def _run_phase5_evals(
     store.complete_run(
         run_id,
         status="completed",
-        base_score=quality_summary["avg_quality_score"],
+        base_score=_primary_quality_score(quality_summary),
         latency_summary=json.dumps(combined_summary, sort_keys=True),
         context_drift_summary=json.dumps(context_summary, sort_keys=True),
     )
@@ -378,9 +380,12 @@ def _update_manifest_eval_artifacts(run_dir: Path, eval_artifacts: dict[str, str
     manifest_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _avg_quality_score(records: list[dict[str, Any]]) -> float:
-    values = [float(record.get("quality_score") or 0.0) for record in records]
-    return sum(values) / max(len(values), 1)
+def _primary_quality_score(summary: dict[str, Any]) -> float | None:
+    math_accuracy = summary.get("math_accuracy")
+    if math_accuracy is not None:
+        return float(math_accuracy)
+    sentence_similarity = summary.get("sentence_embedding_similarity_mean")
+    return float(sentence_similarity) if sentence_similarity is not None else None
 
 
 def _context_max_tokens(config: Any) -> int:
@@ -399,6 +404,14 @@ def _ground_truth_dataset_config(config: Any) -> dict[str, Any]:
         return {}
     dataset_config = eval_tasks.get("ground_truth_dataset", {})
     return dataset_config if isinstance(dataset_config, dict) else {}
+
+
+def _quality_benchmark_config(config: Any) -> dict[str, Any]:
+    eval_tasks = getattr(config, "eval_tasks", {})
+    if not isinstance(eval_tasks, dict):
+        return {}
+    benchmark_config = eval_tasks.get("quality_benchmark", {})
+    return benchmark_config if isinstance(benchmark_config, dict) else {}
 
 
 def _bf16_available() -> bool:

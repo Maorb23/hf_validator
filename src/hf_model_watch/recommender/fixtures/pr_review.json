@@ -1,0 +1,13 @@
+{
+  "id": "pr_review",
+  "task": "Analyze a full pull request and identify correctness and security risks with file references.",
+  "input_tokens": 24000,
+  "output_tokens": 1500,
+  "scoring": ["issue_precision", "file_reference_accuracy", "false_positive_rate"],
+  "examples": [
+    {
+      "prompt": "Review this patch for correctness. File: payments.py. Before: if amount <= balance: debit(amount). After: if amount < balance: debit(amount). Name the affected file and issue.",
+      "expected_contains": ["payments.py", "equal"]
+    }
+  ]
+}

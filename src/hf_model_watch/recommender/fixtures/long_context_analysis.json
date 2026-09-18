@@ -1,0 +1,13 @@
+{
+  "id": "long_context_analysis",
+  "task": "Synthesize a long document set and cite supporting passages.",
+  "input_tokens": 64000,
+  "output_tokens": 1200,
+  "scoring": ["groundedness", "citation_accuracy", "context_recall"],
+  "examples": [
+    {
+      "prompt": "Document A: The launch moved to Friday. Document B: Friday's launch requires final approval. When is the launch planned? Cite the source.",
+      "expected_contains": ["Friday", "Document A"]
+    }
+  ]
+}

@@ -19,6 +19,12 @@ LEADERBOARD_COLUMNS = [
     "eligibility_status",
     "selected_backend",
     "base_quality_score",
+    "math_accuracy",
+    "math_answer_latency_median_ms",
+    "math_answer_latency_p95_ms",
+    "sentence_embedding_similarity_mean",
+    "sentence_embedding_similarity_p10",
+    "sentence_reference_bits_per_byte_mean",
     "adapted_quality_score",
     "adaptation_lift",
     "normalized_adaptation_lift",
@@ -38,10 +44,6 @@ LEADERBOARD_COLUMNS = [
     "quality_per_1k_tokens",
     "cost_per_successful_task",
     "tokens_per_successful_task",
-    "ttft_per_1k_input_tokens",
-    "latency_per_1k_input_tokens",
-    "latency_per_1k_output_tokens",
-    "decode_latency_per_1k_output_tokens",
     "adaptation_lift_per_1M_training_tokens",
     "normalized_lift_per_1M_training_tokens",
     "usage_source_summary",
@@ -130,6 +132,12 @@ def render_run_reports(run: dict[str, Any], reports_dir: str | Path) -> dict[str
 def _build_row(run: dict[str, Any]) -> dict[str, Any]:
     latency = _loads(run.get("latency_summary"), {})
     context = _loads(run.get("context_drift_summary"), {})
+    quality_payload = _payload(run.get("quality_results"))
+    quality = (
+        quality_payload.get("summary", {})
+        if isinstance(quality_payload, dict)
+        else {}
+    )
     adaptation = _adaptation_payload(run)
     overall = adaptation.get("overall") if isinstance(adaptation.get("overall"), dict) else {}
     if not overall:
@@ -154,11 +162,22 @@ def _build_row(run: dict[str, Any]) -> dict[str, Any]:
         "eligibility_status": _eligibility_status(run),
         "selected_backend": run.get("selected_backend"),
         "base_quality_score": run.get("base_score"),
+        "math_accuracy": quality.get("math_accuracy"),
+        "math_answer_latency_median_ms": quality.get("math_answer_latency_median_ms"),
+        "math_answer_latency_p95_ms": quality.get("math_answer_latency_p95_ms"),
+        "sentence_embedding_similarity_mean": quality.get(
+            "sentence_embedding_similarity_mean"
+        ),
+        "sentence_embedding_similarity_p10": quality.get(
+            "sentence_embedding_similarity_p10"
+        ),
+        "sentence_reference_bits_per_byte_mean": quality.get(
+            "sentence_reference_bits_per_byte_mean"
+        ),
         "adapted_quality_score": run.get("adapted_score"),
         "adaptation_lift": run.get("adaptation_lift"),
         "normalized_adaptation_lift": overall.get("normalized_adaptation_lift"),
-        "latency_tokens_sec": latency.get("avg_decode_tokens_per_second")
-        or _tokens_per_second(latency),
+        "latency_tokens_sec": latency.get("avg_decode_tokens_per_second"),
         "ttft_ms": latency.get("avg_ttft_ms"),
         "context_drift_score": context.get("drift_score"),
         "peak_vram": latency.get("peak_vram") or latency.get("gpu_peak_memory"),
@@ -174,12 +193,6 @@ def _build_row(run: dict[str, Any]) -> dict[str, Any]:
         "quality_per_1k_tokens": quality_per_1k,
         "cost_per_successful_task": _safe_div(total_cost, successful_task_count),
         "tokens_per_successful_task": _safe_div(total_tokens, successful_task_count),
-        "ttft_per_1k_input_tokens": latency.get("avg_ttft_per_1k_input_tokens"),
-        "latency_per_1k_input_tokens": latency.get("avg_latency_per_1k_input_tokens"),
-        "latency_per_1k_output_tokens": latency.get("avg_latency_per_1k_output_tokens"),
-        "decode_latency_per_1k_output_tokens": latency.get(
-            "avg_decode_latency_per_1k_output_tokens"
-        ),
         "adaptation_lift_per_1M_training_tokens": overall.get(
             "adaptation_lift_per_1M_training_tokens"
         ),
@@ -231,15 +244,16 @@ def _run_report_sections(run: dict[str, Any], row: dict[str, Any]) -> list[tuple
             ),
         ),
         (
-            "Token-Normalized Latency",
+            "Performance",
             bullet_list(
                 {
-                    "TTFT per 1k input tokens": row.get("ttft_per_1k_input_tokens"),
-                    "Total latency per 1k input tokens": row.get("latency_per_1k_input_tokens"),
-                    "Total latency per 1k output tokens": row.get("latency_per_1k_output_tokens"),
-                    "Decode latency per 1k output tokens": row.get(
-                        "decode_latency_per_1k_output_tokens"
-                    ),
+                    "Average total latency (ms)": _loads(
+                        run.get("latency_summary"), {}
+                    ).get("avg_total_latency_ms"),
+                    "Average decode latency (ms)": _loads(
+                        run.get("latency_summary"), {}
+                    ).get("avg_decode_latency_ms"),
+                    "Average TTFT (ms)": row.get("ttft_ms"),
                     "Decode tokens/sec": row.get("latency_tokens_sec"),
                 }
             ),
@@ -403,14 +417,6 @@ def _safe_div(numerator: Any, denominator: Any) -> float | None:
     if numerator is None or denominator is None:
         return None
     return float(numerator) / max(int(denominator), 1)
-
-
-def _tokens_per_second(latency: dict[str, Any]) -> float | None:
-    output_tokens = latency.get("total_completion_tokens")
-    decode_ms = latency.get("avg_decode_latency_per_1k_output_tokens")
-    if output_tokens is None or decode_ms is None:
-        return None
-    return 1000 / max(float(decode_ms), 1e-6)
 
 
 def _eligibility_status(run: dict[str, Any]) -> str:

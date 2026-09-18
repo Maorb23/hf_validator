@@ -369,7 +369,9 @@ class SQLiteStore:
                     run_id,
                     model_id,
                     revision,
-                    summary.get("avg_quality_score"),
+                    summary.get("math_accuracy")
+                    if summary.get("math_accuracy") is not None
+                    else summary.get("sentence_embedding_similarity_mean"),
                     _json({"summary": summary, "records": records}),
                     utc_now_iso(),
                 ),
@@ -871,7 +873,9 @@ class SQLiteStore:
                 """,
                 (
                     *identity,
-                    quality_summary.get("avg_quality_score"),
+                    quality_summary.get("math_accuracy")
+                    if quality_summary.get("math_accuracy") is not None
+                    else quality_summary.get("sentence_embedding_similarity_mean"),
                     _json({"summary": quality_summary, "records": quality_records}),
                     created_at,
                 ),

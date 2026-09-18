@@ -39,15 +39,23 @@ def test_latency_metrics_calculation(tmp_path) -> None:
 
     first = records[0]
     assert first["usage_source"] == "estimated"
-    assert first["ttft_per_1k_input_tokens"] == 0
-    assert first["latency_per_1k_input_tokens"] == 20_000
-    assert first["latency_per_1k_output_tokens"] == 40_000
-    assert first["decode_latency_per_1k_output_tokens"] == 40_000
+    assert first["decode_latency_ms"] == 200
+    assert first["decode_tokens_per_second"] == 25
+    for removed in (
+        "decode_latency_per_1k_output_tokens",
+        "latency_per_1k_input_tokens",
+        "latency_per_1k_output_tokens",
+        "ms_per_output_token",
+        "ttft_per_1k_input_tokens",
+        "ttft_per_input_token",
+    ):
+        assert removed not in first
     assert first["ttft_measured"] is False
     assert first["prompt_text"]
     assert first["generated_text"]
     assert "expected" in first
     assert summary["successful_task_count"] == len(records)
+    assert summary["avg_decode_tokens_per_second"] == 25
 
 
 def test_latency_records_generation_failure_category(tmp_path) -> None:

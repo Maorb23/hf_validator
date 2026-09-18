@@ -2,14 +2,21 @@ ground_truth_dataset:
   name: openai/gsm8k
   config_name: main
   split: test
-  quality:
-    start: 0
-    count: 5
-    max_new_tokens: 256
   latency:
     start: 5
     count: 3
     max_new_tokens: 128
+quality_benchmark:
+  math:
+    enabled: false
+    dataset_path: data/quality/math.jsonl
+  sentence_completion:
+    enabled: false
+    dataset_path: data/quality/sentence_completion.jsonl
+    embedding_model: Qwen/Qwen3-Embedding-0.6B
+    embedding_revision: null
+    embedding_instruction: >-
+      Given a sentence completion, retrieve semantically equivalent acceptable completions.
 latency:
   warmup_requests: 1
   measured_requests: 3

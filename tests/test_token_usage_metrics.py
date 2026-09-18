@@ -50,8 +50,14 @@ def test_quality_per_1k_tokens() -> None:
     )
 
     assert record["decode_latency_ms"] == 100
-    assert record["ttft_per_1k_input_tokens"] == 625
-    assert record["latency_per_1k_input_tokens"] == 1875
-    assert record["latency_per_1k_output_tokens"] == 7500
-    assert record["decode_latency_per_1k_output_tokens"] == 5000
+    assert record["decode_tokens_per_second"] == 200
+    for removed in (
+        "decode_latency_per_1k_output_tokens",
+        "latency_per_1k_input_tokens",
+        "latency_per_1k_output_tokens",
+        "ms_per_output_token",
+        "ttft_per_1k_input_tokens",
+        "ttft_per_input_token",
+    ):
+        assert removed not in record
     assert record["quality_per_1k_tokens"] == 5

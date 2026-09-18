@@ -56,7 +56,8 @@ def scan_models(
             if is_new and allowed_pipeline and recent_enough:
                 seen.add(model_id)
                 records.append(candidate)
-        _enrich_small_json_metadata(records, scan_config)
+        _enrich_candidate_metadata(records, scan_config, client)
+        _apply_context_fallback(records, scan_config)
     except Exception as exc:  # network/API failures are surfaced as trace events and empty JSONL.
         emit_trace_event(
             "scan_failed",
@@ -108,9 +109,13 @@ def _candidate_from_model_info(model_info: Any) -> dict[str, Any]:
     config = getattr(info, "config", None) or {}
     if not isinstance(config, dict):
         config = {}
-    tokenizer_config: dict[str, Any] = {}
+    embedded_tokenizer_config = config.get("tokenizer_config")
+    tokenizer_config = (
+        embedded_tokenizer_config if isinstance(embedded_tokenizer_config, dict) else {}
+    )
     card_data = getattr(info, "cardData", None) or getattr(info, "card_data", None)
     pipeline_tag = getattr(info, "pipeline_tag", None) or getattr(info, "pipelineTag", None)
+    context_length = extract_context_length(config, tags)
 
     return {
         "model_id": model_id,
@@ -131,34 +136,106 @@ def _candidate_from_model_info(model_info: Any) -> dict[str, Any]:
         "has_tokenizer": has_tokenizer_file(files),
         "has_config": has_config_file(files),
         "has_weights": has_weight_file(files),
-        "estimated_params_billion": estimate_params_billion(config, tags, model_id),
+        "estimated_params_billion": _safetensors_params_billion(info)
+        or estimate_params_billion(config, tags, model_id),
         "estimated_download_size_gb": estimate_download_size_gb(siblings),
         "architecture": extract_architectures(config),
-        "context_length": extract_context_length(config, tags),
-        "chat_template_present": tokenizer_has_chat_template(tokenizer_config),
+        "context_length": context_length,
+        "context_length_source": "metadata" if context_length is not None else None,
+        "chat_template_present": _has_chat_template(tokenizer_config, config, files),
         "model_card_present": bool(card_data),
     }
 
 
-def _enrich_small_json_metadata(records: list[dict[str, Any]], scan_config: dict[str, Any]) -> None:
-    limit = int(scan_config.get("max_candidates_to_run", 5))
-    for candidate in records[: max(limit, 1)]:
+def _enrich_candidate_metadata(
+    records: list[dict[str, Any]],
+    scan_config: dict[str, Any],
+    client: HfApi,
+    *,
+    require_license: bool = True,
+) -> None:
+    candidate_count = int(scan_config.get("max_candidates_to_run", 5))
+    min_downloads = int(scan_config.get("min_downloads", 0))
+    pool = [
+        candidate
+        for candidate in records
+        if int(candidate.get("downloads") or 0) >= min_downloads
+        and (candidate.get("license") or not require_license)
+    ]
+    for candidate in pool[: max(candidate_count * 4, 1)]:
         model_id = str(candidate.get("model_id"))
-        if not candidate.get("config"):
-            candidate["config"] = _download_optional_json(model_id, "config.json")
-            candidate["architecture"] = extract_architectures(candidate["config"])
-            candidate["context_length"] = extract_context_length(
-                candidate["config"], candidate.get("tags") or []
+        revision = str(candidate.get("revision") or "") or None
+        try:
+            detailed_info = client.model_info(
+                model_id,
+                revision=revision,
+                files_metadata=True,
             )
-        tokenizer_config = _download_optional_json(model_id, "tokenizer_config.json")
+        except Exception:
+            detailed_info = None
+        if detailed_info is not None:
+            siblings = getattr(detailed_info, "siblings", None) or []
+            files = sibling_names(siblings)
+            candidate["sibling_files"] = files
+            candidate["estimated_download_size_gb"] = estimate_download_size_gb(siblings)
+            candidate["estimated_params_billion"] = (
+                _safetensors_params_billion(detailed_info)
+                or candidate.get("estimated_params_billion")
+            )
+
+        downloaded_config = _download_optional_json(model_id, "config.json", revision)
+        if downloaded_config:
+            existing_config = candidate.get("config")
+            candidate["config"] = {
+                **(existing_config if isinstance(existing_config, dict) else {}),
+                **downloaded_config,
+            }
+        config = candidate.get("config") if isinstance(candidate.get("config"), dict) else {}
+        candidate["architecture"] = extract_architectures(config)
+        context_length = extract_context_length(config, candidate.get("tags") or [])
+        candidate["context_length"] = context_length
+        candidate["context_length_source"] = (
+            "metadata" if context_length is not None else None
+        )
+        candidate["estimated_params_billion"] = candidate.get(
+            "estimated_params_billion"
+        ) or estimate_params_billion(config, candidate.get("tags") or [], model_id)
+
+        tokenizer_config = _download_optional_json(model_id, "tokenizer_config.json", revision)
         if tokenizer_config:
             candidate["tokenizer_config"] = tokenizer_config
-            candidate["chat_template_present"] = tokenizer_has_chat_template(tokenizer_config)
+        candidate["chat_template_present"] = _has_chat_template(
+            candidate.get("tokenizer_config")
+            if isinstance(candidate.get("tokenizer_config"), dict)
+            else {},
+            config,
+            candidate.get("sibling_files") or [],
+        )
 
 
-def _download_optional_json(model_id: str, filename: str) -> dict[str, Any]:
+def _apply_context_fallback(
+    records: list[dict[str, Any]],
+    scan_config: dict[str, Any],
+) -> None:
+    fallback = int(scan_config.get("fallback_context_length", 2048))
+    for candidate in records:
+        if candidate.get("context_length") is None:
+            candidate["context_length"] = fallback
+            candidate["context_length_source"] = "fallback"
+
+
+def _download_optional_json(
+    model_id: str,
+    filename: str,
+    revision: str | None = None,
+) -> dict[str, Any]:
     try:
-        path = hf_hub_download(repo_id=model_id, filename=filename, local_files_only=False)
+        path = hf_hub_download(
+            repo_id=model_id,
+            filename=filename,
+            revision=revision,
+            local_files_only=False,
+        )
     except Exception:
         return {}
     try:
@@ -167,11 +244,36 @@ def _download_optional_json(model_id: str, filename: str) -> dict[str, Any]:
         return {}
 
 
+def _safetensors_params_billion(model_info: Any) -> float | None:
+    safetensors = getattr(model_info, "safetensors", None)
+    total = getattr(safetensors, "total", None)
+    if isinstance(safetensors, dict):
+        total = total or safetensors.get("total")
+    if isinstance(total, int | float) and total > 0:
+        return round(float(total) / 1_000_000_000, 3)
+    return None
+
+
+def _has_chat_template(
+    tokenizer_config: dict[str, Any],
+    config: dict[str, Any],
+    files: list[str],
+) -> bool:
+    return (
+        tokenizer_has_chat_template(tokenizer_config)
+        or bool(config.get("chat_template") or config.get("chat_template_jinja"))
+        or any(Path(file_name).name == "chat_template.jinja" for file_name in files)
+    )
+
+
 def _pipeline_allowed(candidate: dict[str, Any], scan_config: dict[str, Any]) -> bool:
     allowed = set(scan_config.get("pipeline_tags") or ["text-generation"])
     pipeline_tag = candidate.get("pipeline_tag")
-    if pipeline_tag in allowed:
-        return True
+    # An explicit Hub pipeline tag is authoritative. Multimodal repositories often
+    # also carry a generic text-generation tag, but that does not make their model
+    # class compatible with this text-only worker.
+    if pipeline_tag:
+        return pipeline_tag in allowed
     tags = set(candidate.get("tags") or [])
     return bool(allowed & tags)
 

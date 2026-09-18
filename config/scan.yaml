@@ -1,6 +1,8 @@
 lookback_days: 2
 max_models_to_scan: 200
 max_candidates_to_run: 5
+min_downloads: 50
+fallback_context_length: 2048
 pipeline_tags:
   - text-generation
 max_params_billion: 30

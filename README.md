@@ -1,88 +1,270 @@
 # hf-model-watch
 
-`hf-model-watch` is a Python 3.11+ pipeline for discovering, filtering, testing,
-adapting, comparing, and reporting on Hugging Face text-generation/chat causal
-language models. It is built for local development first, then Nebius serverless GPU
-worker execution with S3-compatible artifact storage.
+`hf-model-watch` is a Python pipeline for discovering, filtering, evaluating, adapting, and
+comparing Hugging Face causal language models. It supports lightweight local validation and a
+remote execution path built around Nebius GPU jobs, Prefect orchestration, SQLite, and
+S3-compatible artifact storage.
 
-The project favors evidence over claims: reports and comparisons use metrics stored in
-the local results database and artifacts, not model-card promises.
+The project favors observed evidence over model-card claims. Runtime metadata, generated
+outputs, latency, quality checks, context behavior, PEFT results, failures, and reproducibility
+details are stored as artifacts and database records that can be inspected after each run.
 
-## Architecture
+> **Project status:** experimental. The included evaluations and fine-tuning defaults are
+> designed for model intake and smoke testing, not for safety certification or production
+> benchmark claims. Review model licenses, dataset licenses, generated outputs, and cloud costs
+> before running untrusted or large models.
 
-The pipeline is split into small stages:
+## What it does
 
-1. Hugging Face scan writes candidate metadata to JSONL.
-2. Candidate filters block unsupported, gated, unsafe, oversized, or already-tested models.
-3. Scoring ranks eligible candidates.
-4. Local or worker runs resolve runtime backend, verify metadata claims, generate outputs,
-   run latency/quality/context checks, and optionally run PEFT adaptation smoke tests.
-5. SQLite stores runs, failures, artifacts, metrics, adaptation results, and comparisons.
-6. Reporting creates Markdown/HTML leaderboards, per-run reports, and comparison reports.
-7. Worker jobs run the same pipeline in `/workspace/output/<run_id>/` and upload artifacts
-   to S3-compatible storage when configured.
-8. The controller flow selects candidates, submits Nebius jobs, polls them, ingests manifest
-   references, and regenerates reports.
+- Discovers recently updated Hugging Face text-generation models.
+- Blocks gated, unsupported, oversized, unsafe, or policy-incompatible candidates.
+- Scores and ranks eligible candidates using configurable heuristics.
+- Resolves a Transformers or optional vLLM runtime from observed capabilities.
+- Measures latency, basic task quality, and context behavior.
+- Runs independent LoRA or QLoRA adaptations for JSON extraction, text-to-SQL, and financial
+  analyst-style tasks.
+- Records typed failures instead of silently dropping unsuccessful models.
+- Produces Markdown and HTML leaderboards, run reports, and model comparisons.
+- Runs locally or through Prefect-managed Nebius jobs with optional S3-compatible storage.
 
-Every CLI/job stage emits `TRACE_EVENT` JSON lines. Model-level failures are recorded with a
-typed category; infrastructure failures may exit nonzero.
+## Requirements
 
-## Local Setup
+- Python 3.11 or newer.
+- [`uv`](https://docs.astral.sh/uv/) for dependency and environment management.
+- Network access for Hugging Face scanning, model downloads, and configured remote services.
+- Enough disk and memory for the selected model.
+- Linux and an NVIDIA CUDA GPU for the checked-in QLoRA/automatic fine-tuning path.
+
+A CPU is sufficient for the tiny-model smoke run shown below. Real fine-tuning requires the
+optional fine-tuning dependencies and compatible GPU drivers. Sentence-completion semantic
+scoring requires the `quality` extra.
+
+## Quick start
+
+From a local checkout:
 
 ```bash
 uv sync
-uv run ruff check .
-uv run pytest
+cp .env.example .env
 uv run hf-watch --help
 ```
 
-On Windows, set a project-local uv cache to avoid user-profile cache issues:
+To run the custom sentence-completion benchmark, install its embedding dependency:
 
-```powershell
-$env:UV_CACHE_DIR=(Resolve-Path .).Path + '\.uv-cache'
+```bash
+uv sync --extra quality
 ```
 
-## Scanner And Scoring
+Run the test suite and linter:
+
+```bash
+uv run pytest
+uv run ruff check .
+```
+
+Run a small local model without fine-tuning:
+
+```bash
+uv run hf-watch run-local \
+  --model-id sshleifer/tiny-gpt2 \
+  --config-dir config \
+  --skip-finetune
+```
+
+This downloads a Hugging Face model and writes a new run under `artifacts/`. It does not submit
+a Nebius job or upload artifacts.
+
+## Typical workflow
+
+### 1. Discover candidates
 
 ```bash
 uv run hf-watch scan --config config/scan.yaml
 uv run hf-watch score-candidates --input artifacts/scan/latest_models.jsonl
 ```
 
-Scanner output:
+Outputs:
 
 ```text
 artifacts/scan/latest_models.jsonl
 artifacts/scan/scored_candidates.jsonl
 ```
 
-## Local Tiny Model Run
+The scanner is controlled by `config/scan.yaml`. Review its license allowlist, model-size cap,
+gated-model policy, `trust_remote_code` policy, and download-size cap before scanning.
+
+### 2. Validate one model locally
 
 ```bash
-uv run hf-watch run-local --model-id sshleifer/tiny-gpt2 --config-dir config --skip-finetune
+uv run hf-watch run-local \
+  --model-id <hugging-face-model-id> \
+  --config-dir config \
+  --skip-finetune
 ```
 
-Expected artifacts:
+Remove `--skip-finetune` only after installing the fine-tuning dependencies and reviewing the
+fine-tuning configuration. Use `--finetune-smoke-only` to perform a single-step PEFT capability
+check instead of the configured training run.
+
+### 3. Generate reports
+
+```bash
+uv run hf-watch leaderboard \
+  --db results/hf_model_watch.sqlite \
+  --out reports/leaderboard.md
+
+uv run hf-watch compare \
+  --model-id <hugging-face-model-id> \
+  --db results/hf_model_watch.sqlite
+```
+
+Comparisons use previously recorded runs in the SQLite database; they do not rerun a model.
+
+## Command reference
+
+| Command | Purpose |
+| --- | --- |
+| `scan` | Discover Hugging Face candidates and write scan metadata. |
+| `lookup` | Fetch exact model metadata or search a model family without downloading weights. |
+| `score-candidates` | Score a candidate JSONL file and write ranked candidates. |
+| `run-local` | Run metadata checks, inference evaluations, and optional PEFT adaptation. |
+| `worker` | Execute a model job from a JSON payload and optionally upload its artifacts. |
+| `leaderboard` | Build a Markdown leaderboard from the SQLite database. |
+| `compare` | Generate a report comparing recorded runs for one model. |
+| `ingest-results` | Import downloaded run directories into SQLite and rebuild reports. |
+| `sync-nebius-results` | Download reporting artifacts from configured S3 storage and import them. |
+| `prefect-flow` | Select candidates and orchestrate Nebius worker jobs. |
+| `prefect-sync-results` | Run result synchronization through the Prefect flow. |
+
+Use `uv run hf-watch <command> --help` for command-specific options.
+
+Examples: `hf-watch lookup --model-id Qwen/Qwen3-4B`, `hf-watch lookup --family qwen3`,
+or `hf-watch lookup --query qween3 --fuzzy`. Lookup records include the exact model ID,
+revision, and `lookup_match` evidence; use the returned exact ID for later validation.
+
+## Configuration
+
+The CLI loads YAML files from `config/`:
+
+| File | Controls |
+| --- | --- |
+| `config/scan.yaml` | Discovery limits, licenses, gating, size limits, and remote-code policy. |
+| `config/scoring.yaml` | Candidate ranking weights and scoring behavior. |
+| `config/eval_tasks.yaml` | Latency, quality, and context evaluation prompts. |
+| `config/finetune.yaml` | Datasets, LoRA/QLoRA policy, batching, evaluation, and W&B settings. |
+| `config/serverless.yaml` | Nebius image, GPU platform, job limits, and concurrency. |
+| `config/storage.yaml` | Local artifacts, SQLite, reports, and S3-compatible storage. |
+
+Copy `.env.example` to `.env` for environment-based overrides and credentials. Do not commit
+tokens, cloud keys, private keys, base64-encoded service-account material, or populated payloads.
+
+Common environment variables include:
 
 ```text
-artifacts/<run_id>/run_manifest.json
-artifacts/<run_id>/metadata/claims_vs_observed.json
-artifacts/<run_id>/runtime_result.json
-artifacts/<run_id>/raw_generations.jsonl
-artifacts/<run_id>/latency_results.jsonl
-artifacts/<run_id>/quality_results.jsonl
-artifacts/<run_id>/context_drift_results.jsonl
-artifacts/<run_id>/trace_events.jsonl
+HF_TOKEN
+HF_HOME
+HF_MODEL_WATCH_ALLOW_GATED
+HF_MODEL_WATCH_ALLOW_TRUST_REMOTE_CODE
+HF_MODEL_WATCH_MAX_MODELS_TO_SCAN
+HF_MODEL_WATCH_MAX_CANDIDATES_TO_RUN
+HF_MODEL_WATCH_MAX_PARAMS_BILLION
+HF_MODEL_WATCH_STORAGE_URI
+WANDB_API_KEY
+WANDB_PROJECT
 ```
 
-Each run manifest includes model id, revision, config snapshot, package versions, CUDA
-availability, GPU name when available, selected backend/dtype/quantization, random seed,
-and artifact paths.
+`trust_remote_code` and gated-model access are disabled by default. Enable either only after
+reviewing the model repository and its license.
 
-## PEFT Adaptation
+### Custom quality benchmark
 
-Default fine-tune config lives in `config/finetune.yaml`. The checked-in configuration uses
-Hugging Face datasets. Each task can instead use a fixture, local JSONL file, or be disabled:
+The checked-in quality tasks are disabled until you replace the placeholder JSONL rows:
+
+- `data/quality/math.jsonl` contains math questions and canonical final answers.
+- `data/quality/sentence_completion.jsonl` contains online-discourse queries and two or more
+  acceptable completions.
+- `data/quality/README.md` documents every field and the source, licensing, privacy, and
+  decontamination checks to perform before enabling the tasks.
+
+After filling the files, set `quality_benchmark.math.enabled` and
+`quality_benchmark.sentence_completion.enabled` to `true` in `config/eval_tasks.yaml`.
+Math reports exact/tolerance-aware accuracy plus mean, median, p90, and p95 answer latency.
+Sentence completion reports the maximum cosine similarity against acceptable references using
+`Qwen/Qwen3-Embedding-0.6B` by default. It also teacher-forces each reference through the
+evaluated model and reports cross-entropy, perplexity, negative log-likelihood, and
+tokenizer-normalized bits per UTF-8 byte; lower loss values are better.
+
+The embedding model and revision are configurable. Pin `embedding_revision` for reproducible
+published results. Keep benchmark rows out of fine-tuning data and retain source/license
+metadata for externally collected discourse.
+
+Latency output intentionally keeps raw total latency, decode latency, TTFT, and decode
+tokens/second. It does not emit per-input-token or per-output-token latency ratios, because
+those ratios can be misleading across prompts and generation lengths.
+
+## Run artifacts
+
+A normal local run writes files similar to:
+
+```text
+artifacts/<run_id>/
+├── run_manifest.json
+├── metadata/claims_vs_observed.json
+├── runtime_result.json
+├── raw_generations.jsonl
+├── latency_results.jsonl
+├── quality_results.jsonl
+├── context_drift_results.jsonl
+├── trace_events.jsonl
+├── finetune_config.json
+├── finetune_plan.json
+├── model_profiles.json
+├── adaptation_results.json
+├── adapter_eval.json
+└── finetune/<task>/
+```
+
+Fine-tuning files are still written when adaptation is skipped or unavailable so that the
+recorded status remains explicit. Successful task runs also write adapter directories and
+per-attempt logs/results.
+
+The run manifest captures the model revision, configuration snapshot, package versions, CUDA
+availability, observed GPU, backend, dtype, quantization, seed, and artifact references.
+
+The default application database is:
+
+```text
+results/hf_model_watch.sqlite
+```
+
+Every CLI and job stage emits machine-readable lines prefixed with `TRACE_EVENT `. Model-level
+failures are stored with typed failure categories; infrastructure failures may exit nonzero.
+
+## PEFT adaptation
+
+Install the optional dependencies before using LoRA or QLoRA:
+
+```bash
+uv sync --extra finetune
+```
+
+The default `method: auto` policy selects BF16 LoRA when its conservative memory estimate fits
+the configured GPU budget and otherwise selects NF4 QLoRA. Dataset and model profiles influence
+sequence length, microbatch size, gradient accumulation, rank, dropout, and learning rate.
+Resolved values and their reasons are stored in `finetune_config.json`.
+
+The checked-in configuration runs one independent adapter per task:
+
+| Task | Default dataset | Train cap | Evaluation cap |
+| --- | --- | ---: | ---: |
+| JSON extraction | `paraloq/json_data_extraction` | 500 | 100 |
+| Text-to-SQL | `b-mc2/sql-create-context` | 500 | 100 |
+| Financial analyst style | `bevaya/FinQA` | 500 | 100 |
+
+These are cost-conscious smoke defaults, not statistically justified training sizes. Dataset
+sources may be changed to `fixture`, `huggingface`, `local_jsonl`, or `disabled`.
+
+Example dataset configuration:
 
 ```yaml
 datasets:
@@ -91,119 +273,82 @@ datasets:
     hf_dataset_name: org/dataset
     train_split: train
     eval_split: validation
+    max_train_examples: 500
+    max_eval_examples: 100
     column_mapping:
       prompt_column: prompt
       completion_column: completion
+      schema_column: schema
 ```
 
-Supported dataset sources are `fixture`, `huggingface`, `local_jsonl`, and `disabled`.
-`financial_analyst_style` is the canonical finance task name; `finance_analysis` remains
-accepted as a backward-compatible alias.
+For local JSONL data, set `source: local_jsonl`, `local_jsonl_path`, and optionally
+`local_eval_jsonl_path`. The financial task's legacy name, `finance_analysis`, remains accepted
+as an alias for `financial_analyst_style`.
 
-`peft` is optional. Without it, smoke-only runs record a typed unavailable result instead of
-claiming adaptation happened.
+### JSON extraction evaluation
 
-## Finetune workflow
+JSON evaluation budgets are based on tokenizer tokens rather than whitespace-delimited words.
+The defaults reserve at least 32 new tokens, target twice the expected token length, and cap the
+generation at 256 tokens. The scorer extracts the first complete JSON object or array and
+compares the parsed value with the expected value, so key order does not affect exact-match
+accuracy.
 
-Run fine-tuning from the repository root with:
+These settings are configurable in `config/finetune.yaml`:
 
-```bash
-uv run hf-watch run-local --model-id <huggingface-model-id> --config-dir config
+```yaml
+json_eval_generation_token_multiplier: 2.0
+json_eval_min_new_tokens: 32
+json_eval_max_new_tokens: 256
 ```
 
-`--config-dir config` is resolved relative to the current working directory. When the command
-is run from the repository root, `load_config()` reads `config/finetune.yaml` and stores its
-parsed contents in `config.finetune`. The training code therefore does not construct a path to
-the config directory when it accesses the dataset configuration:
+A completed optimizer run is not proof of useful adaptation. Inspect `base_scores`,
+`adapted_scores`, losses, evaluation history, and attempt logs before accepting an adapter.
 
-```text
-config/finetune.yaml
-  -> load_config(config_dir)
-  -> config.finetune
-  -> config.finetune["datasets"]
-  -> load_all_adaptation_datasets(...)
-```
+### Monitoring and retries
 
-The local execution path is:
+W&B monitoring is enabled by default. Set `wandb_enabled: false` when W&B is not configured or
+an untracked run is required. Each task and fallback attempt gets a separate W&B run.
 
-```text
-hf-watch run-local
-  -> cli.run_local()
-  -> run_peft_adaptation_suite()
-  -> resolve_peft_config(finetune_config=config.finetune)
-  -> load_all_adaptation_datasets(...)
-  -> run_qlora_training()
-  -> LoraConfig + get_peft_model()
-  -> custom PyTorch optimizer loop
-```
+Training executes in a child process so a failed attempt releases its CUDA context. Automatic
+LoRA may retry once as QLoRA; automatic batch sizing may retry with a smaller microbatch after
+an OOM or memory-threshold failure. Explicit method and batch choices are not silently changed.
 
-Remote model workers invoke `hf-watch worker --payload-json ...` and reach the same adaptation
-suite. A worker payload may override values from `config/finetune.yaml` through its `finetune`
-mapping.
+## Dry runs
 
-The current configuration starts one independent QLoRA run per task and saves a separate
-adapter for each task; it does not combine all three datasets into one multi-task adapter:
-
-| Task | Dataset | Train rows | Evaluation rows | Reason for the cap |
-| --- | --- | ---: | ---: | --- |
-| JSON extraction | `paraloq/json_data_extraction` | 384 | 100 | Small adaptation subset with a following non-overlapping evaluation slice. |
-| Text-to-SQL | `b-mc2/sql-create-context` | 500 | 100 | Slightly larger subset for the more complex structured-generation task. |
-| Financial analyst style | `bevaya/FinQA` | 500 | 100 | Caps the larger dataset and official test split to limit GPU runtime and cost. |
-
-These sizes are smoke/validation-oriented defaults. They were not derived from a documented
-statistical calculation or tuning experiment and are not intended as production-optimal sample
-sizes.
-
-Top-level LoRA and training parameters are selected in `config/finetune.yaml`, then normalized
-by `resolve_peft_config()`. The resolved values are passed to `LoraConfig`, the optimizer, and
-the scheduler. The current defaults include QLoRA, rank 16, alpha 32, dropout 0.05, learning
-rate `2e-4`, 20 optimizer steps, cosine scheduling, gradient checkpointing, and seed 42.
-
-Current implementation constraints:
-
-- The caller passes `quantization_mode="4bit"`, which forces QLoRA even if the YAML method is
-  changed to regular LoRA.
-- Micro-batch size is hardcoded to 1. Gradient accumulation and effective batch size are
-  selected from the estimated model size rather than read from YAML.
-- Maximum sequence length is capped at 2048 tokens.
-- `eval_steps` and `save_strategy` are currently unused; evaluation happens before and after
-  training, and each adapter is saved once at the end.
-- The 4-bit quantization type and compute dtype are resolved in code; changing their YAML values
-  currently has no effect.
-- Dataset loading happens before the skip decision, so `--skip-finetune` can still attempt to
-  resolve or download configured datasets.
-
-## Worker Dry Run
-
-Local dry-run does not require AWS or Nebius credentials:
+Run the worker bootstrap without Nebius or S3 credentials:
 
 ```bash
 DRY_RUN=1 bash scripts/run_model_worker_job.sh
 ```
 
-On this Windows machine, plain `bash` may resolve to WSL. If WSL has no distro installed,
-use Git Bash:
-
-```powershell
-& 'C:\Program Files\Git\bin\bash.exe' -lc "DRY_RUN=1 bash scripts/run_model_worker_job.sh"
-```
-
-Dry-run artifacts are written under `.worker_workspace/output/<run_id>/` unless overridden.
-
-## Prefect Dry Run
+Run the controller flow without submitting Nebius jobs:
 
 ```bash
 uv run hf-watch prefect-flow --config-dir config --dry-run
 DRY_RUN=1 bash scripts/run_prefect_controller_job.sh
 ```
 
-The dry-run flow selects a mock `sshleifer/tiny-gpt2` candidate, constructs a worker payload,
-submits a dry-run Nebius job object, polls it as completed, records manifest references, and
-regenerates the leaderboard.
+Worker dry-run files are written below `.worker_workspace/output/` unless overridden.
 
-## Nebius Service Account Setup
+On Windows, use Git Bash if `bash` resolves to WSL and no WSL distribution is installed:
 
-`scripts/run_prefect_controller_job.sh` supports these auth modes for non-dry-run execution:
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' -lc "DRY_RUN=1 bash scripts/run_model_worker_job.sh"
+```
+
+## Nebius and Prefect
+
+Before a real remote run:
+
+1. Build and publish the included `Dockerfile` to a registry accessible by Nebius.
+2. Replace the sample image and project values in `config/serverless.yaml` or environment
+   variables.
+3. Configure a Nebius service account with only the permissions required to submit and inspect
+   jobs.
+4. Configure S3-compatible artifact storage and test its credentials separately.
+5. Run the controller dry-run before enabling real submissions.
+
+The controller bootstrap supports these authentication inputs:
 
 ```text
 NEBIUS_CONFIG_YAML_B64
@@ -212,22 +357,43 @@ SA_ID + PUBLIC_KEY_ID + NEBIUS_PRIVATE_KEY_B64
 SA_ID + PUBLIC_KEY_ID + NEBIUS_PRIVATE_KEY_PATH
 ```
 
-Required non-dry-run environment:
+Required values for non-dry-run controller execution include `NB_PROJECT_ID` and a configured
+profile name such as `NB_PROFILE_NAME=hf-model-watch-controller`.
+
+Start a local Prefect server:
 
 ```bash
-NB_PROJECT_ID=<nebius-project-id>
-NB_PROFILE_NAME=hf-model-watch-controller
+export PREFECT_HOME="$PWD/.prefect-hf-model-watch"
+uv run --no-sync prefect server start
 ```
 
-The script installs/checks the Nebius CLI, configures the selected profile, then runs:
+In another terminal, register the controller deployment:
 
 ```bash
-uv run hf-watch prefect-flow --config-dir config
+set -a
+source .env
+set +a
+uv run --no-sync python scripts/serve_prefect_controller.py \
+  --real-run \
+  --cron "0 7,19 * * *"
 ```
 
-## S3/Object Storage
+Trigger it manually:
 
-Configure S3-compatible storage in `config/storage.yaml` or the worker payload:
+```bash
+uv run --no-sync prefect deployment run \
+  'hf-model-watch-controller/hf-model-watch-controller-local'
+```
+
+The result-sync deployment can be served separately:
+
+```bash
+uv run --no-sync python scripts/serve_prefect_result_sync.py --cron "*/10 * * * *"
+```
+
+## S3-compatible artifact storage
+
+Configure `config/storage.yaml` or provide an equivalent worker-payload override:
 
 ```yaml
 s3:
@@ -238,34 +404,24 @@ s3:
   dry_run: false
 ```
 
-Worker artifacts upload to:
+Worker artifacts are uploaded to:
 
 ```text
 s3://<bucket>/<prefix>/<run_id>/
 ```
 
-Dry-run mode records the URI and emits upload trace events without contacting object storage.
+Dry-run uploads record the destination URI and emit trace events without contacting object
+storage.
 
-## Result Storage
-
-The implemented default store is SQLite:
-
-```text
-results/hf_model_watch.sqlite
-```
-
-Stored records include scans, candidate scores, runs, failures, artifacts, runtime results,
-latency, quality, context drift, fine-tune runs, adaptation results, and comparisons.
-
-## Reports
+Download reporting artifacts and import them into SQLite:
 
 ```bash
-uv run hf-watch leaderboard --db results/hf_model_watch.sqlite --out reports/leaderboard.md
-uv run hf-watch compare --model-id sshleifer/tiny-gpt2 --db results/hf_model_watch.sqlite
+uv run --no-sync hf-watch sync-nebius-results \
+  --config-dir config \
+  --cache-dir outputs/synced-nebius
 ```
 
-Import downloaded run directories into the application SQLite database and rebuild the
-leaderboard:
+Alternatively, import an existing directory of downloaded runs:
 
 ```bash
 uv run --no-sync hf-watch ingest-results \
@@ -274,99 +430,144 @@ uv run --no-sync hf-watch ingest-results \
   --out reports/leaderboard.md
 ```
 
-Synchronize reporting artifacts from the configured Nebius S3 bucket. This downloads JSON
-results only; model and adapter weights are not downloaded:
+Both operations are idempotent unless `--force` is supplied. S3 synchronization downloads
+reporting JSON files, not model or adapter weights.
 
-```bash
-set -a
-source .env
-set +a
-uv run --no-sync hf-watch sync-nebius-results \
-  --config-dir config \
-  --cache-dir outputs/synced-nebius
-```
-
-Both commands are idempotent. Unchanged runs are skipped, while changed runs replace their
-previous application-database records.
-
-Generated reports:
+## Architecture
 
 ```text
-reports/leaderboard.md
-reports/leaderboard.html
-reports/runs/<run_id>.md
-reports/runs/<run_id>.html
-reports/comparisons/<model_slug>.md
+Hugging Face Hub
+      │
+      ▼
+scan → policy filters → candidate scoring
+      │
+      ▼
+local runner or Prefect/Nebius worker
+      │
+      ├── metadata verification
+      ├── runtime resolution and inference
+      ├── latency / custom quality / context evaluation
+      └── optional per-task LoRA or QLoRA
+      │
+      ▼
+artifacts + SQLite + optional S3
+      │
+      ▼
+leaderboards, run reports, and comparisons
 ```
 
-Comparisons only use previously tested models from the result database.
+## Safety and operational guidance
 
-## Full Local Dry Run
+- Keep `allow_trust_remote_code: false` unless model repository code has been reviewed.
+- Treat model output, dataset content, and downloaded artifacts as untrusted data.
+- Keep model-size, download-size, job-timeout, and concurrency limits appropriate for your
+  hardware and cloud budget.
+- Do not interpret the included rule-based quality checks as factuality, security, bias, or
+  alignment certification.
+- Do not expose the SQLite database, generated outputs, W&B runs, or artifact buckets if they
+  contain sensitive prompts or model responses.
+- Pin model revisions and container images for reproducible or regulated workflows.
+
+## Known limitations
+
+- SQLite is the implemented application store; the Postgres module is an integration point,
+  not the default production path.
+- Transformers is the required runtime. vLLM is optional and selected only when compatibility
+  checks pass.
+- The supplied quality data files are placeholders. Published benchmark claims require a
+  sufficiently large, reviewed, licensed, versioned, and contamination-checked dataset.
+- PEFT completion means the training process finished; adapter usefulness must be judged from
+  task metrics and generated outputs.
+- JSON scoring accepts the first complete object or array embedded in a response; it does not
+  currently report strict JSON-only adherence as a separate metric.
+- Generation-based PEFT evaluation processes examples sequentially and may add noticeable time
+  before and after training, especially for long schemas or contexts.
+- Hugging Face scanning depends on current Hub metadata and network availability.
+- Real Nebius and object-storage execution requires external credentials, permissions, images,
+  quotas, and billing configuration that this repository cannot validate locally.
+
+## Development
+
+Install all development and fine-tuning dependencies:
 
 ```bash
-uv sync
-uv run ruff check .
+uv sync --extra finetune
+```
+
+Run validation:
+
+```bash
 uv run pytest
-uv run hf-watch scan --config config/scan.yaml
-uv run hf-watch score-candidates --input artifacts/scan/latest_models.jsonl
-uv run hf-watch run-local --model-id sshleifer/tiny-gpt2 --config-dir config --skip-finetune
-uv run hf-watch leaderboard --db results/hf_model_watch.sqlite --out reports/leaderboard.md
-uv run hf-watch compare --model-id sshleifer/tiny-gpt2 --db results/hf_model_watch.sqlite
-uv run hf-watch prefect-flow --config-dir config --dry-run
-DRY_RUN=1 bash scripts/run_model_worker_job.sh
-DRY_RUN=1 bash scripts/run_prefect_controller_job.sh
+uv run ruff check .
 ```
 
-## Full Prefect Run:
+When changing artifact schemas, CLI behavior, configuration fields, or report formats, update
+the relevant tests and this README in the same change.
+# Model recommendations
 
-### Terminal 1:
-```bash
-export PREFECT_HOME=/home/maorb/.prefect-hf-model-watch
-uv run --no-sync prefect server start
-```
-
-### Terminal 2:
-```bash
-set -a
-source .env
-set +a
-uv run --no-sync python scripts/serve_prefect_controller.py --real-run --cron "0 7,19 * * *"
-```
-
-### Terminal 3:
-```bash
-uv run --no-sync prefect deployment run 'hf-model-watch-controller/hf-model-watch-controller-local'
-```
-
-### Result sync deployment
-
-Serve a separate deployment that imports new Nebius results into the application SQLite
-database and rebuilds the leaderboard every ten minutes:
+For the recommender notebook only, `requirements_cpu.txt` creates a lightweight
+environment without Torch, CUDA, benchmark, or training packages:
 
 ```bash
-set -a
-source .env
-set +a
-uv run --no-sync python scripts/serve_prefect_result_sync.py --cron "*/10 * * * *"
+uv venv ~/.venvs/nemotron_runner
+source ~/.venvs/nemotron_runner/bin/activate
+uv pip install -r requirements_cpu.txt
+python -m ipykernel install --user --name nemotron-runner --display-name "Nemotron runner (WSL)"
 ```
 
-Trigger it manually:
+Start Jupyter from the repository root and choose that kernel. The notebook runs the
+repository source directly; this CPU-only environment is not suitable for local model
+inference or benchmarks.
+
+`hf-watch recommend` uses a bounded Nemotron tool loop to collect pinned Hugging Face
+metadata and model cards. Full cards, a JSON recommendation, and structured tool events
+are saved under `artifacts/recommendations/`. Set `NEBIUS_API_KEY` and optionally
+`TAVILY_API_KEY`; the router endpoint and model are configurable in
+`config/recommender.yaml`. Confirm the configured model ID is offered by your Nebius
+account, or pass `--nemotron-model` with an available 120B or 550B model ID.
+For a stage-by-stage diagnostic, run `notebooks/recommender_quickstart.ipynb`: its
+HF, Tavily, and Nemotron cells save and reuse the same evidence. The key-status cell
+checks the environment seen by WSL, which may differ from a Windows notebook kernel.
+For fields not established by the Hub lookup, Tavily runs bounded, field-specific
+searches (exact model, config, parameters, chat template, license, weight size,
+parent model, runtime, and speculative decoding). Defaults are advanced search,
+eight results per query, and eight searches per recommendation. A final Nemotron
+pass receives the pinned HF scan and attributed Tavily evidence and returns
+per-field `verified`, `inferred`, or `unknown` assessments; parent-model evidence
+cannot verify a target model's license or chat template. Search failures and
+missing Tavily credentials are recorded as trace events without exposing keys.
 
 ```bash
-uv run --no-sync prefect deployment run \
-  'hf-model-watch-result-sync/hf-model-watch-result-sync-local'
+hf-watch recommend "Score social posts quickly" --gpu-memory-gb 80 \
+  --budget-usd-per-hour 5 --gpu-hourly-cost-usd 3 --license apache-2.0 \
+  --framework-mode fast --candidate Qwen/Qwen3-4B --json
 ```
-## Nebius Commands:
-access-permit create requires a group ID as --parent-id, not a user account ID
-List groups with nebius iam group list --parent-id <tenant_id>
-List registries with nebius registry list --parent-id <project_id>
-List images/tags with nebius registry image list --parent-id <registry_id> (not repository list — that flag doesn't exist)
-Docker pull from cr.eu-north1.nebius.cloud/<registry_id>/<image>:<tag> after running nebius registry configure-helper for auth
-## Known Limitations
 
-- Postgres storage is a documented optional integration point; SQLite is the implemented store.
-- vLLM is optional and only selected when compatibility checks pass; Transformers is mandatory.
-- Rule-based quality/context evaluations are smoke tests, not human-grade benchmark claims.
-- PEFT training is a smoke path unless optional fine-tune dependencies and real datasets are installed.
-- Hugging Face scanning depends on network access and current Hub API availability.
-- On Windows, use Git Bash when `bash` resolves to WSL without an installed distro.
+Omit inputs for terminal prompts. With `--json`, missing values are returned in
+`needs_input` and no network request is made. Hourly GPU cost must be provided because
+memory capacity cannot establish a price. Missing license, runtime, task fit, or cost
+evidence appears as uncertainty or `insufficient_evidence`.
+
+Benchmarking is a separate action:
+
+```bash
+hf-watch benchmark-recommendation artifacts/recommendations/<run>/recommendation.json
+hf-watch benchmark-recommendation artifacts/recommendations/<run>/recommendation.json --confirm --dry-run
+```
+
+The first command reports preflight without submitting a job. `--confirm` authorizes
+submission; `--dry-run` exercises the existing job path without cloud submission.
+The confirmed worker executes the selected fixture at the pinned revision. It records
+latency, output throughput, peak GPU memory, fixture score, and failures in
+`benchmark_results.json` and SQLite. These small fixtures are smoke checks; their
+scores are not broad task quality estimates. Transformers uses the configured worker
+image. For vLLM, SGLang, or TRT-LLM, configure a matching image in
+`config/recommender.yaml` with the corresponding server executable installed; preflight
+blocks an unconfigured framework. The worker starts its local server from the pinned
+Hugging Face snapshot and calls its completion endpoint. Starter task fixtures live in
+`src/hf_model_watch/recommender/fixtures/`.
+
+After synchronizing completed run folders, run
+`hf-watch benchmark-report <recommendation.json> --results-dir <synced-run-root>`.
+It writes `framework_comparison.json` beside the recommendation and records comparison
+rows in SQLite. Runs awaiting results are listed explicitly.
