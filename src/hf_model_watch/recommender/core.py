@@ -13,12 +13,59 @@ from urllib.request import Request, urlopen
 
 import yaml
 from huggingface_hub import HfApi, hf_hub_download
+from openai import APIStatusError, OpenAI
 from pydantic import BaseModel, Field
 
 from hf_model_watch.hub.lookup import lookup_models
 
+"""
+ＴＯＯＬｓ                               
+"""                                  
+
+TOOLS = []
+
+for name, description, properties in (
+    (
+        "hf_lookup",
+        "Look up an exact HF model or family",
+        {"model_id": {"type": "string"}, "family": {"type": "string"}},
+    ),
+    ("tavily_search", "Research missing model evidence", {"query": {"type": "string"}}),
+    (
+        "tavily_extract",
+        "Extract a web source",
+        {"urls": {"type": "array", "items": {"type": "string"}}},
+    ),
+    (
+        "runtime_compatibility",
+        "Assess runtime and speculative decoding evidence",
+        {"model_id": {"type": "string"}},
+    ),
+    ("rank_candidates", "Rank gathered candidates against constraints", {}),
+):
+    TOOLS.append({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "additionalProperties": False,
+            },
+        },
+    })
+
+"""
+Ｄａｔａ  Ｃｌａｓｓｅｓ
+"""  
+
 
 class RequestSpec(BaseModel):
+    """
+    Class for specifying the requirements for a model selection request.
+    It includes fields for the request description, GPU memory and count, budget, license, framework mode, and optional model and candidate list.
+    """
     request: str = Field(min_length=3)
     gpu_memory_gb: float = Field(gt=0)
     gpu_count: int = Field(default=1, gt=0)
@@ -31,6 +78,9 @@ class RequestSpec(BaseModel):
 
 
 class EvidenceFieldAssessment(BaseModel):
+    """
+    Class for assessing the evidence for a specific field of a model.
+    """
     value: Any = None
     status: Literal["verified", "inferred", "unknown"]
     confidence: float = Field(ge=0, le=1)
@@ -39,6 +89,9 @@ class EvidenceFieldAssessment(BaseModel):
 
 
 class RouterAssessment(BaseModel):
+    """
+    Class for assessing the overall suitability of a model based on the evidence and field assessments.
+    """
     viable_model_ids: list[str]
     insufficient_evidence: bool = False
     reasoning: str = ""
@@ -53,10 +106,16 @@ def load_settings(path: Path = Path("config/recommender.yaml")) -> dict[str, Any
     data["nebius"]["default_model"] = os.getenv("NEMOTRON_MODEL", data["nebius"]["default_model"])
     return data
 
+"""
+Ｈｅｌｐｅｒ  Ｆｕｎｃｔｉｏｎｓ
+"""
 
 def _post_json(
     url: str, payload: dict[str, Any], headers: dict[str, str], timeout: float
 ) -> dict[str, Any]:
+    """
+    Function to send a POST request with a JSON payload to a specified URL and return the response as a dictionary.
+    """
     req = Request(
         url,
         data=json.dumps(payload).encode(),
@@ -68,6 +127,47 @@ def _post_json(
         raise ValueError("API response must be an object")
     return data
 
+def model_research_queries(record: dict[str, Any], request: str) -> list[tuple[str, str]]:
+    """Plan focused searches only for fields that HF did not establish."""
+    ident = str(record["model_id"])
+    quoted = f'"{ident}"'
+    tokenizer = record.get("tokenizer_config") or {}
+    card = str(record.get("card_excerpt") or "").lower()
+    queries: list[tuple[str, str]] = []
+    missing = [
+        ("config", not record.get("has_config"), "config.json architecture model_type"),
+        ("params", record.get("estimated_params_billion") is None, "parameters parameter count"),
+        ("chat", not tokenizer.get("chat_template"), "chat_template tokenizer_config"),
+        ("license", not record.get("license"), "license model card"),
+        ("size", record.get("estimated_download_size_gb") is None, "safetensors weights file size"),
+        ("origin", not record.get("base_model"), "base_model parent model"),
+    ]
+    if not record.get("card_excerpt") or any(is_missing for _, is_missing, _ in missing):
+        queries.append(("exact", quoted))
+    if any(
+        term in request.lower()
+        for term in (
+            "speculat", "medusa", "eagle", "draft", "dflash", "dspark", "d-spark",
+            "multi-token prediction", "mtp",
+        )
+    ):
+        stem = ident.rsplit("/", 1)[-1]
+        queries.append(
+            ("draft_pair", f'"{stem}" speculative decoding draft target site:huggingface.co')
+        )
+        if not any(term in card for term in ("speculat", "draft", "medusa", "eagle")):
+            queries.append(
+                ("speculative", f"{quoted} speculative decoding draft head runtime support")
+            )
+    runtime = runtime_assessment(record, [])
+    if any(runtime[name]["status"] == "unknown" for name in ("vllm", "sglang", "trt-llm")):
+        queries.append(("runtime", f"{quoted} vLLM SGLang TRT-LLM compatibility"))
+    queries.extend((name, f"{quoted} {terms}") for name, is_missing, terms in missing if is_missing)
+    return queries
+
+"""
+ＴＯＯＬ  Ｄｅｆｉｎｉｔｉｏｎ
+"""
 
 def hf_lookup(
     *,
@@ -77,7 +177,9 @@ def hf_lookup(
     limit: int = 5,
     api: HfApi | None = None,
 ) -> list[dict[str, Any]]:
-    """Pin Hub metadata and save full cards; only excerpts enter the agent context."""
+    """
+    Pin Hub metadata and save full cards; only excerpts enter the agent context.
+    """
     if bool(model_id) == bool(family):
         raise ValueError("Choose exactly one model_id or family")
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -125,6 +227,9 @@ def hf_lookup(
 def tavily_research(
     query: str, settings: dict[str, Any], *, extract_urls: list[str] | None = None
 ) -> list[dict[str, Any]]:
+    """
+    Perform a research operation using the Tavily API, either by searching for information based on a query or extracting information from specified URLs.
+    """
     key = os.getenv("TAVILY_API_KEY")
     if not key:
         return []
@@ -194,46 +299,11 @@ def tavily_research(
     ]
 
 
-def model_research_queries(record: dict[str, Any], request: str) -> list[tuple[str, str]]:
-    """Plan focused searches only for fields that HF did not establish."""
-    ident = str(record["model_id"])
-    quoted = f'"{ident}"'
-    tokenizer = record.get("tokenizer_config") or {}
-    card = str(record.get("card_excerpt") or "").lower()
-    queries: list[tuple[str, str]] = []
-    missing = [
-        ("config", not record.get("has_config"), "config.json architecture model_type"),
-        ("params", record.get("estimated_params_billion") is None, "parameters parameter count"),
-        ("chat", not tokenizer.get("chat_template"), "chat_template tokenizer_config"),
-        ("license", not record.get("license"), "license model card"),
-        ("size", record.get("estimated_download_size_gb") is None, "safetensors weights file size"),
-        ("origin", not record.get("base_model"), "base_model parent model"),
-    ]
-    if not record.get("card_excerpt") or any(is_missing for _, is_missing, _ in missing):
-        queries.append(("exact", quoted))
-    if any(
-        term in request.lower()
-        for term in (
-            "speculat", "medusa", "eagle", "draft", "dflash", "dspark", "d-spark",
-            "multi-token prediction", "mtp",
-        )
-    ):
-        stem = ident.rsplit("/", 1)[-1]
-        queries.append(
-            ("draft_pair", f'"{stem}" speculative decoding draft target site:huggingface.co')
-        )
-        if not any(term in card for term in ("speculat", "draft", "medusa", "eagle")):
-            queries.append(
-                ("speculative", f"{quoted} speculative decoding draft head runtime support")
-            )
-    runtime = runtime_assessment(record, [])
-    if any(runtime[name]["status"] == "unknown" for name in ("vllm", "sglang", "trt-llm")):
-        queries.append(("runtime", f"{quoted} vLLM SGLang TRT-LLM compatibility"))
-    queries.extend((name, f"{quoted} {terms}") for name, is_missing, terms in missing if is_missing)
-    return queries
-
-
 def _pair_evidence(record: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """
+    Identify a target/drafter pair and runtime from the evidence, if present.
+    The drafter must explicitly claim the target model, and the runtime must be mentioned in the same source.
+    """
     target = str(record["model_id"])
     candidates: list[tuple[int, float, dict[str, Any]]] = []
     for source in evidence:
@@ -290,6 +360,9 @@ def _pair_evidence(record: dict[str, Any], evidence: list[dict[str, Any]]) -> di
 
 
 def _validation_excerpt(source: dict[str, Any]) -> str:
+    """
+    Form a short excerpt from the source text that highlights the target/drafter claim, if present, for validation purposes.
+    """
     body = str(source.get("retrieved_text") or "")
     match = re.search(r"draft model for|target model\s*[`\"']|speculative-draft-model-path", body, re.IGNORECASE)
     if match:
@@ -298,6 +371,9 @@ def _validation_excerpt(source: dict[str, Any]) -> str:
 
 
 def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Assess the runtime compatibility of a model based on the provided evidence.
+    """
     config = record.get("config") or {}
     architecture = config.get("architectures") if isinstance(config, dict) else None
     hf_url = f"https://huggingface.co/{record['model_id']}/tree/{record.get('revision') or 'main'}"
@@ -397,19 +473,20 @@ def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -
 def select_fixture(request: str, fixture_dir: Path | None = None) -> dict[str, Any]:
     fixture_dir = fixture_dir or Path(__file__).with_name("fixtures")
     text = request.lower()
-    name = (
-        "pr_review"
-        if any(term in text for term in ("pull request", "code review", "pr review"))
-        else "social_scoring"
-        if any(term in text for term in ("social", "post", "tweet", "short", "fast scoring"))
-        else "long_context_analysis"
-    )
+    if any(term in text for term in ("pull request", "code review", "pr review")):
+        name = "pr_review"
+    elif any(term in text for term in ("social", "twitter", "tweet", "reddit", "post", "comment", "social scoring")):
+        name = "social_scoring"
+    elif any(term in text for term in ("long context", "longer context", "context length", "longer input", "longer prompt")):
+        name = "long_context_analysis"
+    else:
+        name = "social_scoring"  # Default fixture if no specific terms are found
     return json.loads((fixture_dir / f"{name}.json").read_text(encoding="utf-8"))
 
 
 def _family_key(model_id: str) -> str:
     stem = model_id.rsplit("/", 1)[-1].lower()
-    return re.sub(r"(?:[-_.]?\d+(?:\.\d+)?b|[-_.]?instruct|[-_.]?chat)+.*$", "", stem)
+    return re.sub(r"(?:[-_.]?\d+(?:\.\d+)?b|[-_.]?instruct|[-_.]?chat)+.*$", "", stem) # This regex removes versioning and suffixes like "-instruct" or "-chat" from the model name to create a normalized family key.
 
 
 def rank_candidates(
@@ -418,6 +495,9 @@ def rank_candidates(
     evidence: dict[str, list[dict[str, Any]]],
     settings: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    """
+    Function to rank candidate models based on the provided records, request specifications, evidence, and settings.
+    """
     ranked = []
     fixture = select_fixture(spec.request)
     weights = settings["selection"]["weights"]
@@ -525,7 +605,7 @@ def rank_candidates(
                 "runtime_assessment": runtime,
                 "speculative_decoding": runtime["speculative_decoding"],
                 "eligible": not blockers,
-                "selection_score": round(sum(score_breakdown.values()), 4),
+                "infra_score": round(sum(score_breakdown.values()), 4),
                 "score_breakdown": score_breakdown,
                 "blocking_reasons": blockers,
                 "evidence": evidence.get(ident, []),
@@ -558,38 +638,6 @@ def rank_candidates(
             item["model_id"],
         ),
     )
-
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {"type": "object", "properties": props, "additionalProperties": False},
-        },
-    }
-    for name, description, props in (
-        (
-            "hf_lookup",
-            "Look up an exact HF model or family",
-            {"model_id": {"type": "string"}, "family": {"type": "string"}},
-        ),
-        ("tavily_search", "Research missing model evidence", {"query": {"type": "string"}}),
-        (
-            "tavily_extract",
-            "Extract a web source",
-            {"urls": {"type": "array", "items": {"type": "string"}}},
-        ),
-        (
-            "runtime_compatibility",
-            "Assess runtime and speculative decoding evidence",
-            {"model_id": {"type": "string"}},
-        ),
-        ("rank_candidates", "Rank gathered candidates against constraints", {}),
-    )
-]
-
 
 def _validate_tool_args(name: str, args: Any, max_results: int) -> dict[str, Any]:
     allowed = {
@@ -679,36 +727,43 @@ def recommend(
             }
         )
 
+    prevalidation_completions: list[dict[str, Any]] = []
+
     def api_chat() -> dict[str, Any]:
+        """
+        Main loop for calling the Nebius API to get model recommendations based on the provided spec and evidence.
+        It handles tool calls, evidence gathering, and ranking of candidates.
+        """
         key = os.getenv("NEBIUS_API_KEY")
         if not key:
             raise ValueError("NEBIUS_API_KEY is required")
         base_url = settings["nebius"]["base_url"].rstrip("/")
         try:
-            data = _post_json(
-                base_url + "/chat/completions",
-                {
-                    "model": model,
-                    "messages": messages,
-                    "tools": TOOLS,
-                    "max_tokens": int(settings["nebius"]["max_output_tokens"]),
-                    "temperature": 0,
-                },
-                {"Authorization": f"Bearer {key}"},
-                float(settings["nebius"]["timeout_seconds"]),
+            completion = OpenAI(
+                base_url=base_url,
+                api_key=key,
+                timeout=float(settings["nebius"]["timeout_seconds"]),
+            ).chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=TOOLS,
+                max_tokens=int(settings["nebius"]["max_output_tokens"]),
+                temperature=0,
             )
-        except HTTPError as exc:
-            if exc.code == 404:
+        except APIStatusError as exc:
+            if exc.status_code == 404:
                 raise ValueError(
                     f"Nebius endpoint or model not found: {base_url}, {model}. "
                     "Check the region-specific base URL and exact model ID."
                 ) from exc
-            raise ValueError(f"Nebius API returned HTTP {exc.code}") from exc
-        return data["choices"][0]["message"]
+            raise ValueError(f"Nebius API returned HTTP {exc.status_code}") from exc
+        prevalidation_completions.append(completion.model_dump(exclude_none=True))
+        return completion.choices[0].message.model_dump(exclude_none=True) # This returns the first message from the API response, excluding any None values.
 
-    used_calls = 0
+    used_calls = 0 # Initialize the count of used tool calls to zero.
     final_response: dict[str, Any] = {}
-    for _ in range(0 if validation_only else max_calls + 1):
+    prevalidation_responses: list[dict[str, Any]] = []
+    for _ in range(0 if validation_only else max_calls + 1): # Validation-only mode skips the loop, otherwise it allows for max_calls + 1 iterations.
         prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
         if prompt_chars > int(settings["nebius"]["max_prompt_chars"]):
             events.append(
@@ -719,6 +774,7 @@ def recommend(
             )
             break
         response = (chat or api_chat)()
+        prevalidation_responses.append(response)
         calls = response.get("tool_calls") or []
         if not calls:
             final_response = response
@@ -739,13 +795,14 @@ def recommend(
                 if name == "hf_lookup":
                     remaining = int(settings["nebius"]["max_candidates"]) - len(records)
                     if remaining <= 0:
-                        raise ValueError("Candidate limit reached")
+                        raise ValueError("Candidate limit reached") # When the number of records, i.e. the number of models already looked up, 
+                                                                    # reaches the maximum allowed candidates, it raises a ValueError.
                     rows = lookup(
                         model_id=args.get("model_id"),
                         family=args.get("family"),
                         artifact_dir=artifact_dir,
                         limit=remaining,
-                    )
+                    ) # This line calls the lookup function to retrieve model information based on the provided model_id or family. It limits the number of results to the remaining allowed candidates.
                     for row in rows:
                         records[row["model_id"]] = row
                     fields = (
@@ -760,32 +817,32 @@ def recommend(
                         "has_config",
                         "card_artifact",
                         "missing_fields",
-                    )
+                    ) # Aggregates the fields of interest from the model records to be included in the result.
                     result = [
                         {
                             **{key: row.get(key) for key in fields},
                             "card_excerpt": str(row.get("card_excerpt") or "")[:1200],
-                        }
+                        } # contains the relevant information for each model record, including a truncated version of the model card excerpt.
                         for row in rows
                     ]
-                elif name in {"tavily_search", "tavily_extract"}:
-                    if sum(e["event"] == "tavily" for e in events) >= int(
-                        settings["tavily"]["max_searches"]
-                    ):
+                elif name in {"tavily_search", "tavily_extract"}: # If the tool is tavily search or extract, it performs a research operation using the Tavily API.
+                    if sum(e["event"] == "tavily" for e in events) >= int(settings["tavily"]["max_searches"]):
                         raise ValueError("Tavily search limit reached")
-                    query = str(args.get("query") or "")[:300]
-                    urls = args.get("urls") if name == "tavily_extract" else None
-                    if not records:
+                    query = str(args.get("query") or "")[:350] # Retrieves the query argument from the tool call, ensuring it is a string and truncating it to 350 characters.
+                    urls = args.get("urls") if name == "tavily_extract" else None # If the tool is tavily_extract, it retrieves the urls argument; otherwise, it sets urls to None.
+                    if not records: # we get records from hf_lookup, so if there are no records, it raises an error.
                         raise ValueError("Look up a model before Tavily research")
                     if not query and not urls:
                         raise ValueError("query or urls required")
                     if name == "tavily_search":
-                        names = [ident.split("/")[-1].lower() for ident in records]
-                        if not any(name in query.lower() for name in names):
+                        model_names = [ident.split("/")[-1].lower() for ident in records] # Extracts the model names from the records by splitting the model_id on "/" 
+                                                                                    # and taking the last part, converting it to lowercase.
+                        if not any(model_name in query.lower() for model_name in model_names):
                             raise ValueError("Research query must name a looked-up model")
-                        terms = " ".join(settings["tavily"].get("speculative_terms", []))
-                        query = f"{query} {terms}"[:300]
-                    result = search(query, settings, extract_urls=urls)
+                        terms = " ".join(settings["tavily"].get("speculative_terms", [])) # settings[tavily] contains a list of speculative terms like "speculative decoding", "draft", etc. 
+                                                                                          # This line joins those terms into a single string separated by spaces.
+                        query = f"{query} {terms}"[:350]
+                    result = search(query, settings, extract_urls=urls) # Performs the search using the Tavily API with the constructed query and settings, optionally extracting URLs if provided.
                     for ident in records:
                         if ident.lower() in query.lower() or (
                             urls and any(ident.lower() in url.lower() for url in urls)
@@ -805,7 +862,7 @@ def recommend(
                                 "blocking_reasons",
                                 "parameters_billion",
                                 "runtime",
-                                "selection_score",
+                                "infra_score",
                                 "task_fixture",
                             )
                         }
@@ -841,6 +898,19 @@ def recommend(
                     "content": '{"error":"tool call limit reached"}',
                 }
             )
+    if prevalidation_responses:
+        (artifact_dir / "nemotron_prevalidation_response.json").write_text(
+            json.dumps(
+                {
+                    "completions": prevalidation_completions,
+                    "messages": prevalidation_responses,
+                    "final_message": final_response or None,
+                },
+                indent=2,
+                default=str,
+            ) + "\n",
+            encoding="utf-8",
+        )
     remaining_searches = int(settings["tavily"]["max_searches"]) - sum(
         event["event"] == "tavily" for event in events
     )
@@ -855,7 +925,7 @@ def recommend(
             if remaining_searches <= 0:
                 break
             try:
-                found = search(query[:300], settings)
+                found = search(query[:350], settings)
             except Exception as exc:
                 events.append(
                     {
@@ -965,27 +1035,26 @@ def recommend(
         if len(validation_messages[1]["content"]) > int(settings["nebius"]["max_prompt_chars"]):
             raise ValueError("Validation evidence exceeds the configured prompt limit")
         try:
-            validation_data = _post_json(
-                settings["nebius"]["base_url"].rstrip("/") + "/chat/completions",
-                {
-                    "model": model,
-                    "messages": validation_messages,
-                    "temperature": 0.1,
-                    "reasoning_effort": "minimal",
-                    "response_format": {"type": "json_object"},
-                    "max_tokens": int(settings["nebius"].get("validation_max_tokens", 3000)),
-                },
-                {"Authorization": f"Bearer {os.environ['NEBIUS_API_KEY']}"},
-                float(settings["nebius"]["timeout_seconds"]),
+            completion = OpenAI(
+                base_url=settings["nebius"]["base_url"],
+                api_key=os.environ["NEBIUS_API_KEY"],
+                timeout=float(settings["nebius"]["timeout_seconds"]),
+            ).chat.completions.create(
+                model=model,
+                messages=validation_messages,
+                temperature=0.1,
+                reasoning_effort="minimal",
+                response_format={"type": "json_object"},
+                max_tokens=int(settings["nebius"].get("validation_max_tokens", 3000)),
             )
-            final_response = validation_data["choices"][0]["message"]
+            final_response = completion.choices[0].message.model_dump(exclude_none=True)
             (artifact_dir / "nemotron_validation_response.json").write_text(
                 json.dumps(
                     {
                         # Preserve the complete API message. Some Nemotron responses include
                         # reasoning or reasoning_content alongside the final content.
                         "message": final_response,
-                        "finish_reason": validation_data["choices"][0].get("finish_reason"),
+                        "finish_reason": completion.choices[0].finish_reason,
                     },
                     indent=2,
                 )

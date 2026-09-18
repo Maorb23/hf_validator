@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
+import httpx
 import pytest
+from openai import NotFoundError
 from typer.testing import CliRunner
 
 from hf_model_watch.cli import app
@@ -16,6 +19,26 @@ from hf_model_watch.recommender.report import build_benchmark_report
 from hf_model_watch.recommender.server_runtime import build_server_command
 from hf_model_watch.runtime.backend_transformers import GenerationResult
 from hf_model_watch.storage.sqlite_store import SQLiteStore
+
+
+def _mock_nebius(monkeypatch, respond):
+    def create(**payload):
+        message = respond(payload)
+        return SimpleNamespace(
+            model_dump=lambda **_kwargs: {"choices": [{"message": message}]},
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(model_dump=lambda **_kwargs: message),
+                finish_reason="stop",
+            )]
+        )
+
+    monkeypatch.setattr(
+        core,
+        "OpenAI",
+        lambda **_kwargs: SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        ),
+    )
 
 
 def _spec(**updates):
@@ -120,6 +143,12 @@ def test_agent_tool_budget_and_saved_artifact(tmp_path):
         json.loads((tmp_path / "recommendation.json").read_text())["status"]
         == "insufficient_evidence"
     )
+    prevalidation = json.loads(
+        (tmp_path / "nemotron_prevalidation_response.json").read_text()
+    )
+    assert len(prevalidation["messages"]) == 2
+    assert prevalidation["messages"][0]["tool_calls"][0]["function"]["name"] == "hf_lookup"
+    assert prevalidation["final_message"] is None
 
 
 def test_cli_needs_input_json():
@@ -133,10 +162,12 @@ def test_cli_needs_input_json():
 def test_nebius_404_identifies_configuration_without_exposing_key(tmp_path, monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "secret-key")
 
-    def missing_model(*_args, **_kwargs):
-        raise HTTPError("https://example.org", 404, "Not Found", {}, None)
+    def missing_model(_payload):
+        request = httpx.Request("POST", "https://example.org/chat/completions")
+        response = httpx.Response(404, request=request)
+        raise NotFoundError("Not Found", response=response, body=None)
 
-    monkeypatch.setattr(core, "_post_json", missing_model)
+    _mock_nebius(monkeypatch, missing_model)
     with pytest.raises(ValueError, match="Nebius endpoint or model not found") as exc:
         recommend(_spec(), load_settings(), tmp_path, search=lambda *_args, **_kwargs: [])
     assert "secret-key" not in str(exc.value)
@@ -248,36 +279,26 @@ def test_final_nemotron_validation_uses_hf_scan_and_downgrades_web_license(tmp_p
     payloads = []
     direct_url = "https://huggingface.co/org/x/tree/abc"
 
-    def fake_post(_url, payload, _headers, _timeout):
+    def fake_post(payload):
         payloads.append(payload)
         if len(payloads) == 1:
-            return {"choices": [{"message": {"content": '{"viable_model_ids":["org/x"]}'}}]}
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps(
-                            {
-                                "viable_model_ids": ["org/x"],
-                                "field_assessments": {
-                                    "org/x": {
-                                        "license": {
-                                            "value": "apache-2.0",
-                                            "status": "verified",
-                                            "confidence": 0.9,
-                                            "sources": ["https://example.org/parent"],
-                                            "action": "accept",
-                                        }
-                                    }
-                                },
-                            }
-                        )
+            return {"content": '{"viable_model_ids":["org/x"]}'}
+        return {"content": json.dumps({
+            "viable_model_ids": ["org/x"],
+            "field_assessments": {
+                "org/x": {
+                    "license": {
+                        "value": "apache-2.0",
+                        "status": "verified",
+                        "confidence": 0.9,
+                        "sources": ["https://example.org/parent"],
+                        "action": "accept",
                     }
                 }
-            ]
-        }
+            },
+        })}
 
-    monkeypatch.setattr(core, "_post_json", fake_post)
+    _mock_nebius(monkeypatch, fake_post)
     result = recommend(
         _spec(candidates=["org/x"]),
         load_settings(),
@@ -292,6 +313,14 @@ def test_final_nemotron_validation_uses_hf_scan_and_downgrades_web_license(tmp_p
         ],
     )
     assert result["recommendation"]["model_id"] == "org/x"
+    prevalidation = json.loads(
+        (tmp_path / "nemotron_prevalidation_response.json").read_text()
+    )
+    assert len(prevalidation["completions"]) == 1
+    assert prevalidation["completions"][0]["choices"][0]["message"]["content"] == (
+        '{"viable_model_ids":["org/x"]}'
+    )
+    assert prevalidation["final_message"]["content"] == '{"viable_model_ids":["org/x"]}'
     assert payloads[1]["reasoning_effort"] == "minimal"
     assert payloads[1]["max_tokens"] == 3000
     assert "The FINAL ANSWER must contain only one JSON object" in payloads[1]["messages"][0]["content"]
@@ -308,20 +337,12 @@ def test_validation_only_reuses_saved_evidence_without_lookup_or_search(tmp_path
     monkeypatch.setenv("NEBIUS_API_KEY", "test-secret")
     calls = []
 
-    def fake_post(_url, payload, _headers, _timeout):
+    def fake_post(payload):
         calls.append(payload)
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": '{"viable_model_ids":["org/x"]}',
-                        "reasoning_content": "HF evidence is sufficient.",
-                    }
-                }
-            ]
-        }
+        return {"content": '{"viable_model_ids":["org/x"]}',
+                "reasoning_content": "HF evidence is sufficient."}
 
-    monkeypatch.setattr(core, "_post_json", fake_post)
+    _mock_nebius(monkeypatch, fake_post)
     result = recommend(
         _spec(candidates=["org/x"]),
         load_settings(),
@@ -345,18 +366,18 @@ def test_validation_summarizes_chat_template_and_rejects_verified_missing_value(
     payloads = []
     template = "{% for message in messages %}" * 300
 
-    def fake_post(_url, payload, _headers, _timeout):
+    def fake_post(payload):
         payloads.append(payload)
-        return {"choices": [{"message": {"content": json.dumps({
+        return {"content": json.dumps({
             "viable_model_ids": [],
             "insufficient_evidence": True,
             "field_assessments": {"org/x": {"base_model": {
                 "value": None, "status": "verified", "confidence": 1,
                 "sources": ["https://huggingface.co/org/x/tree/abc"], "action": "accept",
             }}},
-        })}}]}
+        })}
 
-    monkeypatch.setattr(core, "_post_json", fake_post)
+    _mock_nebius(monkeypatch, fake_post)
     result = recommend(
         _spec(candidates=["org/x"]), load_settings(), tmp_path,
         initial_records=[_record("org/x", 3) | {"tokenizer_config": {"chat_template": template}}],
@@ -447,11 +468,11 @@ def test_exact_dflash_pair_passes_a100_capacity_with_unmeasured_speedup():
 
 def test_documented_pair_overrides_missing_built_in_head_claim(tmp_path, monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "test-secret")
-    monkeypatch.setattr(core, "_post_json", lambda *_args, **_kwargs: {
-        "choices": [{"message": {"content": json.dumps({
+    _mock_nebius(monkeypatch, lambda _payload: {
+        "content": json.dumps({
             "viable_model_ids": [], "insufficient_evidence": True,
             "reasoning": "No built-in speculative head.",
-        })}}],
+        }),
     })
     record = _record("Qwen/Qwen3.5-4B", 4.66) | {"estimated_download_size_gb": 8.68}
     record["config"]["text_config"] = {"max_position_embeddings": 262144}

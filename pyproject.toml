@@ -21,6 +21,7 @@ dependencies = [
   "rich>=13.7",
   "prefect>=3.7.7",
   "python-dotenv>=1.0",
+  "openai>=1.0",
   "boto3>=1.34",
   "datasets>=3.0",
 ]
