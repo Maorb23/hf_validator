@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from contextlib import redirect_stdout
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -34,6 +36,9 @@ def recommend(
     license: Annotated[str | None, typer.Option("--license")] = None,
     framework_mode: Annotated[FrameworkMode | None, typer.Option("--framework-mode")] = None,
     model: Annotated[str | None, typer.Option("--nemotron-model")] = None,
+    model_id: Annotated[
+        str | None, typer.Option("--model-id", help="Explicit Hugging Face model ID.")
+    ] = None,
     candidate: Annotated[list[str] | None, typer.Option("--candidate")] = None,
     json_mode: Annotated[
         bool, typer.Option("--json", help="Machine-readable, non-interactive output.")
@@ -48,45 +53,125 @@ def recommend(
     from hf_model_watch.recommender.core import (
         recommend as run_recommend,
     )
+    from hf_model_watch.recommender.discovery import discover_models, discovery_inputs
     from hf_model_watch.storage.schemas import new_run_id
 
-    values = {
-        "request": request,
-        "gpu_memory_gb": gpu_memory_gb,
-        "budget_usd_per_hour": budget_usd_per_hour,
-        "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
-        "license": license,
-        "framework_mode": framework_mode.value if framework_mode else None,
-    }
-    missing = [key for key, value in values.items() if value is None]
-    if json_mode and missing:
-        typer.echo(json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True))
-        return
-    for key in missing:
-        values[key] = typer.prompt(key.replace("_", " "))
+    if request is None and not json_mode:
+        request = typer.prompt("Describe what model you want")
+    if model_id is None and request:
+        values, missing = discovery_inputs(
+            request,
+            {
+                "gpu_memory_gb": gpu_memory_gb,
+                "budget_usd_per_hour": budget_usd_per_hour,
+                "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
+                "license": license,
+                "framework_mode": framework_mode.value if framework_mode else None,
+            },
+        )
+        if json_mode and missing:
+            typer.echo(
+                json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True)
+            )
+            return
+        defaults = {"license": "any", "framework_mode": "sweep"}
+        for key in missing:
+            values[key] = typer.prompt(key.replace("_", " "), default=defaults.get(key))
+    else:
+        values = {
+            "request": request,
+            "gpu_memory_gb": gpu_memory_gb,
+            "budget_usd_per_hour": budget_usd_per_hour,
+            "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
+            "license": license,
+            "framework_mode": framework_mode.value if framework_mode else None,
+        }
+        missing = [key for key, value in values.items() if value is None]
+        if json_mode and missing:
+            typer.echo(
+                json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True)
+            )
+            return
+        for key in missing:
+            values[key] = typer.prompt(key.replace("_", " "))
     try:
         spec = RequestSpec(
             **values,
             gpu_count=gpu_count,
             model=model,
-            candidates=candidate or [],
+            candidates=([model_id] if model_id else candidate or []),
         )
         settings = load_settings(config)
         destination = output_dir or Path("artifacts/recommendations") / new_run_id()
-        result = run_recommend(spec, settings, destination)
+        if model_id:
+            result = run_recommend(spec, settings, destination)
+        elif json_mode:
+            # The scanner emits TRACE_EVENT lines on stdout; reserve stdout for JSON.
+            with redirect_stdout(sys.stderr):
+                result = discover_models(
+                    spec,
+                    settings,
+                    destination,
+                    progress=lambda message: typer.echo(message, err=True),
+                )
+        else:
+            result = discover_models(
+                spec,
+                settings,
+                destination,
+                progress=lambda message: typer.echo(message, err=True),
+            )
     except Exception as exc:
         if json_mode:
             typer.echo(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}))
             raise typer.Exit(code=1) from None
         raise typer.BadParameter(str(exc)) from exc
+    if model_id is None and not json_mode:
+        gemma = result.get("scan_diagnostics", {}).get("gemma", {})
+        if gemma and not gemma.get("eligible"):
+            blockers = sorted(gemma.get("blockers", {}).items(), key=lambda item: -item[1])
+            reasons = ", ".join(f"{reason} ({count})" for reason, count in blockers[:3])
+            typer.echo(
+                f"Gemma scan: {gemma.get('found', 0)} found, "
+                f"{gemma.get('size_matched', 0)} near target size, none eligible. "
+                f"Main blockers: {reasons or 'no size match'}"
+            )
+    if model_id is None and not json_mode and result["recommendations"]:
+        typer.echo("Recommended models")
+        for number, item in enumerate(result["recommendations"], 1):
+            label = " (strongest recommendation)" if number == 1 else ""
+            typer.echo(f"{number}. {item['model_id']}{label}")
+            if item.get("reasoning"):
+                typer.echo(f"   Decision reasoning: {item['reasoning']}")
+            typer.echo(f"   HF score: {item['hf_score']:.3f}")
+            for reason in item["why_it_fits"]:
+                typer.echo(f"   Why: {reason}")
+            for field, status in item.get("task_fit", {}).items():
+                typer.echo(f"   {field.replace('_', ' ')}: {status}")
+            for limitation in item["limitations"]:
+                typer.echo(f"   Limitation: {limitation}")
+        choice = typer.prompt("Select model", type=int, default=1)
+        if choice not in range(1, len(result["recommendations"]) + 1):
+            raise typer.BadParameter("Select a listed model number")
+        result["selected_model_id"] = result["recommendations"][choice - 1]["model_id"]
+        (destination / "discovery.json").write_text(
+            json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8"
+        )
+        typer.echo(f"Selected model: {result['selected_model_id']}")
+        typer.echo("[ Optimize Inference + Benchmark ] (placeholder)")
     if json_mode:
         typer.echo(
             json.dumps(
-                {**result, "artifact_path": str(destination / "recommendation.json")},
+                {
+                    **result,
+                    "artifact_path": str(
+                        destination / ("recommendation.json" if model_id else "discovery.json")
+                    ),
+                },
                 sort_keys=True,
             )
         )
-    else:
+    elif model_id is not None:
         chosen = result["recommendation"]
         typer.echo(f"{result['status']}: {chosen['model_id'] if chosen else 'none'}")
         typer.echo(f"Saved: {destination / 'recommendation.json'}")

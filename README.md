@@ -505,8 +505,8 @@ When changing artifact schemas, CLI behavior, configuration fields, or report fo
 the relevant tests and this README in the same change.
 # Model recommendations
 
-For the recommender notebook only, `requirements_cpu.txt` creates a lightweight
-environment without Torch, CUDA, benchmark, or training packages:
+For the recommender notebook and interactive CLI, `requirements_cpu.txt` creates
+a lightweight environment without Torch, CUDA, benchmark, or training packages:
 
 ```bash
 uv venv ~/.venvs/nemotron_runner
@@ -515,11 +515,12 @@ uv pip install -r requirements_cpu.txt
 python -m ipykernel install --user --name nemotron-runner --display-name "Nemotron runner (WSL)"
 ```
 
-Start Jupyter from the repository root and choose that kernel. The notebook runs the
-repository source directly; this CPU-only environment is not suitable for local model
+Start Jupyter from the repository root and choose that kernel. Run the CLI from
+the repository root with `PYTHONPATH=src python -m hf_model_watch`; no project install
+or GPU packages are needed. This CPU-only environment is not suitable for local model
 inference or benchmarks.
 
-`hf-watch recommend` uses a bounded Nemotron tool loop to collect pinned Hugging Face
+`hf-watch recommend --model-id <id>` uses a bounded Nemotron tool loop to collect pinned Hugging Face
 metadata and model cards. Full cards, a JSON recommendation, and structured tool events
 are saved under `artifacts/recommendations/`. Set `NEBIUS_API_KEY` and optionally
 `TAVILY_API_KEY`; the router endpoint and model are configurable in
@@ -538,10 +539,34 @@ cannot verify a target model's license or chat template. Search failures and
 missing Tavily credentials are recorded as trace events without exposing keys.
 
 ```bash
-hf-watch recommend "Score social posts quickly" --gpu-memory-gb 80 \
+PYTHONPATH=src python -m hf_model_watch recommend "Score social posts quickly" --gpu-memory-gb 80 \
   --budget-usd-per-hour 5 --gpu-hourly-cost-usd 3 --license apache-2.0 \
-  --framework-mode fast --candidate Qwen/Qwen3-4B --json
+  --framework-mode fast --model-id Qwen/Qwen3-4B --json
 ```
+
+When `--model-id` is omitted, the command discovers models from the original task
+request. It runs a recent Hub scan, a same-family search when a reference model is
+present, and a Gemma search. The existing Hub eligibility filter and score determine
+the candidate pool. Tavily searches each candidate against the original request and
+extracts up to two relevant source pages. Follow-up searches come from the
+features named in the request and focus on the exact candidate. A direct statement
+on its Hugging Face page can verify a feature; a credible source that names the
+candidate can support an inference. Speculative decoding requires an exact
+model, draft, and runtime pairing before it is marked verified. The terminal
+then presents up to three recommendations and prompts for a selection. The selected model is saved in
+`discovery.json`; **Optimize Inference + Benchmark** is a placeholder action only.
+
+With `(nemotron_runner)` active at the repository root, start the interactive
+terminal flow with a plain request:
+
+```bash
+PYTHONPATH=src python -m hf_model_watch recommend "Find a new model like Qwen3.5-4B with optional speculative decoding head"
+```
+
+This runs directly from the checkout and does not install the project or its GPU
+dependencies. The command asks for the missing GPU memory, budget, GPU hourly cost,
+license, and framework mode, then prompts you to select a recommended model. If those
+values are already in the request or provided as options, it reuses them.
 
 Omit inputs for terminal prompts. With `--json`, missing values are returned in
 `needs_input` and no network request is made. Hourly GPU cost must be provided because

@@ -211,12 +211,20 @@ def model_research_queries(record: dict[str, Any], request: str) -> list[tuple[s
     ]
     if not record.get("card_excerpt") or any(is_missing for _, is_missing, _ in missing):
         queries.append(("exact", quoted))
-    if any(term in request.lower() for term in ("speculat", "medusa", "eagle", "draft")):
+    if any(
+        term in request.lower()
+        for term in (
+            "speculat", "medusa", "eagle", "draft", "dflash", "dspark", "d-spark",
+            "multi-token prediction", "mtp",
+        )
+    ):
         stem = ident.rsplit("/", 1)[-1]
-        queries.append(("draft_pair", f'"{stem}" DFlash draft target site:huggingface.co'))
-        if not any(term in card for term in ("medusa", "eagle", "d-spark", "d-flash")):
+        queries.append(
+            ("draft_pair", f'"{stem}" speculative decoding draft target site:huggingface.co')
+        )
+        if not any(term in card for term in ("speculat", "draft", "medusa", "eagle")):
             queries.append(
-                ("speculative", f"{quoted} Medusa EAGLE D-Spark D-Flash draft heads runtime")
+                ("speculative", f"{quoted} speculative decoding draft head runtime support")
             )
     runtime = runtime_assessment(record, [])
     if any(runtime[name]["status"] == "unknown" for name in ("vllm", "sglang", "trt-llm")):
@@ -252,9 +260,15 @@ def _pair_evidence(record: dict[str, Any], evidence: list[dict[str, Any]]) -> di
         )
         if not explicit_target or explicit_target.group(1).rstrip(".") != target:
             continue
+        # The exact target claim matters; the drafting method can be DFlash,
+        # DSpark, EAGLE, Medusa, or another documented speculative method.
+        speculative = any(
+            term in lower_body or term in draft_id.lower()
+            for term in ("speculat", "draft", "dflash", "dspark", "eagle", "medusa")
+        )
         runtime = (
-            "sglang" if "sglang" in lower_body and "dflash" in lower_body
-            else "vllm" if "vllm" in lower_body and "dflash" in lower_body
+            "sglang" if speculative and "sglang" in lower_body
+            else "vllm" if speculative and "vllm" in lower_body
             else None
         )
         if runtime:
