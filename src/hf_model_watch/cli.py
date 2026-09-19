@@ -26,6 +26,43 @@ class FrameworkMode(StrEnum):
     sweep = "sweep"
 
 
+def format_fit_checks(assessment: dict[str, object], spec: object) -> list[str]:
+    """Render the deployment checks already computed by ``rank_candidates``."""
+    blockers = [str(reason) for reason in assessment.get("blocking_reasons", [])]
+    memory = assessment.get("estimated_bf16_memory_gb")
+    memory_text = f"{memory:g} GB" if isinstance(memory, (int, float)) else "unverified"
+    available = getattr(spec, "gpu_memory_gb", None)
+    available_text = f"{available:g} GB per GPU" if isinstance(available, (int, float)) else "unverified"
+    gpu_count = getattr(spec, "gpu_count", None)
+    if isinstance(gpu_count, int):
+        available_text += f" ({gpu_count} GPU{'s' if gpu_count != 1 else ''})"
+    license_name = assessment.get("license") or "unverified"
+    license_status = (
+        "blocked" if any("license" in reason for reason in blockers)
+        else "passes" if license_name != "unverified" else "unverified"
+    )
+    hourly = assessment.get("estimated_hourly_usd")
+    hourly_text = f"${hourly:g}/hour" if isinstance(hourly, (int, float)) else "unverified"
+    budget_status = (
+        "blocked" if "budget_unverified_or_exceeded" in blockers
+        else "passes" if isinstance(hourly, (int, float)) else "unverified"
+    )
+    budget = getattr(spec, "budget_usd_per_hour", None)
+    budget_text = f" against ${budget:g}/hour" if isinstance(budget, (int, float)) else ""
+    frameworks = assessment.get("compatible_frameworks") or []
+    return [
+        "   Python fit checks:",
+        f"   Eligibility: {'eligible' if assessment.get('eligible') else 'ineligible'}",
+        f"   Blockers: {', '.join(blockers) if blockers else 'none'}",
+        f"   Memory: {memory_text} estimated / {available_text} available",
+        f"   Runtime: {assessment.get('runtime') or 'unverified'}",
+        f"   Compatible frameworks: {', '.join(str(name) for name in frameworks) or 'none'}",
+        f"   Context length: {assessment.get('context_length') or 'unverified'}",
+        f"   License result: {license_status} ({license_name})",
+        f"   Budget result: {budget_status} ({hourly_text}{budget_text})",
+    ]
+
+
 @app.command()
 def recommend(
     request: Annotated[str | None, typer.Argument(help="Natural-language task request.")] = None,
@@ -36,64 +73,58 @@ def recommend(
     license: Annotated[str | None, typer.Option("--license")] = None,
     framework_mode: Annotated[FrameworkMode | None, typer.Option("--framework-mode")] = None,
     model: Annotated[str | None, typer.Option("--nemotron-model")] = None,
+    validation_max_tokens: Annotated[
+        int | None, typer.Option("--validation-max-tokens", min=1)
+    ] = None,
+    max_prompt_chars: Annotated[int | None, typer.Option("--max-prompt-chars", min=1)] = None,
     model_id: Annotated[
         str | None, typer.Option("--model-id", help="Explicit Hugging Face model ID.")
     ] = None,
+    explore_family: Annotated[
+        bool, typer.Option("--explore-family", help="Compare eligible newer same-family alternatives.")
+    ] = False,
     candidate: Annotated[list[str] | None, typer.Option("--candidate")] = None,
     json_mode: Annotated[
         bool, typer.Option("--json", help="Machine-readable, non-interactive output.")
     ] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", help="Show detailed explicit-model diagnostics.")
+    ] = False,
     output_dir: Annotated[Path | None, typer.Option("--output-dir")] = None,
     config: Annotated[Path, typer.Option("--config")] = Path("config/recommender.yaml"),
 ) -> None:
-    from hf_model_watch.recommender.core import (
-        RequestSpec,
-        load_settings,
-    )
+    from hf_model_watch.recommender.core import RequestSpec, hf_lookup, load_settings
     from hf_model_watch.recommender.core import (
         recommend as run_recommend,
     )
-    from hf_model_watch.recommender.discovery import discover_models, discovery_inputs
+    from hf_model_watch.recommender.discovery import (
+        discover_models, discovery_inputs, explore_family_records,
+    )
     from hf_model_watch.storage.schemas import new_run_id
 
     if request is None and not json_mode:
         request = typer.prompt("Describe what model you want")
-    if model_id is None and request:
+    supplied_inputs = {
+        "gpu_memory_gb": gpu_memory_gb,
+        "budget_usd_per_hour": budget_usd_per_hour,
+        "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
+        "license": license,
+        "framework_mode": framework_mode.value if framework_mode else None,
+    }
+    if request is not None:
         values, missing = discovery_inputs(
             request,
-            {
-                "gpu_memory_gb": gpu_memory_gb,
-                "budget_usd_per_hour": budget_usd_per_hour,
-                "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
-                "license": license,
-                "framework_mode": framework_mode.value if framework_mode else None,
-            },
+            supplied_inputs,
         )
-        if json_mode and missing:
-            typer.echo(
-                json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True)
-            )
-            return
-        defaults = {"license": "any", "framework_mode": "sweep"}
-        for key in missing:
-            values[key] = typer.prompt(key.replace("_", " "), default=defaults.get(key))
     else:
-        values = {
-            "request": request,
-            "gpu_memory_gb": gpu_memory_gb,
-            "budget_usd_per_hour": budget_usd_per_hour,
-            "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
-            "license": license,
-            "framework_mode": framework_mode.value if framework_mode else None,
-        }
+        values = {"request": request, **supplied_inputs}
         missing = [key for key, value in values.items() if value is None]
-        if json_mode and missing:
-            typer.echo(
-                json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True)
-            )
-            return
-        for key in missing:
-            values[key] = typer.prompt(key.replace("_", " "))
+    if json_mode and missing:
+        typer.echo(json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True))
+        return
+    defaults = {"license": "any", "framework_mode": "sweep"}
+    for key in missing:
+        values[key] = typer.prompt(key.replace("_", " "), default=defaults.get(key))
     try:
         spec = RequestSpec(
             **values,
@@ -102,9 +133,41 @@ def recommend(
             candidates=([model_id] if model_id else candidate or []),
         )
         settings = load_settings(config)
+        if validation_max_tokens is not None:
+            settings["nebius"]["validation_max_tokens"] = validation_max_tokens
+        if max_prompt_chars is not None:
+            settings["nebius"]["max_prompt_chars"] = max_prompt_chars
         destination = output_dir or Path("artifacts/recommendations") / new_run_id()
         if model_id:
-            result = run_recommend(spec, settings, destination)
+            def explicit_progress(message: str) -> None:
+                if not verbose and message.startswith("Tool call: "):
+                    message = message.partition(" {")[0]
+                typer.echo(message, err=True)
+
+            family_alternatives = None
+            if explore_family:
+                requested_records = hf_lookup(model_id=model_id, artifact_dir=destination, limit=1)
+                if not requested_records:
+                    raise ValueError(f"Requested model was not found: {model_id}")
+                family_alternatives = explore_family_records(
+                    requested_records[0], spec, settings, destination,
+                    progress=explicit_progress,
+                )[:1]
+                settings = {
+                    **settings,
+                    "tavily": {
+                        **settings["tavily"],
+                        "search_depth": "basic",
+                        "max_results": 8,
+                        "max_searches": 10,
+                    },
+                }
+            with redirect_stdout(sys.stderr):
+                result = run_recommend(
+                    spec, settings, destination, explicit_model_id=model_id,
+                    family_alternatives=family_alternatives,
+                    progress=explicit_progress,
+                )
         elif json_mode:
             # The scanner emits TRACE_EVENT lines on stdout; reserve stdout for JSON.
             with redirect_stdout(sys.stderr):
@@ -143,6 +206,13 @@ def recommend(
             typer.echo(f"{number}. {item['model_id']}{label}")
             if item.get("reasoning"):
                 typer.echo(f"   Decision reasoning: {item['reasoning']}")
+            if item.get("nemotron", {}).get("rationale"):
+                typer.echo(f"   Nemotron: {item['nemotron']['rationale']}")
+            elif item.get("nemotron"):
+                typer.echo(
+                    "   Nemotron: task fit unknown; "
+                    + (item["nemotron"].get("uncertainty") or "no supported task-fit claims")
+                )
             typer.echo(f"   HF score: {item['hf_score']:.3f}")
             for reason in item["why_it_fits"]:
                 typer.echo(f"   Why: {reason}")
@@ -150,6 +220,8 @@ def recommend(
                 typer.echo(f"   {field.replace('_', ' ')}: {status}")
             for limitation in item["limitations"]:
                 typer.echo(f"   Limitation: {limitation}")
+            for line in format_fit_checks(item.get("runtime_assessment", {}), spec):
+                typer.echo(line)
         choice = typer.prompt("Select model", type=int, default=1)
         if choice not in range(1, len(result["recommendations"]) + 1):
             raise typer.BadParameter("Select a listed model number")
@@ -174,6 +246,77 @@ def recommend(
     elif model_id is not None:
         chosen = result["recommendation"]
         typer.echo(f"{result['status']}: {chosen['model_id'] if chosen else 'none'}")
+        if chosen:
+            for line in format_fit_checks(chosen, spec):
+                typer.echo(line)
+        for item in result.get("evaluated_candidates", []):
+            if verbose:
+                typer.echo(f"Candidate {item['model_id']} blockers: {', '.join(item.get('blocking_reasons', [])) or 'none'}", err=True)
+        rationale = result.get("router_assessment", {}).get("reasoning")
+        if result.get("validation_error"):
+            typer.echo(f"Validation error: {result['validation_error']}")
+        elif rationale:
+            typer.echo(f"Nemotron rationale: {rationale}")
+        else:
+            typer.echo("Nemotron rationale: no rationale provided")
+        if explore_family:
+            requested = result.get("requested_candidate") or next(
+                (
+                    item
+                    for item in [
+                        *result.get("alternatives", []),
+                        *result.get("evaluated_candidates", []),
+                    ]
+                    if item.get("model_id") == model_id
+                ),
+                None,
+            )
+            if chosen and requested and chosen["model_id"] != requested["model_id"]:
+                choices = [chosen, requested]
+            else:
+                choices = [
+                    item
+                    for item in [chosen or requested, *result.get("alternatives", [])]
+                    if item
+                ]
+            choices = list({item["model_id"]: item for item in choices}.values())
+            if choices:
+                typer.echo("Family comparison")
+                for number, item in enumerate(choices, 1):
+                    labels = []
+                    if item["model_id"] == model_id:
+                        labels.append("requested model")
+                    if chosen and item["model_id"] == chosen["model_id"]:
+                        labels.append("strongest recommendation")
+                    typer.echo(f"{number}. {item['model_id']} ({', '.join(labels)})")
+                    typer.echo(f"   HF score: {item['infra_score']:.3f}")
+                    typer.echo(f"   Task fit: {item.get('task_fit', 'unverified')}")
+                    pair = item.get("speculative_decoding") or {}
+                    if pair.get("usable"):
+                        runtimes = pair.get("runtimes") or [pair.get("runtime")]
+                        typer.echo(
+                            "   Speculative decoding: usable with "
+                            f"{pair.get('draft_model')} via "
+                            f"{', '.join(str(runtime) for runtime in runtimes if runtime)}"
+                        )
+                        if pair.get("source_url"):
+                            typer.echo(f"   Pair evidence: {pair['source_url']}")
+                    else:
+                        typer.echo(
+                            "   Speculative decoding: not verified; "
+                            + str(pair.get("reason") or "no exact target/draft/runtime pair found")
+                        )
+                    for line in format_fit_checks(item, spec):
+                        typer.echo(line)
+                typer.echo("Family selection ready.", err=True)
+                selected = typer.prompt("Select model", type=int, default=1)
+                if selected not in range(1, len(choices) + 1):
+                    raise typer.BadParameter("Select a listed model number")
+                result["selected_model_id"] = choices[selected - 1]["model_id"]
+                (destination / "recommendation.json").write_text(
+                    json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                typer.echo(f"Selected model: {result['selected_model_id']}")
         typer.echo(f"Saved: {destination / 'recommendation.json'}")
 
 

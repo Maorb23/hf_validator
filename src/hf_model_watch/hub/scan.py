@@ -120,7 +120,12 @@ def _candidate_from_model_info(model_info: Any) -> dict[str, Any]:
     return {
         "model_id": model_id,
         "author": getattr(info, "author", None) or extract_author(model_id),
-        "last_modified": normalize_datetime(getattr(info, "lastModified", None)),
+        "created_at": normalize_datetime(
+            getattr(info, "created_at", None) or getattr(info, "createdAt", None)
+        ),
+        "last_modified": normalize_datetime(
+            getattr(info, "last_modified", None) or getattr(info, "lastModified", None)
+        ),
         "downloads": getattr(info, "downloads", None) or 0,
         "likes": getattr(info, "likes", None) or 0,
         "pipeline_tag": pipeline_tag,

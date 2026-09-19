@@ -5,12 +5,89 @@ import json
 from tests.test_recommender import _spec
 from typer.testing import CliRunner
 
-from hf_model_watch.cli import app
+from hf_model_watch.cli import app, format_fit_checks
 from hf_model_watch.recommender import discovery
 from hf_model_watch.recommender.core import load_settings
 
 
+def test_explicit_and_discovery_render_shared_python_fit_checks():
+    assessment = {
+        "eligible": True,
+        "blocking_reasons": [],
+        "estimated_bf16_memory_gb": 24,
+        "runtime": "vllm",
+        "compatible_frameworks": ["vllm", "transformers"],
+        "context_length": 32768,
+        "license": "apache-2.0",
+        "estimated_hourly_usd": 3,
+    }
+    explicit_lines = format_fit_checks(assessment, _spec())
+    discovery_recommendation = {"runtime_assessment": assessment}
+    discovery_lines = format_fit_checks(discovery_recommendation["runtime_assessment"], _spec())
+
+    assert explicit_lines == discovery_lines
+    rendered = "\n".join(explicit_lines)
+    for field in (
+        "Eligibility: eligible",
+        "Blockers: none",
+        "Memory: 24 GB estimated / 80 GB per GPU (1 GPU) available",
+        "Runtime: vllm",
+        "Compatible frameworks: vllm, transformers",
+        "Context length: 32768",
+        "License result: passes (apache-2.0)",
+        "Budget result: passes ($3/hour against $5/hour)",
+    ):
+        assert field in rendered
+
+
+def test_explore_family_records_filters_scores_and_deduplicates(tmp_path, monkeypatch):
+    requested = {
+        "model_id": "org/Qwen3-4B",
+        "estimated_params_billion": 4,
+        "created_at": "2025-04-28T10:00:00+00:00",
+    }
+    rows = [
+        requested,
+        {"model_id": "org/Qwen3.5-4B", "estimated_params_billion": 4,
+         "created_at": "2025-05-01T10:00:00Z"},
+        {"model_id": "org/Qwen2.5-refresh-5B", "estimated_params_billion": 5,
+         "created_at": "2025-05-02T10:00:00+00:00"},
+        {"model_id": "org/Qwen4-4B", "estimated_params_billion": 4,
+         "created_at": "2025-04-01T10:00:00+00:00"},
+        {"model_id": "org/Qwen4-20B", "estimated_params_billion": 20,
+         "created_at": "2025-05-03T10:00:00+00:00"},
+        {"model_id": "org/Qwen-Drive-1.0-4B", "estimated_params_billion": 4,
+         "created_at": "2025-05-04T10:00:00+00:00", "downloads": 1000000},
+    ]
+    monkeypatch.setattr(
+        discovery, "score_candidate",
+        lambda row, *_args: {"eligible": "20B" not in row["model_id"], "score": 1 if "3.5" in row["model_id"] else .5},
+    )
+    progress = []
+    lookup_calls = []
+    def lookup(**kwargs):
+        lookup_calls.append(kwargs)
+        if kwargs.get("model_id"):
+            return [next(row for row in rows if row["model_id"] == kwargs["model_id"])]
+        return rows
+    result = discovery.explore_family_records(
+        requested, _spec(), load_settings(), tmp_path,
+        lookup=lookup, progress=progress.append,
+    )
+    assert [row["model_id"] for row in result] == ["org/Qwen3.5-4B", "org/Qwen2.5-refresh-5B"]
+    assert any("Family lookup" in item for item in progress)
+    assert any("deduplication" in item for item in progress)
+    assert lookup_calls[0]["author"] == "org"
+    assert lookup_calls[0]["limit"] == 100
+    assert lookup_calls[0]["sort"] == "createdAt"
+    assert lookup_calls[0]["enrich"] is False
+    assert len([call for call in lookup_calls if call.get("model_id")]) == 2
+
+
 def test_constraints_and_missing_inputs_reuse_request():
+    assert discovery.extract_constraints(
+        "Want to run fast Qwen3.5-4b for log analysis"
+    )["family"] == "Qwen"
     request = (
         "Find a new model like Qwen3.5-4B with speculative decoding for one 80GB A100, "
         "budget $5/hour; any license, sweep mode"
@@ -113,7 +190,7 @@ def test_cli_selection_and_explicit_branch(tmp_path, monkeypatch):
 
     called = []
 
-    def explicit(spec, _settings, _destination):
+    def explicit(spec, _settings, _destination, **_kwargs):
         called.append(spec.candidates)
         return {"status": "recommended", "recommendation": {"model_id": "org/exact"}}
 
@@ -358,3 +435,57 @@ def test_discovery_researches_requested_non_speculative_feature(tmp_path, monkey
     assert any("vision support documentation" in query for query in queries)
     assert all("DFlash" not in query for query in queries)
     assert result["recommendations"][0]["task_fit"]["vision"] == "verified"
+
+
+def test_nemotron_discovery_claim_validation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("NEBIUS_API_KEY", "test")
+    settings = load_settings()
+    base = {
+        "model_id": "org/a", "eligible": True, "hf_score": 0.8,
+        "final_score": 0.9, "runtime_assessment": {"blocking_reasons": []},
+        "task_fit": {"tool_calling": "verified"},
+        "evidence": [{"source_url": "https://huggingface.co/org/a",
+                      "retrieved_text": "org/a supports tool calling"}],
+    }
+    response = {"assessments": [{
+        "model_id": "org/a", "task_fit": "verified", "rationale": "Tool calling is documented.",
+        "uncertainty": "Speed unmeasured", "claims": [{
+            "feature": "tool_calling", "status": "verified",
+            "source_urls": ["https://huggingface.co/org/a"],
+        }],
+    }]}
+    calls = []
+
+    def fake_client(**kwargs):
+        def create(**request):
+            calls.append(request)
+            message = SimpleNamespace(model_dump=lambda **_: {"content": json.dumps(response)})
+            return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    monkeypatch.setattr(discovery, "OpenAI", fake_client)
+    row = dict(base)
+    discovery._validate_with_nemotron(_spec(), [row], settings, tmp_path)
+    assert row["nemotron"]["task_fit"] == "verified"
+    assert row["final_score"] == 0.92
+    assert calls[0]["model"] == settings["nebius"]["default_model"]
+    assert "request" in calls[0]["messages"][1]["content"]
+    assert "hf_score" in calls[0]["messages"][1]["content"]
+    assert "deployment" in calls[0]["messages"][1]["content"]
+    assert "https://huggingface.co/org/a" in calls[0]["messages"][1]["content"]
+    assert (tmp_path / "nemotron_discovery_response.json").exists()
+
+    response["assessments"][0]["claims"][0]["source_urls"] = ["https://elsewhere.invalid"]
+    row = dict(base)
+    discovery._validate_with_nemotron(_spec(), [row], settings, tmp_path)
+    assert row["nemotron"]["task_fit"] == "unknown"
+    assert row["nemotron"]["unsupported_claims"]
+    assert row["final_score"] == 0.9
+
+    response["assessments"][0]["claims"][0]["source_urls"] = []
+    row = {**base, "evidence": []}
+    discovery._validate_with_nemotron(_spec(), [row], settings, tmp_path)
+    assert row["nemotron"]["task_fit"] == "unknown"
+    assert row["nemotron"]["rationale"] == ""

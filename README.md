@@ -544,6 +544,20 @@ PYTHONPATH=src python -m hf_model_watch recommend "Score social posts quickly" -
   --framework-mode fast --model-id Qwen/Qwen3-4B --json
 ```
 
+```bash
+maorb@MaorLaptop:/mnt/c/Users/maorb/work/hf_validator$ PYTHONPATH=src python -m hf_model_watch recommend
+     --nemotron-model nvidia/nemotron-3-super-120b-a12b     "Recommend similar models to openbmb/MiniCPM5-2B, prefer speculative
+  decoding"  --max-prompt-chars 120000 --validation-max-tokens 6000
+```
+
+```bash
+PYTHONPATH=src python -m hf_model_watch recommend--model-id Qwen/Qwen3-4B     --nemotron-model nvidia/nemotron-3-super-120b-a12b
+  "Want to run the model fast to get solid result for log analysis, speculative decoding"  --max-prompt-chars 120000 --validation-max-tokens 6000
+  --explore-family
+```
+
+
+
 When `--model-id` is omitted, the command discovers models from the original task
 request. It runs a recent Hub scan, a same-family search when a reference model is
 present, and a Gemma search. The existing Hub eligibility filter and score determine

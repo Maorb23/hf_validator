@@ -25,7 +25,10 @@ def lookup_models(
     family: str | None = None,
     query: str | None = None,
     fuzzy: bool = False,
+    author: str | None = None,
     limit: int = 20,
+    sort: str = "downloads",
+    enrich: bool = True,
     output_path: str | Path = DEFAULT_LOOKUP_OUTPUT,
     api: HfApi | None = None,
 ) -> list[dict[str, Any]]:
@@ -45,16 +48,24 @@ def lookup_models(
             "reasons": ["exact model ID"],
         }
     else:
-        records = _search_models(client, selector, fuzzy=fuzzy, limit=limit)
+        records = _search_models(
+            client,
+            selector,
+            fuzzy=fuzzy,
+            author=author,
+            limit=limit,
+            sort=sort,
+        )
 
-    # Lookup is deliberately broader than scanning: users need config/tokenizer metadata even
-    # when a model has no declared license or downloads yet.
-    _enrich_candidate_metadata(
-        records,
-        {"max_candidates_to_run": limit, "min_downloads": 0},
-        client,
-        require_license=False,
-    )
+    # Family exploration can inspect Hub summary metadata first, then enrich only
+    # the small set of candidate repositories it will actually score.
+    if enrich:
+        _enrich_candidate_metadata(
+            records,
+            {"max_candidates_to_run": limit, "min_downloads": 0},
+            client,
+            require_license=False,
+        )
     _apply_context_fallback(records, {"fallback_context_length": 2048})
     _write_jsonl(output_path, records)
     return records
@@ -70,16 +81,27 @@ def _validate_selector(
     return selectors[0]
 
 
-def _search_models(client: HfApi, query: str, *, fuzzy: bool, limit: int) -> list[dict[str, Any]]:
+def _search_models(
+    client: HfApi,
+    query: str,
+    *,
+    fuzzy: bool,
+    author: str | None,
+    limit: int,
+    sort: str,
+) -> list[dict[str, Any]]:
     # Request a bounded pool from the Hub, then make all matching/ranking decisions locally.
-    summaries = client.list_models(
-        search=query,
-        sort="downloads",
-        limit=limit * 5,
-        full=True,
-        cardData=True,
-        fetch_config=True,
-    )
+    request = {
+        "search": query,
+        "sort": sort,
+        "limit": limit * 5,
+        "full": True,
+        "cardData": True,
+        "fetch_config": True,
+    }
+    if author:
+        request["author"] = author
+    summaries = client.list_models(**request)
     matched: list[dict[str, Any]] = []
     for summary in summaries:
         candidate = _candidate_from_model_info(summary)
@@ -88,13 +110,22 @@ def _search_models(client: HfApi, query: str, *, fuzzy: bool, limit: int) -> lis
             continue
         candidate["lookup_match"] = match
         matched.append(candidate)
-    matched.sort(
-        key=lambda item: (
-            float(item["lookup_match"]["score"]),
-            int(item.get("downloads") or 0),
-        ),
-        reverse=True,
-    )
+    if sort in {"lastModified", "createdAt"}:
+        matched.sort(
+            key=lambda item: (
+                float(item["lookup_match"]["score"]),
+                str((item.get("created_at") if sort == "createdAt" else item.get("last_modified")) or ""),
+            ),
+            reverse=True,
+        )
+    else:
+        matched.sort(
+            key=lambda item: (
+                float(item["lookup_match"]["score"]),
+                int(item.get("downloads") or 0),
+            ),
+            reverse=True,
+        )
     return matched[:limit]
 
 

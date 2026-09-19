@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -165,6 +165,173 @@ def model_research_queries(record: dict[str, Any], request: str) -> list[tuple[s
     queries.extend((name, f"{quoted} {terms}") for name, is_missing, terms in missing if is_missing)
     return queries
 
+
+def comparison_research_queries(record: dict[str, Any]) -> list[tuple[str, str]]:
+    """Use the same bounded research cases for both sides of a family comparison."""
+    ident = str(record["model_id"])
+    quoted = f'"{ident}"'
+    stem = ident.rsplit("/", 1)[-1]
+    return [
+        ("exact", quoted),
+        ("draft_pair", f'"{stem}" speculative decoding draft target site:huggingface.co'),
+        ("speculative", f"{quoted} speculative decoding draft head runtime support"),
+        ("runtime", f"{quoted} vLLM SGLang TRT-LLM compatibility"),
+        ("origin", f"{quoted} base_model parent model"),
+    ]
+
+
+def _normalize_inline_markdown(text: str) -> str:
+    """Remove formatting delimiters without changing underscores inside model IDs."""
+    return re.sub(
+        r"(?<!\w)(?:\*\*|__|`)|(?:\*\*|__|`)(?!\w)",
+        "",
+        text,
+    )
+
+
+def _pair_evidence(record: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """
+    Identify a target/drafter pair and runtime from the evidence, if present.
+    The drafter must explicitly claim the target model, and the runtime must be mentioned in the same source.
+    """
+    target = str(record["model_id"])
+    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    for source in evidence:
+        url = str(source.get("source_url") or "")
+        body = str(source.get("retrieved_text") or "")
+        normalized_body = _normalize_inline_markdown(body)
+        draft_match = re.fullmatch(r"https://huggingface\.co/([^/?#]+/[^/?#]+)/?(?:\?[^#]*)?", url)
+        if not draft_match or draft_match.group(1) == target:
+            continue
+        draft_id = draft_match.group(1)
+        lower_body = normalized_body.lower()
+        # GGUF and other converted weights cannot inherit the source card's
+        # SGLang instructions merely because those instructions were copied.
+        if (
+            "gguf" in draft_id.lower()
+            or "gptq" in draft_id.lower()
+            or "quantized version of" in lower_body
+            or "model card is pasted" in lower_body
+        ):
+            continue
+        explicit_target = re.search(
+            r"(?:draft model for|target model\s*)\s*[`\"']?([^`\"'\s,;]+/[^`\"'\s,;]+)",
+            normalized_body,
+            re.IGNORECASE,
+        )
+        if not explicit_target or explicit_target.group(1).rstrip(".") != target:
+            continue
+        # The exact target claim matters; the drafting method can be DFlash,
+        # DSpark, EAGLE, Medusa, or another documented speculative method.
+        speculative = any(
+            term in lower_body or term in draft_id.lower()
+            for term in ("speculat", "draft", "dflash", "dspark", "eagle", "medusa")
+        )
+        runtimes = [
+            runtime
+            for runtime in ("sglang", "vllm", "transformers")
+            if speculative and runtime in lower_body
+        ]
+
+        if runtimes:
+            pair = {
+                "target_model": target,
+                "draft_model": draft_id,
+                "runtimes": runtimes,
+                "source_url": url,
+            }
+            direct_launch = int(
+                f"--speculative-draft-model-path {draft_id}" in normalized_body
+            )
+            try:
+                relevance = float(source.get("score") or 0)
+            except (TypeError, ValueError):
+                relevance = 0.0
+            candidates.append((direct_launch, relevance, pair))
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[0], item[1], item[2]["draft_model"]))[2]
+
+def _validation_excerpt(source: dict[str, Any]) -> str:
+    """
+    Form a short excerpt from the source text that highlights the target/drafter claim, if present, for validation purposes.
+    """
+    body = str(source.get("retrieved_text") or "")
+    match = re.search(r"draft model for|target model\s*[`\"']|speculative-draft-model-path", body, re.IGNORECASE)
+    if match:
+        start = max(0, match.start() - 300)
+        return body[start : start + 4_000]
+    return body[:1_500]
+
+
+def _validation_sources(sources: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+    """Keep one compact, useful excerpt per URL, preferring direct sources."""
+    def priority(source: dict[str, Any]) -> tuple[int, float]:
+        url = str(source.get("source_url") or "").lower()
+        authority = 2 if "huggingface.co/" in url else 1 if any(
+            domain in url for domain in ("github.com/", "docs.vllm.ai/", "docs.sglang.ai/")
+        ) else 0
+        try:
+            score = float(source.get("score") or 0)
+        except (ValueError, TypeError):
+            score = 0
+        return authority, score
+
+    unique: dict[str, dict[str, Any]] = {}
+    for source in sorted(sources, key=priority, reverse=True):
+        url = str(source.get("source_url") or "").split("#", 1)[0].rstrip("/")
+        if url and url not in unique:
+            unique[url] = {
+                "source_url": url,
+                "origin": source.get("origin"),
+                "retrieved_text": _validation_excerpt(source),
+            }
+    return list(unique.values())[:limit]
+
+def select_fixture(request: str, fixture_dir: Path | None = None) -> dict[str, Any]:
+    fixture_dir = fixture_dir or Path(__file__).with_name("fixtures")
+    text = request.lower()
+    if any(term in text for term in ("pull request", "code review", "pr review")):
+        name = "pr_review"
+    elif any(term in text for term in ("social", "twitter", "tweet", "reddit", "post", "comment", "social scoring")):
+        name = "social_scoring"
+    elif any(term in text for term in ("long context", "longer context", "context length", "longer input", "longer prompt")):
+        name = "long_context_analysis"
+    else:
+        name = "social_scoring"  # Default fixture if no specific terms are found
+    return json.loads((fixture_dir / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def _family_key(model_id: str) -> str:
+    stem = model_id.rsplit("/", 1)[-1].lower()
+    return re.sub(r"(?:[-_.]?\d+(?:\.\d+)?b|[-_.]?instruct|[-_.]?chat)+.*$", "", stem) # This regex removes versioning and suffixes like "-instruct" or "-chat" from the model name to create a normalized family key.
+
+def _validate_tool_args(name: str, args: Any, max_results: int) -> dict[str, Any]:
+    allowed = {
+        "hf_lookup": {"model_id", "family"},
+        "tavily_search": {"query"},
+        "tavily_extract": {"urls"},
+        "runtime_compatibility": {"model_id"},
+        "rank_candidates": set(),
+    }
+    if name not in allowed or not isinstance(args, dict) or set(args) - allowed[name]:
+        raise ValueError("Unapproved tool or arguments")
+    if name == "hf_lookup" and bool(args.get("model_id")) == bool(args.get("family")):
+        raise ValueError("Choose exactly one model_id or family")
+    if name in {"tavily_search", "runtime_compatibility"}:
+        key = "query" if name == "tavily_search" else "model_id"
+        if not isinstance(args.get(key), str) or not args[key].strip():
+            raise ValueError(f"{key} must be nonempty text")
+    if name == "tavily_extract" and (
+        not isinstance(args.get("urls"), list)
+        or not 1 <= len(args["urls"]) <= max_results
+        or any(not isinstance(url, str) or not url.startswith("https://") for url in args["urls"])
+    ):
+        raise ValueError("urls must be a bounded list of HTTPS URLs")
+    return args
+
+
 """
 ＴＯＯＬ  Ｄｅｆｉｎｉｔｉｏｎ
 """
@@ -299,76 +466,6 @@ def tavily_research(
     ]
 
 
-def _pair_evidence(record: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """
-    Identify a target/drafter pair and runtime from the evidence, if present.
-    The drafter must explicitly claim the target model, and the runtime must be mentioned in the same source.
-    """
-    target = str(record["model_id"])
-    candidates: list[tuple[int, float, dict[str, Any]]] = []
-    for source in evidence:
-        url = str(source.get("source_url") or "")
-        body = str(source.get("retrieved_text") or "")
-        draft_match = re.fullmatch(r"https://huggingface\.co/([^/?#]+/[^/?#]+)/?(?:\?[^#]*)?", url)
-        if not draft_match or draft_match.group(1) == target:
-            continue
-        draft_id = draft_match.group(1)
-        lower_body = body.lower()
-        # GGUF and other converted weights cannot inherit the source card's
-        # SGLang instructions merely because those instructions were copied.
-        if (
-            "gguf" in draft_id.lower()
-            or "gptq" in draft_id.lower()
-            or "quantized version of" in lower_body
-            or "model card is pasted" in lower_body
-        ):
-            continue
-        explicit_target = re.search(
-            r"(?:draft model for|target model\s*)\s*[`\"']?([^`\"'\s,;]+/[^`\"'\s,;]+)",
-            body,
-            re.IGNORECASE,
-        )
-        if not explicit_target or explicit_target.group(1).rstrip(".") != target:
-            continue
-        # The exact target claim matters; the drafting method can be DFlash,
-        # DSpark, EAGLE, Medusa, or another documented speculative method.
-        speculative = any(
-            term in lower_body or term in draft_id.lower()
-            for term in ("speculat", "draft", "dflash", "dspark", "eagle", "medusa")
-        )
-        runtime = (
-            "sglang" if speculative and "sglang" in lower_body
-            else "vllm" if speculative and "vllm" in lower_body
-            else None
-        )
-        if runtime:
-            pair = {
-                "target_model": target,
-                "draft_model": draft_id,
-                "runtime": runtime,
-                "source_url": url,
-            }
-            direct_launch = int(f"--speculative-draft-model-path {draft_id}" in body)
-            try:
-                relevance = float(source.get("score") or 0)
-            except (TypeError, ValueError):
-                relevance = 0.0
-            candidates.append((direct_launch, relevance, pair))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: (item[0], item[1], item[2]["draft_model"]))[2]
-
-
-def _validation_excerpt(source: dict[str, Any]) -> str:
-    """
-    Form a short excerpt from the source text that highlights the target/drafter claim, if present, for validation purposes.
-    """
-    body = str(source.get("retrieved_text") or "")
-    match = re.search(r"draft model for|target model\s*[`\"']|speculative-draft-model-path", body, re.IGNORECASE)
-    if match:
-        return body[max(0, match.start() - 160) : match.start() + 850]
-    return body[:600]
-
 
 def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
     """
@@ -432,12 +529,13 @@ def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -
     }
     pair = _pair_evidence(record, evidence)
     if pair:
-        result[pair["runtime"]] = {
-            "status": "compatible",
-            "confidence": "medium",
-            "source_url": pair["source_url"],
-            "reason": "Exact target/drafter pairing and runtime documented; execution unverified",
-        }
+        for runtime_name in pair["runtimes"]:
+            result[runtime_name] = {
+                "status": "compatible",
+                "confidence": "medium",
+                "source_url": pair["source_url"],
+                "reason": "Exact target/drafter pairing and runtime documented; execution unverified",
+            }
         result["speculative_decoding"] = {
             **pair,
             "usable": True,
@@ -468,26 +566,6 @@ def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -
                 "reason": "Pinned HF config names target, draft and compatible runtime",
             }
     return result
-
-
-def select_fixture(request: str, fixture_dir: Path | None = None) -> dict[str, Any]:
-    fixture_dir = fixture_dir or Path(__file__).with_name("fixtures")
-    text = request.lower()
-    if any(term in text for term in ("pull request", "code review", "pr review")):
-        name = "pr_review"
-    elif any(term in text for term in ("social", "twitter", "tweet", "reddit", "post", "comment", "social scoring")):
-        name = "social_scoring"
-    elif any(term in text for term in ("long context", "longer context", "context length", "longer input", "longer prompt")):
-        name = "long_context_analysis"
-    else:
-        name = "social_scoring"  # Default fixture if no specific terms are found
-    return json.loads((fixture_dir / f"{name}.json").read_text(encoding="utf-8"))
-
-
-def _family_key(model_id: str) -> str:
-    stem = model_id.rsplit("/", 1)[-1].lower()
-    return re.sub(r"(?:[-_.]?\d+(?:\.\d+)?b|[-_.]?instruct|[-_.]?chat)+.*$", "", stem) # This regex removes versioning and suffixes like "-instruct" or "-chat" from the model name to create a normalized family key.
-
 
 def rank_candidates(
     records: list[dict[str, Any]],
@@ -565,9 +643,10 @@ def rank_candidates(
         hourly = spec.gpu_hourly_cost_usd
         if hourly is None or float(hourly) > spec.budget_usd_per_hour:
             blockers.append("budget_unverified_or_exceeded")
-        selected = (
-            pair["runtime"] if pair["usable"] and pair.get("runtime") in compatible
-            else "vllm" if "vllm" in compatible else compatible[0] if compatible else None
+        pair_runtimes = pair.get("runtimes", []) if pair["usable"] else []
+        selected = next(
+            (name for name in ("vllm", "sglang", "transformers") if name in pair_runtimes),
+            "vllm" if "vllm" in compatible else compatible[0] if compatible else None,
         )
         usable_gpu_count = spec.gpu_count if selected in {"vllm", "sglang", "trt-llm"} else 1
         if memory is None or memory > spec.gpu_memory_gb * usable_gpu_count * float(
@@ -639,30 +718,13 @@ def rank_candidates(
         ),
     )
 
-def _validate_tool_args(name: str, args: Any, max_results: int) -> dict[str, Any]:
-    allowed = {
-        "hf_lookup": {"model_id", "family"},
-        "tavily_search": {"query"},
-        "tavily_extract": {"urls"},
-        "runtime_compatibility": {"model_id"},
-        "rank_candidates": set(),
-    }
-    if name not in allowed or not isinstance(args, dict) or set(args) - allowed[name]:
-        raise ValueError("Unapproved tool or arguments")
-    if name == "hf_lookup" and bool(args.get("model_id")) == bool(args.get("family")):
-        raise ValueError("Choose exactly one model_id or family")
-    if name in {"tavily_search", "runtime_compatibility"}:
-        key = "query" if name == "tavily_search" else "model_id"
-        if not isinstance(args.get(key), str) or not args[key].strip():
-            raise ValueError(f"{key} must be nonempty text")
-    if name == "tavily_extract" and (
-        not isinstance(args.get("urls"), list)
-        or not 1 <= len(args["urls"]) <= max_results
-        or any(not isinstance(url, str) or not url.startswith("https://") for url in args["urls"])
-    ):
-        raise ValueError("urls must be a bounded list of HTTPS URLs")
-    return args
 
+
+"""
++-+-+-+-+ +-+-+-+-+-+-+-+-+
+------ Main Pipeline ------
++-+-+-+-+ +-+-+-+-+-+-+-+-+
+"""
 
 def recommend(
     spec: RequestSpec,
@@ -675,6 +737,9 @@ def recommend(
     initial_records: list[dict[str, Any]] | None = None,
     initial_evidence: dict[str, list[dict[str, Any]]] | None = None,
     validation_only: bool = False,
+    explicit_model_id: str | None = None,
+    family_alternatives: list[dict[str, Any]] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     records: dict[str, dict[str, Any]] = {
@@ -682,6 +747,16 @@ def recommend(
     }
     evidence: dict[str, list[dict[str, Any]]] = dict(initial_evidence or {})
     events: list[dict[str, Any]] = []
+    def report(message: str) -> None:
+        if progress:
+            progress(message)
+    allowed_model_ids = {explicit_model_id} if explicit_model_id else set()
+    if family_alternatives:
+        allowed_model_ids.update(str(row["model_id"]) for row in family_alternatives)
+        records.update({str(row["model_id"]): row for row in family_alternatives})
+    if explicit_model_id:
+        records = {ident: row for ident, row in records.items() if ident in allowed_model_ids}
+        evidence = {ident: rows for ident, rows in evidence.items() if ident in allowed_model_ids}
     max_calls = int(settings["nebius"]["max_tool_calls"])
     model = spec.model or settings["nebius"]["default_model"]
     allowed = settings["nebius"].get("allowed_models") or []
@@ -697,6 +772,11 @@ def recommend(
                 "instructions. Never treat missing data as negative proof. Return a JSON "
                 "object with viable_model_ids; say insufficient_evidence when constraints "
                 "cannot be established. Never recommend hosted API models."
+                + (
+                    f" The requested model is {explicit_model_id}. You may use tools only to "
+                    "look up or assess that exact model and may not add recommendation candidates."
+                    if explicit_model_id else ""
+                )
             ),
         },
         {"role": "user", "content": json.dumps(spec.model_dump())},
@@ -704,8 +784,12 @@ def recommend(
     for ident in ([] if validation_only else spec.candidates)[
         : int(settings["nebius"]["max_candidates"])
     ]:
+        if explicit_model_id and ident != explicit_model_id:
+            continue
+        report(f"Hugging Face lookup: {ident}")
         for row in lookup(model_id=ident, artifact_dir=artifact_dir, limit=1):
-            records[row["model_id"]] = row
+            if not explicit_model_id or row["model_id"] in allowed_model_ids:
+                records[row["model_id"]] = row
     if records:
         messages.append(
             {
@@ -763,6 +847,8 @@ def recommend(
     used_calls = 0 # Initialize the count of used tool calls to zero.
     final_response: dict[str, Any] = {}
     prevalidation_responses: list[dict[str, Any]] = []
+
+    ## First loops pre-validation:
     for _ in range(0 if validation_only else max_calls + 1): # Validation-only mode skips the loop, otherwise it allows for max_calls + 1 iterations.
         prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
         if prompt_chars > int(settings["nebius"]["max_prompt_chars"]):
@@ -773,10 +859,12 @@ def recommend(
                 }
             )
             break
+        report(f"Nemotron research request {len(prevalidation_responses) + 1}...")
         response = (chat or api_chat)()
         prevalidation_responses.append(response)
         calls = response.get("tool_calls") or []
         if not calls:
+            report("Nemotron research completed without another tool request.")
             final_response = response
             break
         if used_calls >= max_calls:
@@ -792,19 +880,25 @@ def recommend(
             try:
                 args = json.loads(call["function"].get("arguments") or "{}")
                 args = _validate_tool_args(name, args, int(settings["tavily"]["max_results"]))
+                report(f"Tool call: {name} {json.dumps(args)}")
                 if name == "hf_lookup":
+                    if explicit_model_id and (args.get("model_id") != explicit_model_id or args.get("family")):
+                        raise ValueError(f"Only the requested model {explicit_model_id} may be looked up")
                     remaining = int(settings["nebius"]["max_candidates"]) - len(records)
-                    if remaining <= 0:
+                    if remaining <= 0 and not explicit_model_id:
                         raise ValueError("Candidate limit reached") # When the number of records, i.e. the number of models already looked up, 
                                                                     # reaches the maximum allowed candidates, it raises a ValueError.
                     rows = lookup(
                         model_id=args.get("model_id"),
                         family=args.get("family"),
                         artifact_dir=artifact_dir,
-                        limit=remaining,
+                        limit=1 if explicit_model_id else remaining,
                     ) # This line calls the lookup function to retrieve model information based on the provided model_id or family. It limits the number of results to the remaining allowed candidates.
                     for row in rows:
-                        records[row["model_id"]] = row
+                        if not explicit_model_id or row["model_id"] in allowed_model_ids:
+                            records[row["model_id"]] = row
+                    rows = [row for row in rows if not explicit_model_id or row["model_id"] in allowed_model_ids]
+                    report(f"Hugging Face lookup returned {len(rows)} record(s)")
                     fields = (
                         "model_id",
                         "revision",
@@ -826,6 +920,10 @@ def recommend(
                         for row in rows
                     ]
                 elif name in {"tavily_search", "tavily_extract"}: # If the tool is tavily search or extract, it performs a research operation using the Tavily API.
+                    if family_alternatives:
+                        raise ValueError(
+                            "Tavily family-comparison research runs deterministically after tool use"
+                        )
                     if sum(e["event"] == "tavily" for e in events) >= int(settings["tavily"]["max_searches"]):
                         raise ValueError("Tavily search limit reached")
                     query = str(args.get("query") or "")[:350] # Retrieves the query argument from the tool call, ensuring it is a string and truncating it to 350 characters.
@@ -834,8 +932,13 @@ def recommend(
                         raise ValueError("Look up a model before Tavily research")
                     if not query and not urls:
                         raise ValueError("query or urls required")
+                    if explicit_model_id and urls and not any(
+                        explicit_model_id.lower() in url.lower() for url in urls
+                    ):
+                        raise ValueError(f"Research must concern the requested model {explicit_model_id}")
                     if name == "tavily_search":
-                        model_names = [ident.split("/")[-1].lower() for ident in records] # Extracts the model names from the records by splitting the model_id on "/" 
+                        research_records = [explicit_model_id] if explicit_model_id else list(records)
+                        model_names = [ident.split("/")[-1].lower() for ident in research_records] # Extracts the model names from the records by splitting the model_id on "/"
                                                                                     # and taking the last part, converting it to lowercase.
                         if not any(model_name in query.lower() for model_name in model_names):
                             raise ValueError("Research query must name a looked-up model")
@@ -843,7 +946,8 @@ def recommend(
                                                                                           # This line joins those terms into a single string separated by spaces.
                         query = f"{query} {terms}"[:350]
                     result = search(query, settings, extract_urls=urls) # Performs the search using the Tavily API with the constructed query and settings, optionally extracting URLs if provided.
-                    for ident in records:
+                    report(f"Tavily {name}: {len(result)} source(s)")
+                    for ident in ([explicit_model_id] if explicit_model_id else records):
                         if ident.lower() in query.lower() or (
                             urls and any(ident.lower() in url.lower() for url in urls)
                         ):
@@ -851,6 +955,8 @@ def recommend(
                     events.append({"event": "tavily", "count": len(result)})
                 elif name == "runtime_compatibility":
                     ident = str(args.get("model_id"))
+                    if explicit_model_id and ident != explicit_model_id:
+                        raise ValueError(f"Only the requested model {explicit_model_id} may be assessed")
                     result = runtime_assessment(records[ident], evidence.get(ident, []))
                 else:
                     result = [
@@ -878,6 +984,7 @@ def recommend(
                     }
                 )
             except (ValueError, KeyError, TypeError) as exc:
+                report(f"Tool error: {name}: {exc}")
                 result = {"error": str(exc)[:200]}
                 events.append({"event": "tool_error", "name": name, "reason": str(exc)[:200]})
             except Exception as exc:
@@ -921,10 +1028,16 @@ def recommend(
         events.append({"event": "tavily_skipped", "reason": "TAVILY_API_KEY missing"})
         remaining_searches = 0
     for ident, row in records.items():
-        for case, query in model_research_queries(row, spec.request):
+        research_queries = (
+            comparison_research_queries(row)
+            if family_alternatives
+            else model_research_queries(row, spec.request)
+        )
+        for case, query in research_queries:
             if remaining_searches <= 0:
                 break
             try:
+                report(f"Tavily research: {ident} ({case})")
                 found = search(query[:350], settings)
             except Exception as exc:
                 events.append(
@@ -942,9 +1055,22 @@ def recommend(
             for source in found:
                 source.setdefault("research_case", case)
             evidence.setdefault(ident, []).extend(found)
+            report(f"Tavily returned {len(found)} source(s) for {ident}")
             events.append({"event": "tavily", "case": case, "count": len(found), "model_id": ident})
             remaining_searches -= 1
+    for ident, sources in evidence.items():
+        unique_sources: dict[str, dict[str, Any]] = {}
+        for source in sources:
+            url = str(source.get("source_url") or "").split("#", 1)[0].rstrip("/")
+            key = url or json.dumps(source, sort_keys=True, default=str)
+            if key not in unique_sources or len(str(source.get("retrieved_text") or "")) > len(
+                str(unique_sources[key].get("retrieved_text") or "")
+            ):
+                unique_sources[key] = source
+        evidence[ident] = list(unique_sources.values())
     ranked = rank_candidates(list(records.values()), spec, evidence, settings)
+    validation_error = None
+    finish_reason = None
     if chat is None and records:
         run_id = str(uuid.uuid4())
         supplied = {}
@@ -974,10 +1100,7 @@ def recommend(
                     "download_size_gb": row.get("estimated_download_size_gb"),
                     "card_excerpt": str(row.get("card_excerpt") or "")[:1200],
                 },
-                "tavily": [
-                    {**source, "retrieved_text": _validation_excerpt(source)}
-                    for source in evidence.get(ident, [])
-                ],
+                "tavily": _validation_sources(evidence.get(ident, [])),
                 "speculative_pair": next(
                     (item["speculative_decoding"] for item in ranked if item["model_id"] == ident),
                     None,
@@ -1035,6 +1158,7 @@ def recommend(
         if len(validation_messages[1]["content"]) > int(settings["nebius"]["max_prompt_chars"]):
             raise ValueError("Validation evidence exceeds the configured prompt limit")
         try:
+            report(f"Nemotron validation: {len(records)} candidate(s), {sum(len(v['tavily']) for v in supplied.values())} source(s)")
             completion = OpenAI(
                 base_url=settings["nebius"]["base_url"],
                 api_key=os.environ["NEBIUS_API_KEY"],
@@ -1048,6 +1172,7 @@ def recommend(
                 max_tokens=int(settings["nebius"].get("validation_max_tokens", 3000)),
             )
             final_response = completion.choices[0].message.model_dump(exclude_none=True)
+            finish_reason = completion.choices[0].finish_reason
             (artifact_dir / "nemotron_validation_response.json").write_text(
                 json.dumps(
                     {
@@ -1062,12 +1187,19 @@ def recommend(
                 encoding="utf-8",
             )
             events.append({"event": "evidence_validation", "run_id": run_id})
+            report(f"Nemotron validation response: {completion.choices[0].finish_reason}")
         except Exception as exc:
             events.append({"event": "evidence_validation_error", "reason": type(exc).__name__})
+            validation_error = f"Nemotron validation failed: {type(exc).__name__}: {exc}"
+            report(f"Nemotron validation error: {type(exc).__name__}: {exc}")
+    if finish_reason == "length":
+        validation_error = "Nemotron validation response was truncated (finish_reason=length)"
     try:
         model_assessment = RouterAssessment.model_validate_json(final_response.get("content") or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
         model_assessment = RouterAssessment(viable_model_ids=[], insufficient_evidence=True)
+        if chat is None and records:
+            validation_error = validation_error or f"Nemotron validation returned invalid JSON: {exc}"
         events.append(
             {
                 "event": "assessment_invalid",
@@ -1077,6 +1209,10 @@ def recommend(
                 else None,
             }
         )
+    if validation_error:
+        report(f"Validation error: {validation_error}")
+        model_assessment.viable_model_ids = []
+        model_assessment.insufficient_evidence = True
     for ident, fields in model_assessment.field_assessments.items():
         row = records.get(ident)
         if row is None:
@@ -1114,7 +1250,7 @@ def recommend(
                 )
                 claim.confidence = min(claim.confidence, 0.5)
                 claim.action = "needs_direct_hf_check" if claim.status == "inferred" else "keep_blocked"
-    if "speculat" in spec.request.lower() or "draft" in spec.request.lower():
+    if not validation_error and ("speculat" in spec.request.lower() or "draft" in spec.request.lower()):
         for item in ranked:
             pair = item["speculative_decoding"]
             if item["eligible"] and pair["usable"] and item["model_id"] not in model_assessment.viable_model_ids:
@@ -1122,7 +1258,8 @@ def recommend(
                 model_assessment.reasoning = (
                     model_assessment.reasoning + " Correction: "
                     + f"Exact speculative pair {pair['target_model']} + {pair['draft_model']} "
-                    + f"via {pair['runtime']} is documented at {pair['source_url']}; "
+                    + f"via {', '.join(pair['runtimes'])} is documented at "
+                    + f"{pair['source_url']}; "
                     + "80 GB capacity passes the conservative estimate; A100 speedup is unmeasured."
                 ).strip()
                 events.append({"event": "documented_speculative_pair", "model_id": item["model_id"]})
@@ -1141,22 +1278,36 @@ def recommend(
     ]
     selected = viable[0] if viable else None
     alternatives = []
+    requested_candidate = next(
+        (item for item in ranked if explicit_model_id and item["model_id"] == explicit_model_id),
+        None,
+    )
+    if family_alternatives and not selected:
+        # Keep Python-eligible family choices visible when Nemotron cannot verify
+        # the task fit. They remain clearly marked as unverified by task_fit.
+        alternatives = [
+            item for item in ranked
+            if item["model_id"] != explicit_model_id and item["eligible"]
+        ][:2]
     families = {_family_key(selected["model_id"])} if selected else set()
     for item in viable[1:]:
         family = _family_key(item["model_id"])
-        if family in families:
+        if not family_alternatives and family in families:
             continue
         alternatives.append(item)
         families.add(family)
-        if len(alternatives) >= min(3, int(settings["selection"]["max_alternatives"])):
+        if len(alternatives) >= (2 if family_alternatives else min(3, int(settings["selection"]["max_alternatives"]))):
             break
     result = {
-        "status": "recommended" if selected else "insufficient_evidence",
+        "status": "validation_error" if validation_error else "recommended" if selected else "insufficient_evidence",
+        "validation_error": validation_error,
         "request": spec.model_dump(),
         "router_model": model,
         "router_assessment": model_assessment.model_dump(),
         "recommendation": selected,
         "alternatives": alternatives,
+        "requested_model_id": explicit_model_id,
+        "requested_candidate": requested_candidate,
         "evaluated_candidates": ranked,
         "framework_mode": spec.framework_mode,
         "benchmark_plan": [

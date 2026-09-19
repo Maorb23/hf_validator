@@ -159,6 +159,29 @@ def test_cli_needs_input_json():
     assert "framework_mode" in data["needs_input"]
 
 
+def test_cli_overrides_nebius_response_and_prompt_limits(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_recommend(_spec, settings, _destination, **_kwargs):
+        captured.update(settings["nebius"])
+        return {"status": "insufficient_evidence", "recommendation": None}
+
+    monkeypatch.setattr(core, "recommend", fake_recommend)
+    result = CliRunner().invoke(
+        app,
+        [
+            "recommend", "Score social posts", "--model-id", "org/x",
+            "--gpu-memory-gb", "100", "--budget-usd-per-hour", "4",
+            "--gpu-hourly-cost-usd", "4", "--license", "any",
+            "--framework-mode", "sweep", "--validation-max-tokens", "6000",
+            "--max-prompt-chars", "120000", "--output-dir", str(tmp_path), "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["validation_max_tokens"] == 6000
+    assert captured["max_prompt_chars"] == 120000
+
+
 def test_nebius_404_identifies_configuration_without_exposing_key(tmp_path, monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "secret-key")
 
@@ -361,6 +384,171 @@ def test_validation_only_reuses_saved_evidence_without_lookup_or_search(tmp_path
     assert any(event["event"] == "validation_only" for event in result["events"])
 
 
+def test_explicit_model_rejects_other_tool_candidates(tmp_path):
+    responses = iter([
+        {"tool_calls": [{"id": "other", "function": {"name": "hf_lookup", "arguments": '{"model_id":"org/other"}'}}]},
+        {"content": '{"viable_model_ids":["org/x"],"reasoning":"Exact model fits."}'},
+    ])
+    result = recommend(
+        _spec(candidates=["org/x"]), load_settings(), tmp_path,
+        chat=lambda: next(responses), explicit_model_id="org/x",
+        lookup=lambda **kwargs: [_record(kwargs["model_id"], 3)],
+        search=lambda *_args, **_kwargs: [],
+    )
+    assert [row["model_id"] for row in result["evaluated_candidates"]] == ["org/x"]
+    assert any(event["event"] == "tool_error" for event in result["events"])
+
+
+def test_family_exploration_keeps_tools_exact_and_compares_seeded_alternatives(tmp_path):
+    target = _record("org/x", 4)
+    alternative = _record("org/x-new", 3)
+    responses = iter([
+        {"tool_calls": [{"id": "other", "function": {"name": "hf_lookup", "arguments": '{"model_id":"org/other"}'}}]},
+        {"content": '{"viable_model_ids":["org/x","org/x-new"]}'},
+    ])
+    result = recommend(
+        _spec(candidates=["org/x"]), load_settings(), tmp_path,
+        chat=lambda: next(responses), family_alternatives=[alternative],
+        explicit_model_id="org/x", lookup=lambda **_kwargs: [target], search=lambda *_args, **_kwargs: [],
+    )
+    assert {row["model_id"] for row in result["evaluated_candidates"]} == {"org/x", "org/x-new"}
+    assert len(result["alternatives"]) == 1
+    assert any(event["event"] == "tool_error" for event in result["events"])
+
+
+def test_family_comparison_researches_both_models_with_identical_cases(tmp_path):
+    target = _record("org/x", 4)
+    alternative = _record("org/x-new", 3)
+    calls = []
+
+    def search(query, settings, **_kwargs):
+        calls.append((query, settings["tavily"]["search_depth"], settings["tavily"]["max_results"]))
+        return []
+
+    settings = load_settings()
+    settings["tavily"].update(search_depth="basic", max_results=8, max_searches=10)
+    result = recommend(
+        _spec(candidates=["org/x"]),
+        settings,
+        tmp_path,
+        chat=lambda: {"content": '{"viable_model_ids":["org/x","org/x-new"]}'},
+        family_alternatives=[alternative],
+        explicit_model_id="org/x",
+        lookup=lambda **_kwargs: [target],
+        search=search,
+    )
+
+    assert len(calls) == 10
+    assert [event["case"] for event in result["events"] if event["event"] == "tavily"] == [
+        "exact", "draft_pair", "speculative", "runtime", "origin",
+        "exact", "draft_pair", "speculative", "runtime", "origin",
+    ]
+    assert all(depth == "basic" and results == 8 for _, depth, results in calls)
+
+
+def test_validation_evidence_is_deduplicated_and_bounded(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-secret")
+    payloads = []
+    def respond(payload):
+        payloads.append(payload)
+        return {"content": '{"viable_model_ids":[],"insufficient_evidence":true}'}
+    _mock_nebius(monkeypatch, respond)
+    sources = [{"source_url": f"https://example.org/{i}", "retrieved_text": "text" * 300}
+               for i in range(20)]
+    sources += [{"source_url": "https://huggingface.co/org/x", "retrieved_text": "HF"}] * 3
+    recommend(_spec(candidates=["org/x"]), load_settings(), tmp_path,
+              initial_records=[_record("org/x", 3)],
+              initial_evidence={"org/x": sources}, validation_only=True)
+    supplied = payloads[0]["messages"][1]["content"]
+    assert supplied.count('"source_url": "https://huggingface.co/org/x"') == 1
+    assert supplied.count('"source_url": "https://example.org/') == 7
+
+
+def test_truncated_validation_reports_error_and_saves_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-secret")
+    def create(**_payload):
+        message = {"content": '{"viable_model_ids":['}
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(model_dump=lambda **_kwargs: message), finish_reason="length")])
+    monkeypatch.setattr(core, "OpenAI", lambda **_kwargs: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    result = recommend(_spec(candidates=["org/x"]), load_settings(), tmp_path,
+                       initial_records=[_record("org/x", 3)], validation_only=True)
+    assert result["status"] == "validation_error"
+    assert "truncated" in result["validation_error"]
+    assert json.loads((tmp_path / "nemotron_validation_response.json").read_text())["finish_reason"] == "length"
+
+
+def test_explicit_cli_verbose_keeps_json_stdout_clean(tmp_path, monkeypatch):
+    def fake_recommend(_spec, _settings, _destination, **kwargs):
+        if kwargs["progress"]:
+            kwargs["progress"]('Tool call: hf_lookup {"model_id": "org/x"}')
+        return {"status": "validation_error", "recommendation": None,
+                "validation_error": "Nemotron validation response was truncated",
+                "router_assessment": {"reasoning": ""}, "evaluated_candidates": []}
+    monkeypatch.setattr(core, "recommend", fake_recommend)
+    args = ["recommend", "Score social posts", "--model-id", "org/x",
+            "--gpu-memory-gb", "80", "--budget-usd-per-hour", "5",
+            "--gpu-hourly-cost-usd", "3",
+            "--license", "any", "--framework-mode", "sweep",
+            "--output-dir", str(tmp_path)]
+    result = CliRunner().invoke(app, args + ["--verbose", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["validation_error"] == "Nemotron validation response was truncated"
+    assert 'Tool call: hf_lookup {"model_id": "org/x"}' in result.stderr
+    plain = CliRunner().invoke(app, args)
+    assert "Tool call: hf_lookup" in plain.stderr
+    assert '"model_id": "org/x"' not in plain.stderr
+    assert "Validation error: Nemotron validation response was truncated" in plain.output
+
+
+def test_explicit_cli_explore_family_selects_and_saves_alternative(tmp_path, monkeypatch):
+    requested = {"model_id": "org/x", "eligible": True, "infra_score": 0.6,
+                 "blocking_reasons": [], "estimated_bf16_memory_gb": 8,
+                 "compatible_frameworks": ["transformers"], "runtime": "transformers",
+                 "context_length": 8192, "license": "apache-2.0", "estimated_hourly_usd": 3,
+                 "task_fit": "unverified", "speculative_decoding": {"usable": False,
+                 "reason": "no exact pair"}}
+    alternative = {**requested, "model_id": "org/x-new", "infra_score": 0.8,
+                   "task_fit": "inferred", "speculative_decoding": {"usable": True,
+                   "draft_model": "org/x-new-draft", "runtimes": ["sglang"],
+                   "source_url": "https://huggingface.co/org/x-new-draft"}}
+    extra = {**requested, "model_id": "org/x-new-base", "infra_score": 0.7}
+    monkeypatch.setattr(core, "hf_lookup", lambda **_kwargs: [requested])
+    import hf_model_watch.recommender.discovery as discovery
+    monkeypatch.setattr(
+        discovery,
+        "explore_family_records",
+        lambda *_args, **_kwargs: [alternative, extra],
+    )
+    captured = {}
+    def fake_recommend(_spec, comparison_settings, _destination, **kwargs):
+        captured["settings"] = comparison_settings
+        captured.update(kwargs)
+        return {"status": "recommended", "recommendation": alternative,
+                "alternatives": [extra], "requested_model_id": "org/x",
+                "requested_candidate": requested,
+                "router_assessment": {"reasoning": "Compared family candidates."},
+                "evaluated_candidates": [requested, alternative, extra]}
+    monkeypatch.setattr(core, "recommend", fake_recommend)
+    result = CliRunner().invoke(app, [
+        "recommend", "Score social posts", "--model-id", "org/x", "--explore-family",
+        "--gpu-memory-gb", "80", "--budget-usd-per-hour", "5", "--gpu-hourly-cost-usd", "3",
+        "--license", "any", "--framework-mode", "sweep", "--output-dir", str(tmp_path),
+    ], input="2\n")
+    assert result.exit_code == 0, result.output
+    assert captured["family_alternatives"] == [alternative]
+    assert captured["settings"]["tavily"]["search_depth"] == "basic"
+    assert captured["settings"]["tavily"]["max_results"] == 8
+    assert captured["settings"]["tavily"]["max_searches"] == 10
+    assert "requested model" in result.output
+    assert "strongest recommendation" in result.output
+    assert "org/x-new-base" not in result.output
+    assert "Speculative decoding: usable with org/x-new-draft via sglang" in result.output
+    assert "Speculative decoding: not verified; no exact pair" in result.output
+    assert json.loads((tmp_path / "recommendation.json").read_text())["selected_model_id"] == "org/x"
+
+
 def test_validation_summarizes_chat_template_and_rejects_verified_missing_value(tmp_path, monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "test-secret")
     payloads = []
@@ -464,6 +652,25 @@ def test_exact_dflash_pair_passes_a100_capacity_with_unmeasured_speedup():
     assert ranked["runtime"] == "sglang"
     assert ranked["estimated_bf16_memory_gb"] < 80 * 0.85
     assert ranked["context_length"] == 262144
+
+
+def test_dspark_pair_accepts_markdown_between_target_claim_words():
+    record = _record("Qwen/Qwen3-4B", 4)
+    source = {
+        "source_url": "https://huggingface.co/shreybirmiwal/Qwen3-4B-DSpark-b16",
+        "retrieved_text": (
+            "How to use this model with Transformers. "
+            "A DSpark speculative-decoding **draft model** for `Qwen/Qwen3-4B`, "
+            "fine-tuned to a block size of 16."
+        ),
+    }
+
+    pair = core.runtime_assessment(record, [source])["speculative_decoding"]
+
+    assert pair["usable"] is True
+    assert pair["target_model"] == "Qwen/Qwen3-4B"
+    assert pair["draft_model"] == "shreybirmiwal/Qwen3-4B-DSpark-b16"
+    assert pair["runtimes"] == ["transformers"]
 
 
 def test_documented_pair_overrides_missing_built_in_head_claim(tmp_path, monkeypatch):

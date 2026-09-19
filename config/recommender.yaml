@@ -6,7 +6,7 @@ nebius:
     - nvidia/Nemotron-3-Ultra-550b-a55b
   timeout_seconds: 45
   max_output_tokens: 1600
-  validation_max_tokens: 3000
+  validation_max_tokens: 6000
   max_prompt_chars: 60000
   max_tool_calls: 8
   max_candidates: 8
