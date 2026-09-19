@@ -587,6 +587,41 @@ Omit inputs for terminal prompts. With `--json`, missing values are returned in
 memory capacity cannot establish a price. Missing license, runtime, task fit, or cost
 evidence appears as uncertainty or `insufficient_evidence`.
 
+JSON recommendation responses retain the established discovery fields and also include a
+`run_id`. A `needs_input` response includes additive `questions` objects with field names,
+types, and applicable choices or ranges. Resume that run by repeating `recommend` with
+`--run-id <id>` and the missing options. Run state is stored under
+`artifacts/recommendations/<run_id>/recommendation_run.json` by default.
+
+Automation can select a saved candidate and record user-reported feedback without editing
+artifacts directly:
+
+```bash
+hf-watch select --run-id <run_id> --model-id org/model --json
+hf-watch feedback --run-id <run_id> --model-id org/model \
+  --category out_of_memory --details "OOM at 32k context" --json
+```
+
+Create a traceable revised discovery by supplying a changed request and either
+`--revision-reason` or `--trigger-feedback-id` together with `--parent-run-id`. Feedback is
+stored with `feedback_status: "reported"`; it does not upgrade model evidence. These commands
+do not execute the optimization placeholder.
+
+### OpenClaw conversational integration
+
+Phase 2 is packaged in `openclaw-plugin/` as a tool-only OpenClaw plugin. It exposes only
+`recommend_models`, `provide_recommendation_input`, `select_model`, `record_model_feedback`,
+`revise_recommendation`, and `get_run_status`. The plugin sends bounded JSON to
+`python -m hf_model_watch.openclaw_adapter`; the adapter validates inputs again and invokes fixed
+CLI commands without a shell. Recommendation artifacts remain the canonical memory across chat
+sessions and restarts.
+
+Configure the plugin with this repository as `projectRoot` and `.venv/bin/python` as
+`pythonExecutable`; see `openclaw-plugin/README.md` for build and install commands. OpenClaw
+2026.5.17 or newer and Node 24.16+/26.1+ are required by its supported typed-tool interface.
+There is deliberately no optimization or benchmark tool: the existing action remains a
+non-executable placeholder until Phase 3 connects an approved external API.
+
 Benchmarking is a separate action:
 
 ```bash

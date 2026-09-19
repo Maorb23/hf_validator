@@ -23,6 +23,7 @@ htmlcov/
 .uv-cache/
 .worker_workspace/
 .tmp-codex-tests/
+node_modules/
 
 # Generated runs, databases, reports, and experiment logs
 artifacts/

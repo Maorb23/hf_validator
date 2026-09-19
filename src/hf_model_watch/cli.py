@@ -26,13 +26,24 @@ class FrameworkMode(StrEnum):
     sweep = "sweep"
 
 
+class FeedbackCategory(StrEnum):
+    out_of_memory = "out_of_memory"
+    latency = "latency"
+    throughput = "throughput"
+    quality = "quality"
+    capability = "capability"
+    other = "other"
+
+
 def format_fit_checks(assessment: dict[str, object], spec: object) -> list[str]:
     """Render the deployment checks already computed by ``rank_candidates``."""
     blockers = [str(reason) for reason in assessment.get("blocking_reasons", [])]
     memory = assessment.get("estimated_bf16_memory_gb")
     memory_text = f"{memory:g} GB" if isinstance(memory, (int, float)) else "unverified"
     available = getattr(spec, "gpu_memory_gb", None)
-    available_text = f"{available:g} GB per GPU" if isinstance(available, (int, float)) else "unverified"
+    available_text = (
+        f"{available:g} GB per GPU" if isinstance(available, (int, float)) else "unverified"
+    )
     gpu_count = getattr(spec, "gpu_count", None)
     if isinstance(gpu_count, int):
         available_text += f" ({gpu_count} GPU{'s' if gpu_count != 1 else ''})"
@@ -81,7 +92,8 @@ def recommend(
         str | None, typer.Option("--model-id", help="Explicit Hugging Face model ID.")
     ] = None,
     explore_family: Annotated[
-        bool, typer.Option("--explore-family", help="Compare eligible newer same-family alternatives.")
+        bool,
+        typer.Option("--explore-family", help="Compare eligible newer same-family alternatives."),
     ] = False,
     candidate: Annotated[list[str] | None, typer.Option("--candidate")] = None,
     json_mode: Annotated[
@@ -91,6 +103,17 @@ def recommend(
         bool, typer.Option("--verbose", help="Show detailed explicit-model diagnostics.")
     ] = False,
     output_dir: Annotated[Path | None, typer.Option("--output-dir")] = None,
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="Resume a recommendation awaiting input.")
+    ] = None,
+    parent_run_id: Annotated[
+        str | None, typer.Option("--parent-run-id", help="Create a revision of an existing run.")
+    ] = None,
+    revision_reason: Annotated[str | None, typer.Option("--revision-reason")] = None,
+    trigger_feedback_id: Annotated[str | None, typer.Option("--trigger-feedback-id")] = None,
+    state_root: Annotated[
+        Path, typer.Option("--state-root", help="Recommendation run storage root.")
+    ] = Path("artifacts/recommendations"),
     config: Annotated[Path, typer.Option("--config")] = Path("config/recommender.yaml"),
 ) -> None:
     from hf_model_watch.recommender.core import RequestSpec, hf_lookup, load_settings
@@ -98,12 +121,63 @@ def recommend(
         recommend as run_recommend,
     )
     from hf_model_watch.recommender.discovery import (
-        discover_models, discovery_inputs, explore_family_records,
+        discover_models,
+        discovery_inputs,
+        explore_family_records,
+        extract_constraints,
+    )
+    from hf_model_watch.recommender.run_state import (
+        MAX_REQUEST_CHARS,
+        load_feedback,
+        load_run,
+        questions_for,
+        run_dir,
+        save_run,
     )
     from hf_model_watch.storage.schemas import new_run_id
 
+    if run_id and parent_run_id:
+        raise typer.BadParameter("--run-id and --parent-run-id cannot be combined")
+    if run_id and output_dir:
+        raise typer.BadParameter("--output-dir cannot be used while resuming a run")
+    resumed: dict[str, object] | None = None
+    parent: dict[str, object] | None = None
+    if run_id:
+        try:
+            state_directory, resumed = load_run(state_root, run_id)
+        except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+            if json_mode:
+                typer.echo(json.dumps({"status": "error", "error": str(exc)}))
+                raise typer.Exit(code=1) from None
+            raise typer.BadParameter(str(exc)) from exc
+        if resumed.get("status") != "needs_input":
+            raise typer.BadParameter("Only a needs_input recommendation run can be resumed")
+        request = request or str(resumed.get("task_request") or "") or None
+        destination = Path(str(resumed["artifact_directory"]))
+    elif parent_run_id:
+        try:
+            parent_directory, parent = load_run(state_root, parent_run_id)
+            if trigger_feedback_id:
+                feedback = load_feedback(parent_directory, trigger_feedback_id)
+                if feedback.get("run_id") != parent_run_id:
+                    raise ValueError("Feedback does not belong to the parent run")
+        except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+            if json_mode:
+                typer.echo(json.dumps({"status": "error", "error": str(exc)}))
+                raise typer.Exit(code=1) from None
+            raise typer.BadParameter(str(exc)) from exc
+        if not revision_reason and not trigger_feedback_id:
+            raise typer.BadParameter("A revision reason or triggering feedback ID is required")
+        if request is None:
+            raise typer.BadParameter("A revised request is required")
+    active_run_id = run_id or new_run_id()
+    if not run_id:
+        state_directory = run_dir(state_root, active_run_id)
+        destination = output_dir or state_directory
     if request is None and not json_mode:
         request = typer.prompt("Describe what model you want")
+    if request is not None and len(request) > MAX_REQUEST_CHARS:
+        raise typer.BadParameter(f"Request exceeds {MAX_REQUEST_CHARS} characters")
     supplied_inputs = {
         "gpu_memory_gb": gpu_memory_gb,
         "budget_usd_per_hour": budget_usd_per_hour,
@@ -111,6 +185,12 @@ def recommend(
         "license": license,
         "framework_mode": framework_mode.value if framework_mode else None,
     }
+    if resumed:
+        prior = resumed.get("request_spec") or {}
+        supplied_inputs = {
+            key: value if value is not None else prior.get(key)
+            for key, value in supplied_inputs.items()
+        }
     if request is not None:
         values, missing = discovery_inputs(
             request,
@@ -120,11 +200,36 @@ def recommend(
         values = {"request": request, **supplied_inputs}
         missing = [key for key, value in values.items() if value is None]
     if json_mode and missing:
-        typer.echo(json.dumps({"status": "needs_input", "needs_input": missing}, sort_keys=True))
+        response = {
+            "status": "needs_input",
+            "task_request": request,
+            "constraints": extract_constraints(request) if request else {},
+            "recommendations": [],
+            "selected_model_id": None,
+            "action": "Optimize Inference + Benchmark",
+            "action_status": "placeholder",
+            "needs_input": missing,
+            "questions": questions_for(missing),
+            "run_id": active_run_id,
+            "parent_run_id": parent_run_id,
+        }
+        save_run(
+            state_directory,
+            {**response, "request_spec": values, "artifact_directory": str(destination)},
+        )
+        typer.echo(json.dumps(response, sort_keys=True))
         return
     defaults = {"license": "any", "framework_mode": "sweep"}
     for key in missing:
         values[key] = typer.prompt(key.replace("_", " "), default=defaults.get(key))
+    if parent_run_id and parent and request == parent.get("task_request"):
+        parent_spec = parent.get("request_spec") or {}
+        if all(values.get(key) == parent_spec.get(key) for key in values):
+            message = "Revised recommendation must change the request or constraints"
+            if json_mode:
+                typer.echo(json.dumps({"status": "error", "error": message}))
+                raise typer.Exit(code=1)
+            raise typer.BadParameter(message)
     try:
         spec = RequestSpec(
             **values,
@@ -137,7 +242,6 @@ def recommend(
             settings["nebius"]["validation_max_tokens"] = validation_max_tokens
         if max_prompt_chars is not None:
             settings["nebius"]["max_prompt_chars"] = max_prompt_chars
-        destination = output_dir or Path("artifacts/recommendations") / new_run_id()
         if model_id:
             def explicit_progress(message: str) -> None:
                 if not verbose and message.startswith("Tool call: "):
@@ -189,6 +293,26 @@ def recommend(
             typer.echo(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}))
             raise typer.Exit(code=1) from None
         raise typer.BadParameter(str(exc)) from exc
+    result = {**result, "run_id": active_run_id, "parent_run_id": parent_run_id}
+    if parent_run_id:
+        result["revision_reason"] = revision_reason
+        result["trigger_feedback_id"] = trigger_feedback_id
+    state = {
+        **result,
+        "recommendations": result.get("recommendations")
+        or ([result["recommendation"]] if result.get("recommendation") else []),
+        "request_spec": values,
+        "artifact_directory": str(destination),
+        "artifact_path": str(
+            destination / ("recommendation.json" if model_id else "discovery.json")
+        ),
+    }
+    save_run(state_directory, state)
+    artifact = Path(str(state["artifact_path"]))
+    if artifact.exists():
+        artifact.write_text(
+            json.dumps(result, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
+        )
     if model_id is None and not json_mode:
         gemma = result.get("scan_diagnostics", {}).get("gemma", {})
         if gemma and not gemma.get("eligible"):
@@ -230,6 +354,15 @@ def recommend(
             json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8"
         )
         typer.echo(f"Selected model: {result['selected_model_id']}")
+        state["selected_model_id"] = result["selected_model_id"]
+        state["selection"] = {
+            "run_id": active_run_id,
+            "model_id": result["selected_model_id"],
+            "revision": result["recommendations"][choice - 1].get("revision"),
+            "evidence_reference": state["artifact_path"],
+            "status": "selected",
+        }
+        save_run(state_directory, state)
         typer.echo("[ Optimize Inference + Benchmark ] (placeholder)")
     if json_mode:
         typer.echo(
@@ -251,7 +384,8 @@ def recommend(
                 typer.echo(line)
         for item in result.get("evaluated_candidates", []):
             if verbose:
-                typer.echo(f"Candidate {item['model_id']} blockers: {', '.join(item.get('blocking_reasons', [])) or 'none'}", err=True)
+                blockers = ", ".join(item.get("blocking_reasons", [])) or "none"
+                typer.echo(f"Candidate {item['model_id']} blockers: {blockers}", err=True)
         rationale = result.get("router_assessment", {}).get("reasoning")
         if result.get("validation_error"):
             typer.echo(f"Validation error: {result['validation_error']}")
@@ -317,7 +451,110 @@ def recommend(
                     json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                 )
                 typer.echo(f"Selected model: {result['selected_model_id']}")
+                state["selected_model_id"] = result["selected_model_id"]
+                state["selection"] = {
+                    "run_id": active_run_id,
+                    "model_id": result["selected_model_id"],
+                    "revision": choices[selected - 1].get("revision"),
+                    "evidence_reference": state["artifact_path"],
+                    "status": "selected",
+                }
+                save_run(state_directory, state)
         typer.echo(f"Saved: {destination / 'recommendation.json'}")
+
+
+@app.command("select")
+def select_recommendation(
+    run_id: Annotated[str, typer.Option("--run-id")],
+    model_id: Annotated[str, typer.Option("--model-id")],
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+    state_root: Annotated[Path, typer.Option("--state-root")] = Path("artifacts/recommendations"),
+) -> None:
+    """Select one candidate from a persisted recommendation run."""
+    from hf_model_watch.recommender.run_state import locked_run, save_run
+
+    try:
+        with locked_run(state_root, run_id) as (directory, run):
+            if run.get("status") != "recommended":
+                raise ValueError("Run has no selectable recommendations")
+            candidate = next(
+                (row for row in run.get("recommendations", []) if row.get("model_id") == model_id),
+                None,
+            )
+            if candidate is None:
+                raise ValueError("Selected model does not belong to this recommendation run")
+            existing = run.get("selected_model_id")
+            if existing and existing != model_id:
+                raise ValueError(f"Run already selected a different model: {existing}")
+            revision = candidate.get("revision") or candidate.get("runtime_assessment", {}).get(
+                "revision"
+            )
+            selection = {
+                "run_id": run_id,
+                "model_id": model_id,
+                "revision": revision,
+                "evidence_reference": run.get("artifact_path"),
+                "status": "selected",
+            }
+            run.update({"selected_model_id": model_id, "selection": selection})
+            save_run(directory, run)
+            artifact = Path(str(run.get("artifact_path") or ""))
+            if artifact.is_file():
+                payload = json.loads(artifact.read_text(encoding="utf-8"))
+                payload["selected_model_id"] = model_id
+                payload["selection"] = selection
+                artifact.write_text(
+                    json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
+                    encoding="utf-8",
+                )
+    except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+        if json_mode:
+            typer.echo(json.dumps({"status": "error", "error": str(exc)}))
+            raise typer.Exit(code=1) from None
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(selection, sort_keys=True) if json_mode else f"Selected model: {model_id}"
+    )
+
+
+@app.command("feedback")
+def add_recommendation_feedback(
+    run_id: Annotated[str, typer.Option("--run-id")],
+    model_id: Annotated[str, typer.Option("--model-id")],
+    category: Annotated[FeedbackCategory, typer.Option("--category")],
+    details: Annotated[str, typer.Option("--details")],
+    source: Annotated[str, typer.Option("--source")] = "user",
+    context_json: Annotated[str | None, typer.Option("--context-json")] = None,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+    state_root: Annotated[Path, typer.Option("--state-root")] = Path("artifacts/recommendations"),
+) -> None:
+    """Persist a user-reported observation without treating it as verified evidence."""
+    from hf_model_watch.recommender.run_state import add_feedback, load_run
+
+    try:
+        directory, run = load_run(state_root, run_id)
+        context = json.loads(context_json) if context_json else {}
+        if not isinstance(context, dict):
+            raise ValueError("Feedback context must be a JSON object")
+        record = add_feedback(
+            directory,
+            run,
+            model_id=model_id,
+            category=category.value,
+            details=details,
+            source=source,
+            context=context,
+        )
+    except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+        if json_mode:
+            typer.echo(json.dumps({"status": "error", "error": str(exc)}))
+            raise typer.Exit(code=1) from None
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(record, sort_keys=True)
+        if json_mode
+        else f"Recorded feedback: {record['feedback_id']}"
+    )
 
 
 @app.command("benchmark-recommendation")
