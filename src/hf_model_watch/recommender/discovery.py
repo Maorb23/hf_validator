@@ -24,8 +24,17 @@ from hf_model_watch.recommender.core import (
     RequestSpec,
     _pair_evidence,
     rank_candidates,
+    runtime_assessment,
     tavily_research,
 )
+
+
+from hf_model_watch.recommender.utilities import (
+    extract_constraints, discovery_inputs, speculative_preference, speculative_status, speculative_bonus,
+    normalize_license, model_rejection_reasons,
+    speculative_method_order, documented_pairs, speculative_rank,
+)
+from hf_model_watch.recommender.speculative_research import ResearchBudget, research_methods
 
 
 class DiscoveryClaim(BaseModel):
@@ -41,7 +50,7 @@ class DiscoveryAssessment(BaseModel):
 
     model_id: str
     task_fit: Literal["verified", "inferred", "unknown"]
-    rationale: str
+    rationale: str = ""
     uncertainty: str
     claims: list[DiscoveryClaim] = Field(default_factory=list)
 
@@ -70,15 +79,27 @@ def _validate_with_nemotron(
     for row in recommendations:
         supplied.append({
             "model_id": row["model_id"], "hf_eligible": row["eligible"],
-            "hf_score": row["hf_score"], "deployment": row["runtime_assessment"],
+            "hf_score": row["hf_score"], "deployment": {
+                key: ({k: v for k, v in value.items() if k not in {"alternatives", "method_coverage"}}
+                      if key == "speculative_decoding" else value)
+                for key, value in row["runtime_assessment"].items()
+                if key in {"eligible", "blocking_reasons", "estimated_bf16_memory_gb", "estimated_hourly_usd",
+                           "runtime", "compatible_frameworks", "context_length", "license", "speculative_decoding"}
+            },
             "checked_task_fit": row["task_fit"],
             "evidence": [
                 {"source_url": source.get("source_url"),
                  "excerpt": str(source.get("retrieved_text") or "")[:700]}
-                for source in row["evidence"] if source.get("source_url")
+                for source in sorted(row["evidence"], key=lambda source: source.get("source_url") !=
+                                     row["runtime_assessment"].get("speculative_decoding", {}).get("source_url"))
+                if source.get("source_url")
             ][:12],
         })
-    prompt = json.dumps({"request": spec.request, "candidates": supplied}, default=str)
+    prompt = json.dumps({"request": spec.request, "constraints": spec.constraints,
+                         "speculative_decoding_preference": spec.speculative_preference, "candidates": supplied}, default=str)
+    (artifact_dir / "nemotron_discovery_input.json").write_text(json.dumps({
+        "prompt_chars": len(prompt), "prompt_limit": int(settings["nebius"]["max_prompt_chars"]),
+        "candidates": supplied}, indent=2) + "\n")
     if len(prompt) > int(settings["nebius"]["max_prompt_chars"]):
         raise ValueError("Discovery validation evidence exceeds the configured prompt limit")
     completion = OpenAI(
@@ -138,119 +159,6 @@ def _validate_with_nemotron(
         }
         if fit != "unknown":
             row["final_score"] = round(row["final_score"] + (0.02 if fit == "verified" else 0.01), 4)
-
-
-def extract_constraints(request: str) -> dict[str, Any]:
-    """
-    Function to extract constraints from a user request string.
-    It identifies features, reference models, size, memory, budget, cost, tokens, license, family, and other relevant information from the request text.
-    Args:
-        request (str): The user request string containing model requirements and constraints.
-    Returns:
-        dict[str, Any]: A dictionary containing extracted constraints and features from the request.
-    """
-    text = request.lower()
-    # Recognize common capabilities directly from the original user request.
-    features = [
-        term
-        for term in ("speculative decoding", "reasoning", "vision", "tool calling", "coding")
-        if re.search(r"\b" + re.escape(term) + r"\b", text)
-    ]
-    if (
-        re.search(
-            r"\b(?:dflash|d-spark|dspark|medusa|eagle(?:-\d+)?|"
-            r"multi-token prediction|mtp|draft model)\b",
-            text,
-        )
-        and "speculative decoding" not in features
-    ):
-        features.append("speculative decoding")
-    for match in re.finditer(
-        r"\b(?:with|supports?|including)\s+(?:an?\s+)?(?:optional\s+)?"
-        r"([\w.+-]+(?:\s+[\w.+-]+){0,3})\s+head\b",
-        text,
-    ):
-        feature = match.group(1).strip()
-        if (
-            feature not in features
-            and "speculative decoding" not in feature
-            and feature not in {"dflash", "dspark", "d-spark", "medusa", "eagle", "mtp"}
-        ):
-            features.append(feature)
-    # A reference model supplies both the likely family and target parameter scale.
-    reference = re.search(r"\b(?:like|similar to|based on)\s+([\w.-]+(?:/[\w.-]+)?)", request, re.I)
-    reference_model = reference.group(1).rstrip(".,;") if reference else None
-    size = re.search(r"\b(\d+(?:\.\d+)?)\s*b\b", reference_model or request, re.I)
-    memory = re.search(r"\b(\d+(?:\.\d+)?)\s*gb\b", request, re.I)
-    budget = re.search(
-        r"(?:budget|maximum inference budget)[^$\n]{0,35}"
-        r"\$\s*(\d+(?:\.\d+)?)",
-        request,
-        re.I,
-    )
-    cost = re.search(
-        r"(?:gpu hourly cost|gpu cost|rental cost)[^$\n]{0,20}\$\s*(\d+(?:\.\d+)?)", request, re.I
-    )
-    tokens = re.search(
-        r"(?:maximum|max|up to)\s+(?:of\s+)?(\d[\d,]*)\s+(?:generated\s+)?tokens", request, re.I
-    )
-    license_match = re.search(r"\b(any|apache-2\.0|mit|llama|gemma)\s+license\b", request, re.I)
-    family = None
-    if reference_model:
-        family = re.split(r"[-_.]?\d", reference_model.rsplit("/", 1)[-1], maxsplit=1)[0]
-    else:
-        family_match = re.search(r"\b(qwen|llama|mistral|gemma|phi|deepseek)(?=\d|\b)", request, re.I)
-        family = family_match.group(1) if family_match else None
-    return {
-        "reference_model": reference_model,
-        "family": family,
-        "target_params_billion": float(size.group(1)) if size else None,
-        "features": features,
-        "use_case": re.search(
-            r"(?:for|to)\s+(.+?)(?:\s+(?:with|on|using|for one)\b|[,;.]|$)", request, re.I
-        ).group(1)
-        if re.search(r"(?:for|to)\s+(.+?)(?:\s+(?:with|on|using|for one)\b|[,;.]|$)", request, re.I)
-        else None,
-        "gpu_type": (re.search(r"\b(?:A100|H100|L40S|RTX\s*\d{4})\b", request, re.I) or [None])[0],
-        "gpu_memory_gb": float(memory.group(1)) if memory else None,
-        "budget_usd_per_hour": float(budget.group(1)) if budget else None,
-        "gpu_hourly_cost_usd": float(cost.group(1)) if cost else None,
-        "max_generation_tokens": int(tokens.group(1).replace(",", "")) if tokens else None,
-        "license": license_match.group(1).lower() if license_match else None,
-        "framework_mode": "sweep"
-        if "sweep mode" in text
-        else "fast"
-        if "fast mode" in text
-        else None,
-        "framework": next(
-            (name for name in ("vllm", "sglang", "transformers", "trt-llm") if name in text), None
-        ),
-        "recent": any(term in text for term in ("new", "recent", "latest")),
-    }
-
-
-def discovery_inputs(request: str, supplied: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """
-    Combine user-supplied constraints with those parsed from the request string.
-    Args:
-        request (str): The user request string containing model requirements and constraints.
-        supplied (dict[str, Any]): A dictionary of user-supplied constraints.
-    Returns:
-        tuple[dict[str, Any], list[str]]: A tuple containing a dictionary of combined constraints and a list of missing keys.
-    """
-    parsed = extract_constraints(request)
-    values = {"request": request}
-    for key in (
-        "gpu_memory_gb",
-        "budget_usd_per_hour",
-        "gpu_hourly_cost_usd",
-        "license",
-        "framework_mode",
-    ):
-        values[key] = supplied.get(key) if supplied.get(key) is not None else parsed.get(key)
-    # Cost is a user price assumption, never inferred from GPU memory or budget.
-    missing = [key for key, value in values.items() if value is None]
-    return values, missing
 
 
 def explore_family_records(
@@ -394,7 +302,7 @@ def _feature_terms(feature: str) -> tuple[str, ...]:
     """Return search terms that can indicate support for a requested feature."""
 
     return {
-        "speculative decoding": ("speculat", "draft", "dflash", "dspark", "eagle", "medusa"),
+        "speculative decoding": ("speculat", "draft", "dflash", "d-flash", "dspark", "d-spark", "eagle", "medusa", "mtp"),
         "tool calling": ("tool calling", "function calling", "tool use"),
         "vision": ("vision", "image", "multimodal"),
         "reasoning": ("reasoning", "thinking"),
@@ -444,7 +352,10 @@ def discover_models(
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
     # The original natural-language request remains the source of discovery constraints.
-    constraints = extract_constraints(spec.request)
+    constraints = spec.constraints
+    preference = spec.speculative_preference
+    method_order = speculative_method_order(spec.request, settings["tavily"].get("speculative_method_order"))
+    search = ResearchBudget(search, settings)
     scan_config = dict(scan_config or load_yaml_file("config/scan.yaml"))
     scoring_config = scoring_config or load_yaml_file("config/scoring.yaml")
     scan_config["lookback_days"] = max(int(scan_config.get("lookback_days", 2)), 30)
@@ -452,7 +363,9 @@ def discover_models(
     if spec.license.lower() == "any":
         scan_config["allowed_licenses"] = []
     else:
-        scan_config["allowed_licenses"] = [part.strip() for part in spec.license.split(",")]
+        scan_config["allowed_licenses"] = [
+            normalize_license(part.strip()) or part.strip() for part in spec.license.split(",")
+        ]
     if constraints["target_params_billion"]:
         scan_config["max_params_billion"] = max(
             float(scan_config.get("max_params_billion", 30)),
@@ -468,8 +381,9 @@ def discover_models(
     scans = [("recent_similar", recent)]
     if progress:
         progress(f"Recent scan returned {len(recent)} models.")
-    # Scan B searches the reference model's family when one can be identified.
-    if constraints["family"] and constraints["family"].lower() != "gemma":
+    # Scan B preserves an explicitly requested family; Qwen and Gemma are defaults.
+    requested_family = constraints["family"]
+    if requested_family and requested_family.lower() != "gemma":
         if progress:
             progress(f"Searching {constraints['family']} family...")
         scans.append(
@@ -482,6 +396,11 @@ def discover_models(
                 ),
             )
         )
+    # A size-only request must also find established Qwen releases, not only recent uploads.
+    if not requested_family or requested_family.lower() != "qwen":
+        if progress:
+            progress("Searching Qwen family...")
+        scans.append(("qwen", lookup(family="Qwen", limit=25, output_path=artifact_dir / "qwen.jsonl")))
     # Scan C always searches Gemma as the alternative family required by discovery.
     if progress:
         progress("Searching Gemma family...")
@@ -522,7 +441,7 @@ def discover_models(
     for entry in sources.values():
         row = entry["record"]
         scored = score_candidate(row, scan_config, scoring_config)
-        if not scored["eligible"]:
+        if model_rejection_reasons(row) or not scored["eligible"]:
             continue
         params = row.get("estimated_params_billion")
         footprint = row.get("estimated_download_size_gb") or (float(params) * 2 if params else None)
@@ -531,12 +450,19 @@ def discover_models(
         ):
             continue
         candidates.append({**scored, "record": row, "discovery_strategies": entry["strategies"]})
+    # Card evidence can improve the shortlist; exact support is checked after research.
     candidates.sort(
-        key=lambda item: (item["score"], len(item["discovery_strategies"])), reverse=True
+        key=lambda item: (item["score"] + speculative_bonus(
+            speculative_status(item["record"], [],
+                runtime_assessment(item["record"], [])["speculative_decoding"]), preference, settings),
+            len(item["discovery_strategies"])), reverse=True
+    )
+    research_limit = 3 if preference not in {"prefer", "require"} else max(
+        3, int(settings["selection"].get("speculative_decoding", {}).get("research_candidates", 8))
     )
     # Preserve variety while keeping the strongest HF scored models.
     selected = []
-    for strategy in ("recent_similar", "same_family", "gemma"):
+    for strategy in ("recent_similar", "same_family", "gemma", "qwen"):
         match = next(
             (
                 item
@@ -545,10 +471,10 @@ def discover_models(
             ),
             None,
         )
-        if match and len(selected) < 3:
+        if match and len(selected) < research_limit:
             selected.append(match)
     for item in candidates:
-        if len(selected) >= 3:
+        if len(selected) >= research_limit:
             break
         if item not in selected:
             selected.append(item)
@@ -556,6 +482,7 @@ def discover_models(
         progress(f"Selected {len(selected)} candidates for task-fit research.")
     # Research each shortlisted model against the original task request.
     evidence: dict[str, list[dict[str, Any]]] = {}
+    research_errors: list[dict[str, str]] = []
     for item in selected:
         ident = item["model_id"]
         query = (
@@ -568,6 +495,7 @@ def discover_models(
         try:
             found = search(query, settings)
         except Exception as exc:
+            research_errors.append({"model_id": ident, "error_type": type(exc).__name__})
             if progress:
                 progress(f"Tavily Search failed for {ident}: {type(exc).__name__}")
             found = []
@@ -608,87 +536,46 @@ def discover_models(
                 if progress:
                     progress(f"Tavily Extract failed for {ident}: {type(exc).__name__}")
         for feature in constraints["features"]:
-            # The original request selects the features. Focus each follow-up on
-            # this candidate so a reference model does not dominate results.
-            terms = (
-                "speculative decoding draft target model"
-                if feature == "speculative decoding"
-                else f"{feature} support documentation"
-            )
-            feature_query = f'"{ident}" {terms} site:huggingface.co OR site:github.com'
-            if progress:
-                progress(f"Tavily {feature} research: {ident}...")
+            if feature == "speculative decoding":
+                continue
+            feature_query = f'"{ident}" {feature} support documentation site:huggingface.co OR site:github.com'
             try:
                 feature_results = search(feature_query, settings)
+                relevant_feature = [source for source in feature_results if _candidate_source(source, ident)]
+                urls = [source["source_url"] for source in relevant_feature
+                        if str(source.get("source_url", "")).startswith("https://")][:2]
+                if urls:
+                    extracted = search(feature_query, settings, extract_urls=urls)
+                    relevant_feature.extend(source for source in extracted if _candidate_source(source, ident))
+                evidence[ident].extend({**source, "research_feature": feature} for source in relevant_feature)
             except Exception as exc:
-                feature_results = []
+                research_errors.append({"model_id": ident, "feature": feature, "error_type": type(exc).__name__})
                 if progress:
-                    progress(f"{feature} search failed for {ident}: {type(exc).__name__}")
-            relevant_feature = [
-                source for source in feature_results if _candidate_source(source, ident)
-            ]
-            extract_urls = []
-            if feature == "speculative decoding":
-                # A draft may live in a different HF repository. Extract its
-                # canonical model page, then use the existing exact-pair verifier.
-                for source in feature_results:
-                    repository_url = _hf_repository_url(str(source.get("source_url") or ""))
-                    if (
-                        repository_url
-                        and repository_url.lower() != f"https://huggingface.co/{ident}".lower()
-                    ):
-                        if not any(term in repository_url.lower() for term in ("gguf", "gptq")):
-                            extract_urls.append(repository_url)
-                stem = ident.rsplit("/", 1)[-1].lower()
-                extract_urls = sorted(
-                    set(extract_urls), key=lambda url: stem in url.lower(), reverse=True
-                )[:2]
-            else:
-                extract_urls = [
-                    str(source["source_url"])
-                    for source in relevant_feature
-                    if str(source.get("source_url") or "").startswith("https://")
-                ][:2]
-            extracted_feature = []
-            if extract_urls:
-                if progress:
-                    progress(f"Tavily Extract: {len(extract_urls)} {feature} pages for {ident}...")
-                try:
-                    extracted_feature = search(feature_query, settings, extract_urls=extract_urls)
-                except Exception as exc:
-                    if progress:
-                        progress(f"{feature} extract failed for {ident}: {type(exc).__name__}")
-            if feature == "speculative decoding":
-                verified_pairs = [
-                    source
-                    for source in feature_results + extracted_feature
-                    if _pair_evidence(item["record"], [source]) is not None
-                ]
-                relevant_feature.extend(verified_pairs)
-                if progress:
-                    progress(
-                        f"Verified {len(verified_pairs)} direct speculative draft pair "
-                        f"sources for {ident}."
-                    )
-            else:
-                relevant_feature.extend(
-                    source for source in extracted_feature if _candidate_source(source, ident)
-                )
-            for source in relevant_feature:
-                source.setdefault("research_feature", feature)
-            evidence[ident].extend(relevant_feature)
+                    progress(f"Tavily {feature} research failed for {ident}: {type(exc).__name__}")
+    method_coverage = {}
+    if "speculative decoding" in constraints["features"]:
+        method_coverage = research_methods(selected, evidence, settings, method_order, search, progress)
+        for ident, methods in method_coverage.items():
+            for method, info in methods.items():
+                for key in ("error_type", "extract_error_type"):
+                    if key in info:
+                        research_errors.append({"model_id": ident, "method": method, "error_type": info[key]})
+    for ident, sources in evidence.items():
+        evidence[ident] = list({(s.get("source_url"), s.get("retrieved_text")): s for s in sources}.values())
     if progress:
         progress("Comparing candidate fit and saving recommendations...")
     # Reuse the shared Python runtime, memory, license, budget, and context checks.
     runtime = {
         row["model_id"]: row
-        for row in rank_candidates([item["record"] for item in selected], spec, evidence, settings)
+        for row in rank_candidates([item["record"] for item in selected], spec, evidence, settings, method_order=method_order)
     }
     # Combine HF score, task evidence, and deployment eligibility into the final list.
     recommendations = []
     for item in selected:
         ident = item["model_id"]
         assessment = runtime[ident]
+        assessment.setdefault("speculative_decoding", {})["alternatives"] = documented_pairs(item["record"], evidence[ident], method_order)
+        assessment["speculative_decoding"]["method_coverage"] = method_coverage.get(ident, {})
         blockers = list(assessment["blocking_reasons"])
         # The legacy runtime ranker defaults to a 64k document fixture for unrelated
         # requests. Discovery uses the requested generation length when available.
@@ -714,22 +601,20 @@ def discover_models(
         for feature in constraints["features"]:
             status = _feature_status(feature, ident, sources_for_model)
             if feature == "speculative decoding":
-                if pair.get("usable"):
-                    status = "verified"
-                    limitations.append("Documented external draft pair; A100 speedup is unmeasured")
-                elif status == "verified":
-                    # A mention on the target page does not establish a usable
-                    # target/draft/runtime combination.
-                    status = "inferred"
+                status = speculative_status(item["record"], sources_for_model, pair)
+                if status == "verified":
+                    limitations.append("Documented external draft pair; GPU speedup is unmeasured")
             feature_statuses[feature.replace(" ", "_")] = status
             if status == "unknown":
                 limitations.append(f"{feature.capitalize()} support is unverified")
-        feature_score = min(
-            0.1,
-            sum(
-                0.05 if status == "verified" else 0.02 if status == "inferred" else 0
-                for status in feature_statuses.values()
-            ),
+        if preference == "require" and feature_statuses.get("speculative_decoding") != "verified":
+            continue
+        # Keep the speculative bonus identical to core; cap other feature bonuses separately.
+        feature_score = speculative_bonus(feature_statuses.get("speculative_decoding", "unknown"),
+                                          preference, settings) + min(
+            0.1, sum(0.05 if status == "verified" else 0.02 if status == "inferred" else 0
+                     for feature, status in feature_statuses.items()
+                     if feature != "speculative_decoding")
         )
         reasoning_parts = [
             f"The existing Hugging Face scanner marked {ident} eligible with a score "
@@ -757,7 +642,7 @@ def discover_models(
                 reasoning_parts.append(
                     f"Speculative decoding is documented for this exact target with "
                     f"external draft {pair['draft_model']} via "
-                    f"{', '.join(pair['runtimes'])} "
+                    f"{', '.join(pair.get('runtimes') or [pair['runtime']])} "
                     f"({pair['source_url']}); speed on the requested GPU is unmeasured."
                 )
             else:
@@ -779,7 +664,7 @@ def discover_models(
                     *(
                         [
                             "Documented external speculative draft: "
-                            f"{pair['draft_model']} via {', '.join(pair['runtimes'])}"
+                            f"{pair['draft_model']} via {', '.join(pair.get('runtimes') or [pair['runtime']])}"
                         ]
                         if pair.get("usable")
                         else []
@@ -813,18 +698,40 @@ def discover_models(
         raise ValueError("Nemotron model override is not allowed by config")
     # Nemotron reviews supported claims and can add a small task-fit bonus; it cannot
     # make an HF-ineligible model eligible.
+    validation = {"status": "skipped", "reason": "no candidates" if not recommendations else "NEBIUS_API_KEY missing"}
     try:
+        if progress and recommendations and os.getenv("NEBIUS_API_KEY"):
+            progress("Nemotron validation...")
         _validate_with_nemotron(spec, recommendations, settings, artifact_dir)
+        if recommendations and os.getenv("NEBIUS_API_KEY"):
+            validation = {"status": "completed"}
     except Exception as exc:
+        validation = {"status": "failed", "error_type": type(exc).__name__}
+        known_reasons = {"Discovery validation evidence exceeds the configured prompt limit": "prompt_limit_exceeded",
+                         "Nemotron model override is not allowed by config": "model_not_allowed"}
+        if str(exc) in known_reasons:
+            validation["reason"] = known_reasons[str(exc)]
         if progress:
             progress(f"Nemotron validation unavailable: {type(exc).__name__}")
-    recommendations.sort(key=lambda row: (not row["eligible"], -row["final_score"]))
+    response_path = artifact_dir / "nemotron_discovery_response.json"
+    if response_path.exists():
+        validation["response_artifact"] = str(response_path)
+    recommendations.sort(key=lambda row: (
+        not row["eligible"],
+        *speculative_rank(row["runtime_assessment"].get("speculative_decoding") or {}, preference, method_order),
+        -row["final_score"],
+    ))
     # Save the same structured result consumed by the CLI and notebook selection UI.
     result = {
         "status": "recommended" if recommendations else "insufficient_evidence",
         "task_request": spec.request,
         "constraints": constraints,
         "scan_diagnostics": diagnostics,
+        "research": {"source_count": sum(len(rows) for rows in evidence.values()), "errors": research_errors,
+                     "method_order": method_order, "method_coverage": method_coverage,
+                     "searches": search.searches, "extracts": search.extracts,
+                     "key_present": bool(os.getenv("TAVILY_API_KEY"))},
+        "validation": validation,
         "recommendations": recommendations[:3],
         "selected_model_id": None,
         "action": "Optimize Inference + Benchmark",

@@ -173,7 +173,7 @@ def test_cli_overrides_nebius_response_and_prompt_limits(tmp_path, monkeypatch):
             "recommend", "Score social posts", "--model-id", "org/x",
             "--gpu-memory-gb", "100", "--budget-usd-per-hour", "4",
             "--gpu-hourly-cost-usd", "4", "--license", "any",
-            "--framework-mode", "sweep", "--validation-max-tokens", "6000",
+            "--framework-mode", "sweep", "--speculative-decoding", "off", "--validation-max-tokens", "6000",
             "--max-prompt-chars", "120000", "--output-dir", str(tmp_path), "--json",
         ],
     )
@@ -249,6 +249,8 @@ def test_tavily_fallback_keeps_provenance_and_cache(tmp_path, monkeypatch):
     calls = []
 
     def fake_post(_url, payload, _headers, _timeout):
+        assert "api_key" not in payload
+        assert _headers == {"Authorization": "Bearer secret"}
         calls.append(payload)
         return {
             "results": [
@@ -345,7 +347,7 @@ def test_final_nemotron_validation_uses_hf_scan_and_downgrades_web_license(tmp_p
     )
     assert prevalidation["final_message"]["content"] == '{"viable_model_ids":["org/x"]}'
     assert payloads[1]["reasoning_effort"] == "minimal"
-    assert payloads[1]["max_tokens"] == 3000
+    assert payloads[1]["max_tokens"] == load_settings()["nebius"].get("validation_max_tokens", 3000)
     assert "The FINAL ANSWER must contain only one JSON object" in payloads[1]["messages"][0]["content"]
     assert "Run ID:" in payloads[1]["messages"][1]["content"]
     assert "Cite saved source URLs" in payloads[1]["messages"][1]["content"]
@@ -490,7 +492,7 @@ def test_explicit_cli_verbose_keeps_json_stdout_clean(tmp_path, monkeypatch):
     args = ["recommend", "Score social posts", "--model-id", "org/x",
             "--gpu-memory-gb", "80", "--budget-usd-per-hour", "5",
             "--gpu-hourly-cost-usd", "3",
-            "--license", "any", "--framework-mode", "sweep",
+            "--license", "any", "--framework-mode", "sweep", "--speculative-decoding", "off",
             "--output-dir", str(tmp_path)]
     result = CliRunner().invoke(app, args + ["--verbose", "--json"])
     assert result.exit_code == 0, result.output
@@ -534,7 +536,7 @@ def test_explicit_cli_explore_family_selects_and_saves_alternative(tmp_path, mon
     result = CliRunner().invoke(app, [
         "recommend", "Score social posts", "--model-id", "org/x", "--explore-family",
         "--gpu-memory-gb", "80", "--budget-usd-per-hour", "5", "--gpu-hourly-cost-usd", "3",
-        "--license", "any", "--framework-mode", "sweep", "--output-dir", str(tmp_path),
+        "--license", "any", "--framework-mode", "sweep", "--speculative-decoding", "off", "--output-dir", str(tmp_path),
     ], input="2\n")
     assert result.exit_code == 0, result.output
     assert captured["family_alternatives"] == [alternative]

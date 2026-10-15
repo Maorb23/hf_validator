@@ -83,6 +83,9 @@ def recommend(
     gpu_hourly_cost_usd: Annotated[float | None, typer.Option("--gpu-hourly-cost-usd")] = None,
     license: Annotated[str | None, typer.Option("--license")] = None,
     framework_mode: Annotated[FrameworkMode | None, typer.Option("--framework-mode")] = None,
+    speculative_decoding: Annotated[
+        str | None, typer.Option("--speculative-decoding", help="off, prefer, or require; y/n also accepted.")
+    ] = None,
     model: Annotated[str | None, typer.Option("--nemotron-model")] = None,
     validation_max_tokens: Annotated[
         int | None, typer.Option("--validation-max-tokens", min=1)
@@ -184,6 +187,7 @@ def recommend(
         "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
         "license": license,
         "framework_mode": framework_mode.value if framework_mode else None,
+        "speculative_decoding": speculative_decoding,
     }
     if resumed:
         prior = resumed.get("request_spec") or {}
@@ -192,10 +196,13 @@ def recommend(
             for key, value in supplied_inputs.items()
         }
     if request is not None:
-        values, missing = discovery_inputs(
-            request,
-            supplied_inputs,
-        )
+        try:
+            values, missing = discovery_inputs(request, supplied_inputs)
+        except ValueError as exc:
+            if json_mode:
+                typer.echo(json.dumps({"status": "error", "error": str(exc)}))
+                raise typer.Exit(code=1) from None
+            raise typer.BadParameter(str(exc)) from exc
     else:
         values = {"request": request, **supplied_inputs}
         missing = [key for key, value in values.items() if value is None]
@@ -203,7 +210,7 @@ def recommend(
         response = {
             "status": "needs_input",
             "task_request": request,
-            "constraints": extract_constraints(request) if request else {},
+            "constraints": extract_constraints(request, values.get("speculative_decoding")) if request else {},
             "recommendations": [],
             "selected_model_id": None,
             "action": "Optimize Inference + Benchmark",
@@ -221,6 +228,10 @@ def recommend(
         return
     defaults = {"license": "any", "framework_mode": "sweep"}
     for key in missing:
+        # JSON runs return questions above; only terminal runs can read a confirmation.
+        if key == "speculative_decoding":
+            values[key] = "prefer" if typer.confirm("Prefer speculative decoding when supported?", default=True) else "off"
+            continue
         values[key] = typer.prompt(key.replace("_", " "), default=defaults.get(key))
     if parent_run_id and parent and request == parent.get("task_request"):
         parent_spec = parent.get("request_spec") or {}
@@ -338,6 +349,15 @@ def recommend(
                     + (item["nemotron"].get("uncertainty") or "no supported task-fit claims")
                 )
             typer.echo(f"   HF score: {item['hf_score']:.3f}")
+            speculative = item.get("runtime_assessment", {}).get("speculative_decoding", {})
+            coverage = speculative.get("method_coverage", {})
+            if coverage:
+                typer.echo("   Method research: " + "; ".join(
+                    f"{method}: {info['status']}" + (f" ({info['reason']})" if info.get("reason") else "")
+                    for method, info in coverage.items()))
+            for pair in speculative.get("alternatives", [])[:8]:
+                typer.echo(f"   Documented draft: {pair['draft_model']} ({pair['method']}) via "
+                           f"{', '.join(pair['runtimes'])}; execution unverified; {pair['source_url']}")
             for reason in item["why_it_fits"]:
                 typer.echo(f"   Why: {reason}")
             for field, status in item.get("task_fit", {}).items():
@@ -363,7 +383,11 @@ def recommend(
             "status": "selected",
         }
         save_run(state_directory, state)
-        typer.echo("[ Optimize Inference + Benchmark ] (placeholder)")
+        typer.echo(
+            "Model selection is complete. Optional optimization actions: "
+            "start, status, list-prior-studies, reuse."
+        )
+        typer.echo(f"Use: hf-watch optimization <action> --run-id {active_run_id}")
     if json_mode:
         typer.echo(
             json.dumps(
@@ -1202,3 +1226,45 @@ def _update_manifest_artifacts(run_dir: Path, artifacts: dict[str, str]) -> None
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     data["artifacts"] = {**data.get("artifacts", {}), **artifacts}
     manifest_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+@app.command("optimization")
+def optimization_action(
+    operation: Annotated[
+        str, typer.Argument(help="start, status, list-prior-studies, reuse, or cancel")
+    ],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    request_file: Annotated[
+        Path | None,
+        typer.Option("--request-file", help="JSON intent (start/reuse) or context (list)"),
+    ] = None,
+    state_root: Annotated[Path, typer.Option("--state-root")] = Path("artifacts/recommendations"),
+) -> None:
+    """Optional inference optimization after explicit model selection; always emits JSON."""
+    from hf_model_watch.openclaw_adapter import OpenClawToolAdapter, dispatch
+
+    operations = {
+        "start": "start_optimization",
+        "status": "get_optimization_status",
+        "list-prior-studies": "list_prior_studies",
+        "reuse": "reuse_optimization_study",
+        "cancel": "cancel_optimization",
+    }
+    try:
+        if operation not in operations:
+            raise ValueError(f"Unknown optimization action: {operation}")
+        arguments = {"run_id": run_id}
+        if operation in {"start", "reuse", "list-prior-studies"}:
+            if request_file is None:
+                raise ValueError("--request-file is required for this action")
+            arguments["context" if operation == "list-prior-studies" else "intent"] = json.loads(
+                request_file.read_text()
+            )
+        result = dispatch(
+            OpenClawToolAdapter(state_root=state_root),
+            {"operation": operations[operation], "arguments": arguments},
+        )
+    except (ValueError, OSError, RuntimeError, KeyError) as exc:
+        typer.echo(json.dumps({"status": "error", "error": str(exc)}))
+        raise typer.Exit(code=1) from None
+    typer.echo(json.dumps(result, sort_keys=True))

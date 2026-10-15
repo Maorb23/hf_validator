@@ -4,12 +4,15 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from hf_model_watch.optimization.contracts import NewStudyIntent, ReuseIntent, StudyContext
 from hf_model_watch.recommender.run_state import (
     MAX_FEEDBACK_CHARS,
     MAX_REQUEST_CHARS,
@@ -43,6 +46,7 @@ class RecommendationInputs(StrictModel):
     gpu_hourly_cost_usd: float | None = Field(default=None, gt=0)
     license: str | None = Field(default=None, min_length=1, max_length=100)
     framework_mode: Literal["fast", "sweep"] | None = None
+    speculative_decoding: Literal["off", "prefer", "require"] | None = None
 
 
 class ClarificationInputs(StrictModel):
@@ -76,9 +80,7 @@ class SelectionInputs(StrictModel):
 class FeedbackInputs(StrictModel):
     run_id: str
     model_id: str = Field(min_length=1, max_length=500)
-    category: Literal[
-        "out_of_memory", "latency", "throughput", "quality", "capability", "other"
-    ]
+    category: Literal["out_of_memory", "latency", "throughput", "quality", "capability", "other"]
     details: str = Field(min_length=1, max_length=MAX_FEEDBACK_CHARS)
     context: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
@@ -101,7 +103,7 @@ class RevisionInputs(RecommendationInputs):
     @model_validator(mode="after")
     def no_optimization_request(self) -> RevisionInputs:
         if "run optimization" in self.revision_reason.lower():
-            raise ValueError("Inference optimization is unavailable in Phase 2")
+            raise ValueError("Use start_optimization for inference optimization")
         return self
 
 
@@ -114,10 +116,22 @@ class RunStatusInputs(StrictModel):
         return validate_run_id(value)
 
 
+class OptimizationStartInputs(RunStatusInputs):
+    intent: NewStudyIntent
+
+
+class OptimizationReuseInputs(RunStatusInputs):
+    intent: ReuseIntent
+
+
+class PriorStudiesInputs(RunStatusInputs):
+    context: StudyContext
+
+
 CliRunner = Callable[[Sequence[str], float], dict[str, Any]]
 
 
-def _default_cli_runner(project_root: Path) -> CliRunner:
+def _default_cli_runner(project_root: Path, progress: Callable[[str], None] | None = None) -> CliRunner:
     allowed_env_names = {
         "PATH",
         "PYTHONPATH",
@@ -131,14 +145,63 @@ def _default_cli_runner(project_root: Path) -> CliRunner:
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "NEBIUS_API_BASE_URL",
+        "NEMOTRON_MODEL",
     }
 
     def run(arguments: Sequence[str], timeout: float) -> dict[str, Any]:
         env = {name: value for name, value in os.environ.items() if name in allowed_env_names}
+        if "--state-root" in arguments:
+            env["HF_MODEL_WATCH_STATE_ROOT"] = str(arguments[arguments.index("--state-root") + 1])
         source_root = str(project_root / "src")
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [source_root, env.get("PYTHONPATH")]))
         try:
-            completed = subprocess.run(
+            if progress is not None:
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "hf_model_watch", *arguments], cwd=project_root,
+                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                def read_progress() -> None:
+                    assert process.stderr is not None
+                    for line in iter(process.stderr.readline, b""):
+                        text = line.decode("utf-8", errors="replace")
+                        # Report categories only; never expose arbitrary stderr or credentials.
+                        for prefix, stage in (("Scanning recent", "scanning_recent"),
+                                              ("Searching Qwen", "scanning_qwen"),
+                                              ("Searching Gemma", "scanning_gemma"),
+                                              ("Searching ", "scanning_family"),
+                                              ("Scanning same", "scanning_family"),
+                                              ("Scanning Gemma", "scanning_gemma"),
+                                              ("Tavily", "researching"), ("Nemotron", "validating")):
+                            if text.startswith(prefix):
+                                progress(stage)
+                                break
+                reader = threading.Thread(target=read_progress, daemon=True)
+                reader.start()
+                assert process.stdout is not None
+                output: list[bytes] = []
+                def read_output() -> None:
+                    output.append(process.stdout.read(MAX_TOOL_OUTPUT_BYTES + 1))
+                    # Drain the remainder to prevent pipe deadlock; keep memory bounded.
+                    while process.stdout.read(65536):
+                        pass
+                output_reader = threading.Thread(target=read_output, daemon=True)
+                output_reader.start()
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                    raise
+                finally:
+                    reader.join()
+                    output_reader.join()
+                completed = subprocess.CompletedProcess(process.args, process.returncode, b"".join(output))
+            else:
+                completed = subprocess.run(
                 [sys.executable, "-m", "hf_model_watch", *arguments],
                 cwd=project_root,
                 env=env,
@@ -175,11 +238,13 @@ class OpenClawToolAdapter:
         project_root: Path | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         cli_runner: CliRunner | None = None,
+        optimization_workflow: Any = None,
     ) -> None:
         self.state_root = state_root.resolve()
         self.project_root = (project_root or Path.cwd()).resolve()
         self.timeout_seconds = timeout_seconds
         self._run_cli = cli_runner or _default_cli_runner(self.project_root)
+        self._optimization_workflow = optimization_workflow
 
     def recommend_models(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         inputs = RecommendationInputs.model_validate(raw)
@@ -208,9 +273,7 @@ class OpenClawToolAdapter:
         candidates = {row.get("model_id") for row in run.get("recommendations", [])}
         if inputs.model_id not in candidates:
             raise ValueError("Selected model does not belong to this recommendation run")
-        return self._invoke(
-            ["select", "--run-id", inputs.run_id, "--model-id", inputs.model_id]
-        )
+        return self._invoke(["select", "--run-id", inputs.run_id, "--model-id", inputs.model_id])
 
     def record_model_feedback(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         inputs = FeedbackInputs.model_validate(raw)
@@ -262,12 +325,43 @@ class OpenClawToolAdapter:
         _, run = load_run(self.state_root, inputs.run_id)
         return self._safe_run_view(run)
 
+    def _optimizer(self):
+        if self._optimization_workflow is None:
+            from hf_model_watch.optimization.workflow import configured_workflow
+
+            self._optimization_workflow = configured_workflow(self.state_root)
+        return self._optimization_workflow
+
+    def start_optimization(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        inputs = OptimizationStartInputs.model_validate(raw)
+        return self._optimizer().start(inputs.run_id, inputs.intent)
+
+    def get_optimization_status(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        inputs = RunStatusInputs.model_validate(raw)
+        return self._optimizer().status(inputs.run_id)
+
+    def list_prior_studies(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        inputs = PriorStudiesInputs.model_validate(raw)
+        return self._optimizer().list_prior_studies(inputs.run_id, inputs.context)
+
+    def reuse_optimization_study(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        inputs = OptimizationReuseInputs.model_validate(raw)
+        return self._optimizer().reuse(inputs.run_id, inputs.intent)
+
+    def cancel_optimization(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        inputs = RunStatusInputs.model_validate(raw)
+        return self._optimizer().cancel(inputs.run_id)
+
     def _invoke_recommend(self, inputs: RecommendationInputs) -> dict[str, Any]:
         return self._invoke(self._recommend_arguments(inputs))
 
     def _invoke(self, arguments: list[str]) -> dict[str, Any]:
+        invocation = list(arguments)
+        if invocation[0] == "recommend" and "--run-id" not in invocation:
+            output_dir = self.state_root / "artifacts" / f"mcp-{uuid4().hex}"
+            invocation.extend(["--output-dir", str(output_dir)])
         payload = self._run_cli(
-            [*arguments, "--state-root", str(self.state_root), "--json"],
+            [*invocation, "--state-root", str(self.state_root), "--json"],
             self.timeout_seconds,
         )
         return self._safe_run_view(payload)
@@ -281,6 +375,7 @@ class OpenClawToolAdapter:
             "gpu_hourly_cost_usd": "--gpu-hourly-cost-usd",
             "license": "--license",
             "framework_mode": "--framework-mode",
+            "speculative_decoding": "--speculative-decoding",
         }
         for field, option in fields.items():
             value = getattr(inputs, field)
@@ -297,6 +392,7 @@ class OpenClawToolAdapter:
             "gpu_hourly_cost_usd": "--gpu-hourly-cost-usd",
             "license": "--license",
             "framework_mode": "--framework-mode",
+            "speculative_decoding": "--speculative-decoding",
         }
         arguments: list[str] = []
         request = answers.get("request")
@@ -331,8 +427,14 @@ class OpenClawToolAdapter:
             "parent_run_id",
             "task_request",
             "constraints",
+            "request_spec",
+            "scan_diagnostics",
             "recommendations",
+            "research",
+            "validation",
             "selected_model_id",
+            "optimization_reference",
+            "optimization_result",
             "selection",
             "needs_input",
             "questions",
@@ -354,9 +456,9 @@ class OpenClawToolAdapter:
         if isinstance(recommendations, list):
             result["recommendations"] = recommendations[:3]
             result["recommendation_count"] = len(recommendations)
-        # The optimization action remains visible for compatibility but cannot be invoked.
+        # Legacy recommendation action metadata is preserved; execution is optional.
         if result.get("action_status") == "placeholder":
-            result["optimization_available"] = False
+            result["optimization_available"] = bool(os.getenv("HF_MODEL_WATCH_OPTIMIZER_DATABASE"))
         return result
 
 
@@ -367,6 +469,11 @@ TOOL_MODELS: dict[str, type[StrictModel]] = {
     "record_model_feedback": FeedbackInputs,
     "revise_recommendation": RevisionInputs,
     "get_run_status": RunStatusInputs,
+    "start_optimization": OptimizationStartInputs,
+    "get_optimization_status": RunStatusInputs,
+    "list_prior_studies": PriorStudiesInputs,
+    "reuse_optimization_study": OptimizationReuseInputs,
+    "cancel_optimization": RunStatusInputs,
 }
 
 

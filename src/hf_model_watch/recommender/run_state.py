@@ -48,6 +48,12 @@ def questions_for(missing: list[str]) -> list[dict[str, Any]]:
             "type": "string",
             "choices": ["any", "apache-2.0", "mit", "llama", "gemma"],
         },
+        "speculative_decoding": {
+            "prompt": "Prefer speculative decoding when supported? [Y/n]",
+            "type": "string",
+            "choices": ["prefer", "off", "require"],
+            "default": "prefer",
+        },
         "framework_mode": {
             "prompt": "Use fast mode or sweep mode?",
             "type": "string",

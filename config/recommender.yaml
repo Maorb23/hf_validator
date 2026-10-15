@@ -21,9 +21,19 @@ tavily:
   cache_dir: artifacts/recommendations/evidence_cache
   cache_ttl_hours: 48
   speculative_terms: [Medusa, EAGLE, D-Spark, D-Flash]
+  speculative_method_order: [dspark, dflash, eagle, mtp, medusa]
+  discovery_methods_per_target: 3
+  discovery_search_budget: 32
+  discovery_extract_budget: 24
+  discovery_draft_pages_per_method: 2
 selection:
   max_alternatives: 3
   memory_safety_margin: 0.85
+  # Shared feature bonuses; discovery expands research before final ranking.
+  speculative_decoding:
+    verified_bonus: 0.05
+    inferred_bonus: 0.02
+    research_candidates: 8
   weights:
     small_model: 5
     deployability: 4

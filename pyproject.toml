@@ -19,6 +19,7 @@ dependencies = [
   "transformers>=4.44",
   "typer>=0.12",
   "rich>=13.7",
+  "rapidfuzz>=3.0",
   "prefect>=3.7.7",
   "python-dotenv>=1.0",
   "openai>=1.0",

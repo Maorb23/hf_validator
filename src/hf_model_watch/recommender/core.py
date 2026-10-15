@@ -61,6 +61,15 @@ for name, description, properties in (
 """  
 
 
+from hf_model_watch.recommender.utilities import (
+    SpeculativePreference, _pair_evidence, _normalize_inline_markdown, extract_constraints,
+    normalize_prompt, detect_features, speculative_preference, speculative_status, speculative_bonus,
+    speculative_rank, speculative_method_order,
+    documented_launches, official_target_source, evidence_excerpt, normalize_license, license_assessment,
+    model_rejection_reasons,
+)
+
+
 class RequestSpec(BaseModel):
     """
     Class for specifying the requirements for a model selection request.
@@ -75,6 +84,15 @@ class RequestSpec(BaseModel):
     framework_mode: Literal["fast", "sweep"]
     model: str | None = None
     candidates: list[str] = Field(default_factory=list)
+    speculative_decoding: SpeculativePreference | None = None
+
+    @property
+    def speculative_preference(self) -> SpeculativePreference | None:
+        return speculative_preference(self.request, self.speculative_decoding)
+
+    @property
+    def constraints(self) -> dict[str, Any]:
+        return extract_constraints(self.request, self.speculative_decoding)
 
 
 class EvidenceFieldAssessment(BaseModel):
@@ -104,6 +122,8 @@ def load_settings(path: Path = Path("config/recommender.yaml")) -> dict[str, Any
         raise ValueError("Recommender config must be a mapping")
     data["nebius"]["base_url"] = os.getenv("NEBIUS_API_BASE_URL", data["nebius"]["base_url"])
     data["nebius"]["default_model"] = os.getenv("NEMOTRON_MODEL", data["nebius"]["default_model"])
+    if state_root := os.getenv("HF_MODEL_WATCH_STATE_ROOT"):
+        data["tavily"]["cache_dir"] = str(Path(state_root) / "evidence_cache")
     return data
 
 """
@@ -127,7 +147,7 @@ def _post_json(
         raise ValueError("API response must be an object")
     return data
 
-def model_research_queries(record: dict[str, Any], request: str) -> list[tuple[str, str]]:
+def model_research_queries(record: dict[str, Any], request: str, preference: str | None = None) -> list[tuple[str, str]]:
     """Plan focused searches only for fields that HF did not establish."""
     ident = str(record["model_id"])
     quoted = f'"{ident}"'
@@ -144,13 +164,7 @@ def model_research_queries(record: dict[str, Any], request: str) -> list[tuple[s
     ]
     if not record.get("card_excerpt") or any(is_missing for _, is_missing, _ in missing):
         queries.append(("exact", quoted))
-    if any(
-        term in request.lower()
-        for term in (
-            "speculat", "medusa", "eagle", "draft", "dflash", "dspark", "d-spark",
-            "multi-token prediction", "mtp",
-        )
-    ):
+    if "speculative decoding" in detect_features(request, preference):
         stem = ident.rsplit("/", 1)[-1]
         queries.append(
             ("draft_pair", f'"{stem}" speculative decoding draft target site:huggingface.co')
@@ -179,79 +193,6 @@ def comparison_research_queries(record: dict[str, Any]) -> list[tuple[str, str]]
         ("origin", f"{quoted} base_model parent model"),
     ]
 
-
-def _normalize_inline_markdown(text: str) -> str:
-    """Remove formatting delimiters without changing underscores inside model IDs."""
-    return re.sub(
-        r"(?<!\w)(?:\*\*|__|`)|(?:\*\*|__|`)(?!\w)",
-        "",
-        text,
-    )
-
-
-def _pair_evidence(record: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """
-    Identify a target/drafter pair and runtime from the evidence, if present.
-    The drafter must explicitly claim the target model, and the runtime must be mentioned in the same source.
-    """
-    target = str(record["model_id"])
-    candidates: list[tuple[int, float, dict[str, Any]]] = []
-    for source in evidence:
-        url = str(source.get("source_url") or "")
-        body = str(source.get("retrieved_text") or "")
-        normalized_body = _normalize_inline_markdown(body)
-        draft_match = re.fullmatch(r"https://huggingface\.co/([^/?#]+/[^/?#]+)/?(?:\?[^#]*)?", url)
-        if not draft_match or draft_match.group(1) == target:
-            continue
-        draft_id = draft_match.group(1)
-        lower_body = normalized_body.lower()
-        # GGUF and other converted weights cannot inherit the source card's
-        # SGLang instructions merely because those instructions were copied.
-        if (
-            "gguf" in draft_id.lower()
-            or "gptq" in draft_id.lower()
-            or "quantized version of" in lower_body
-            or "model card is pasted" in lower_body
-        ):
-            continue
-        explicit_target = re.search(
-            r"(?:draft model for|target model\s*)\s*[`\"']?([^`\"'\s,;]+/[^`\"'\s,;]+)",
-            normalized_body,
-            re.IGNORECASE,
-        )
-        if not explicit_target or explicit_target.group(1).rstrip(".") != target:
-            continue
-        # The exact target claim matters; the drafting method can be DFlash,
-        # DSpark, EAGLE, Medusa, or another documented speculative method.
-        speculative = any(
-            term in lower_body or term in draft_id.lower()
-            for term in ("speculat", "draft", "dflash", "dspark", "eagle", "medusa")
-        )
-        runtimes = [
-            runtime
-            for runtime in ("sglang", "vllm", "transformers")
-            if speculative and runtime in lower_body
-        ]
-
-        if runtimes:
-            pair = {
-                "target_model": target,
-                "draft_model": draft_id,
-                "runtimes": runtimes,
-                "source_url": url,
-            }
-            direct_launch = int(
-                f"--speculative-draft-model-path {draft_id}" in normalized_body
-            )
-            try:
-                relevance = float(source.get("score") or 0)
-            except (TypeError, ValueError):
-                relevance = 0.0
-            candidates.append((direct_launch, relevance, pair))
-
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: (item[0], item[1], item[2]["draft_model"]))[2]
 
 def _validation_excerpt(source: dict[str, Any]) -> str:
     """
@@ -296,7 +237,7 @@ def select_fixture(request: str, fixture_dir: Path | None = None) -> dict[str, A
         name = "pr_review"
     elif any(term in text for term in ("social", "twitter", "tweet", "reddit", "post", "comment", "social scoring")):
         name = "social_scoring"
-    elif any(term in text for term in ("long context", "longer context", "context length", "longer input", "longer prompt")):
+    elif any(term in text for term in ("long context", "longer context", "context length", "longer input", "longer prompt", "long document")):
         name = "long_context_analysis"
     else:
         name = "social_scoring"  # Default fixture if no specific terms are found
@@ -367,7 +308,7 @@ def hf_lookup(
             card = Path(source).read_text(encoding="utf-8", errors="replace")
             card_path.write_text(card, encoding="utf-8")
             record["card_artifact"] = str(card_path)
-            record["card_excerpt"] = card[:4000]
+            record["card_excerpt"] = evidence_excerpt(card, 4000)
             if not record.get("license") and card.startswith("---"):
                 frontmatter = card.split("---", 2)[1]
                 match = re.search(r"(?m)^license:\s*([A-Za-z0-9_.-]+)\s*$", frontmatter)
@@ -406,10 +347,9 @@ def tavily_research(
     if extract_urls and any(not url.startswith("https://") for url in extract_urls):
         return []
     payload = (
-        {"api_key": key, "urls": extract_urls[:max_results]}
+        {"urls": extract_urls[:max_results]}
         if extract_urls
         else {
-            "api_key": key,
             "query": query[:300],
             "max_results": max_results,
             "search_depth": config.get("search_depth", "advanced"),
@@ -439,7 +379,7 @@ def tavily_research(
         data = None
     try:
         data = data or _post_json(
-            f"https://api.tavily.com/{endpoint}", payload, {}, float(config["timeout_seconds"])
+            f"https://api.tavily.com/{endpoint}", payload, {"Authorization": f"Bearer {key}"}, float(config["timeout_seconds"])
         )
     except HTTPError as exc:
         raise ValueError(f"Tavily API returned HTTP {exc.code}") from exc
@@ -455,9 +395,10 @@ def tavily_research(
             "score": item.get("score"),
             "source_type": "web",
             "origin": "tavily",
-            "retrieved_text": str(item.get("raw_content") or item.get("content") or "")[
-                : int(config["max_extract_chars"])
-            ],
+            "retrieved_text": evidence_excerpt(
+                str(item.get("raw_content") or item.get("content") or ""),
+                int(config["max_extract_chars"]),
+            ),
             "claim": str(item.get("content") or item.get("raw_content") or "")[:300],
             "confidence": "uncertain",
         }
@@ -467,7 +408,7 @@ def tavily_research(
 
 
 
-def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]], *, method_order: list[str] | None = None) -> dict[str, Any]:
     """
     Assess the runtime compatibility of a model based on the provided evidence.
     """
@@ -476,6 +417,16 @@ def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -
     hf_url = f"https://huggingface.co/{record['model_id']}/tree/{record.get('revision') or 'main'}"
     base = bool(record.get("has_weights") and record.get("has_config") and architecture)
     card = str(record.get("card_excerpt") or "").lower()
+    # Include the pinned Hub card, not just web excerpts, in deterministic checks.
+    card_sources = list(evidence)
+    if record.get("card_excerpt"):
+        card_sources.append({"source_url": f"https://huggingface.co/{record['model_id']}/blob/"
+                             f"{record.get('revision') or 'main'}/README.md",
+                             "retrieved_text": record["card_excerpt"]})
+    launches = [(source, launch) for source in card_sources
+                if official_target_source(str(source.get("source_url") or ""), record["model_id"])
+                for launch in documented_launches(str(source.get("retrieved_text") or ""))
+                if launch["target_model"] == record["model_id"]]
     result: dict[str, Any] = {}
     for name in ("transformers", "vllm", "sglang", "trt-llm"):
         matches = [e for e in evidence if name in str(e.get("retrieved_text", "")).lower()]
@@ -485,6 +436,13 @@ def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -
                 "confidence": "medium",
                 "source_url": hf_url,
                 "reason": "Hub config, architecture and weights are present; execution unverified",
+            }
+        elif any(launch["runtime"] == name for _, launch in launches):
+            source = next(source for source, launch in launches if launch["runtime"] == name)
+            result[name] = {
+                "status": "compatible", "confidence": "medium",
+                "source_url": source["source_url"],
+                "reason": "Official target card documents an exact-model launch; execution unverified",
             }
         elif name != "transformers" and any(
             phrase in card
@@ -527,7 +485,7 @@ def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -
         ),
         "source_url": spec_sources[0]["source_url"] if spec_sources else None,
     }
-    pair = _pair_evidence(record, evidence)
+    pair = _pair_evidence(record, card_sources, method_order)
     if pair:
         for runtime_name in pair["runtimes"]:
             result[runtime_name] = {
@@ -565,6 +523,9 @@ def runtime_assessment(record: dict[str, Any], evidence: list[dict[str, Any]]) -
                 "source_url": hf_url,
                 "reason": "Pinned HF config names target, draft and compatible runtime",
             }
+    result["speculative_decoding"]["status"] = speculative_status(
+        record, evidence, result["speculative_decoding"]
+    )
     return result
 
 def rank_candidates(
@@ -572,16 +533,17 @@ def rank_candidates(
     spec: RequestSpec,
     evidence: dict[str, list[dict[str, Any]]],
     settings: dict[str, Any],
+    *, method_order: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Function to rank candidate models based on the provided records, request specifications, evidence, and settings.
     """
     ranked = []
-    fixture = select_fixture(spec.request)
+    fixture = select_fixture(normalize_prompt(spec.request))
     weights = settings["selection"]["weights"]
     for record in records:
         ident = str(record["model_id"])
-        runtime = runtime_assessment(record, evidence.get(ident, []))
+        runtime = runtime_assessment(record, evidence.get(ident, []), method_order=method_order)
         params = record.get("estimated_params_billion")
         license_name = record.get("license")
         target_weights_gb = record.get("estimated_download_size_gb")
@@ -590,33 +552,30 @@ def rank_candidates(
             else float(params) * 2.0 if params is not None else None
         )
         pair = runtime["speculative_decoding"]
+        use_pair = pair["usable"] and spec.speculative_preference != "off"
         # Reserve twice the target weight footprint for an unscanned drafter, plus
         # 16 GB for KV cache and serving overhead. This is a capacity estimate.
         memory = (
-            target_memory_gb * (3 if pair["usable"] else 1) + 16
+            target_memory_gb * (3 if use_pair else 1) + 16
             if target_memory_gb is not None else None
         )
-        blockers = []
-        allowed_licenses = {part.strip().lower() for part in spec.license.split(",")}
+        support = speculative_status(record, evidence.get(ident, []), pair)
+        preference = spec.speculative_preference
+        blockers = model_rejection_reasons(record)
+        # Required support must survive deterministic verification, not just web mentions.
+        if preference == "require" and support != "verified":
+            blockers.append("speculative_decoding_unverified")
+        allowed_licenses = {normalize_license(part.strip()) or part.strip().lower()
+                            for part in spec.license.split(",")}
         if allowed_licenses & {"irrelevant", "no preference", "unrestricted"}:
             allowed_licenses.add("any")
         if not license_name or (
-            "any" not in allowed_licenses and str(license_name).lower() not in allowed_licenses
+            "any" not in allowed_licenses and (normalize_license(license_name) or str(license_name).lower()) not in allowed_licenses
         ):
             blockers.append("license_unverified_or_mismatch")
-        license_claims = {
-            match.group(1).lower()
-            for source in evidence.get(ident, [])
-            for match in re.finditer(
-                r"(?i)licen[sc]ed?\s+under\s+([A-Za-z0-9_.-]+)",
-                str(source.get("retrieved_text") or "")[:3000],
-            )
-        }
-        license_conflict = bool(
-            license_name
-            and license_claims
-            and any(claim != str(license_name).lower() for claim in license_claims)
-        )
+        # Both flows use the shared normalizer; unknown wording is not a contradiction.
+        checked_license = license_assessment(license_name, evidence.get(ident, []))
+        license_conflict = checked_license["conflict"]
         if license_conflict:
             blockers.append("conflicting_license_claims")
         if not record.get("revision"):
@@ -643,10 +602,11 @@ def rank_candidates(
         hourly = spec.gpu_hourly_cost_usd
         if hourly is None or float(hourly) > spec.budget_usd_per_hour:
             blockers.append("budget_unverified_or_exceeded")
-        pair_runtimes = pair.get("runtimes", []) if pair["usable"] else []
+        pair_runtimes = (pair.get("runtimes") or [pair.get("runtime")]) if use_pair else []
         selected = next(
-            (name for name in ("vllm", "sglang", "transformers") if name in pair_runtimes),
-            "vllm" if "vllm" in compatible else compatible[0] if compatible else None,
+            (name for name in ("vllm", "sglang", "trt-llm", "transformers") if name in pair_runtimes),
+            next((name for name in ("vllm", "sglang", "trt-llm", "transformers")
+                  if name in compatible), None),
         )
         usable_gpu_count = spec.gpu_count if selected in {"vllm", "sglang", "trt-llm"} else 1
         if memory is None or memory > spec.gpu_memory_gb * usable_gpu_count * float(
@@ -658,6 +618,7 @@ def rank_candidates(
             for field in ("license", "revision", "estimated_params_billion", "context_length")
         )
         score_breakdown = {
+            "speculative_decoding": speculative_bonus(support, preference, settings),
             "small_model": -float(weights["small_model"]) * float(params or 1e6),
             "deployability": float(weights["deployability"]) * len(compatible),
             "verified_evidence": float(weights["verified_evidence"]) * verified_fields,
@@ -669,11 +630,12 @@ def rank_candidates(
                 "revision": record.get("revision"),
                 "license": license_name,
                 "license_claims_conflict": license_conflict,
+                "license_assessment": checked_license,
                 "parameters_billion": params,
                 "estimated_bf16_memory_gb": memory,
                 "memory_estimate_basis": (
                     "target weights + 2x target weights reserved for drafter + 16 GB KV/runtime"
-                    if pair["usable"] else "target weights + 16 GB KV/runtime"
+                    if use_pair else "target weights + 16 GB KV/runtime"
                 ),
                 "context_length": context_length,
                 "estimated_hourly_usd": hourly,
@@ -682,7 +644,9 @@ def rank_candidates(
                 "runtime": selected,
                 "compatible_frameworks": compatible,
                 "runtime_assessment": runtime,
-                "speculative_decoding": runtime["speculative_decoding"],
+                "speculative_decoding": {**runtime["speculative_decoding"], "status": support},
+                "speculative_decoding_preference": preference,
+                "feature_bonus": speculative_bonus(support, preference, settings),
                 "eligible": not blockers,
                 "infra_score": round(sum(score_breakdown.values()), 4),
                 "score_breakdown": score_breakdown,
@@ -713,7 +677,10 @@ def rank_candidates(
         ranked,
         key=lambda item: (
             not item["eligible"],
-            float(item["parameters_billion"] or 1e9),
+            *speculative_rank(item["speculative_decoding"], spec.speculative_preference,
+                              method_order or speculative_method_order(spec.request)),
+            -(item["infra_score"]) if spec.speculative_preference in {"prefer", "require"}
+            else float(item["parameters_billion"] or 1e9),
             item["model_id"],
         ),
     )
@@ -779,7 +746,7 @@ def recommend(
                 )
             ),
         },
-        {"role": "user", "content": json.dumps(spec.model_dump())},
+        {"role": "user", "content": json.dumps({**spec.model_dump(), "constraints": spec.constraints, "speculative_decoding_preference": spec.speculative_preference})},
     ]
     for ident in ([] if validation_only else spec.candidates)[
         : int(settings["nebius"]["max_candidates"])
@@ -848,7 +815,7 @@ def recommend(
     final_response: dict[str, Any] = {}
     prevalidation_responses: list[dict[str, Any]] = []
 
-    ## First loops pre-validation:
+    ## First loops pre-validation.
     for _ in range(0 if validation_only else max_calls + 1): # Validation-only mode skips the loop, otherwise it allows for max_calls + 1 iterations.
         prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
         if prompt_chars > int(settings["nebius"]["max_prompt_chars"]):
@@ -1028,10 +995,13 @@ def recommend(
         events.append({"event": "tavily_skipped", "reason": "TAVILY_API_KEY missing"})
         remaining_searches = 0
     for ident, row in records.items():
+        # Blocked IDs remain visible in diagnostics but need no further research.
+        if model_rejection_reasons(row):
+            continue
         research_queries = (
             comparison_research_queries(row)
             if family_alternatives
-            else model_research_queries(row, spec.request)
+            else model_research_queries(row, spec.request, spec.speculative_decoding)
         )
         for case, query in research_queries:
             if remaining_searches <= 0:
@@ -1250,7 +1220,7 @@ def recommend(
                 )
                 claim.confidence = min(claim.confidence, 0.5)
                 claim.action = "needs_direct_hf_check" if claim.status == "inferred" else "keep_blocked"
-    if not validation_error and ("speculat" in spec.request.lower() or "draft" in spec.request.lower()):
+    if not validation_error and spec.speculative_preference in {"prefer", "require"}:
         for item in ranked:
             pair = item["speculative_decoding"]
             if item["eligible"] and pair["usable"] and item["model_id"] not in model_assessment.viable_model_ids:
@@ -1258,7 +1228,7 @@ def recommend(
                 model_assessment.reasoning = (
                     model_assessment.reasoning + " Correction: "
                     + f"Exact speculative pair {pair['target_model']} + {pair['draft_model']} "
-                    + f"via {', '.join(pair['runtimes'])} is documented at "
+                    + f"via {', '.join(pair.get('runtimes') or [pair['runtime']])} is documented at "
                     + f"{pair['source_url']}; "
                     + "80 GB capacity passes the conservative estimate; A100 speedup is unmeasured."
                 ).strip()

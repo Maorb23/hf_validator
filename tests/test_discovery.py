@@ -10,6 +10,14 @@ from hf_model_watch.recommender import discovery
 from hf_model_watch.recommender.core import load_settings
 
 
+def test_nemotron_unknown_assessment_allows_missing_rationale():
+    parsed = discovery.DiscoveryValidation.model_validate({"assessments": [{
+        "model_id": "org/model", "task_fit": "unknown", "uncertainty": "No evidence", "claims": []
+    }]})
+    assert parsed.assessments[0].rationale == ""
+    assert parsed.assessments[0].task_fit == "unknown"
+
+
 def test_explicit_and_discovery_render_shared_python_fit_checks():
     assessment = {
         "eligible": True,
@@ -148,7 +156,7 @@ def test_discovery_merges_scans_and_researches_original_request(tmp_path, monkey
     monkeypatch.setattr(
         discovery,
         "rank_candidates",
-        lambda records, *_args: [
+        lambda records, *_args, **_kwargs: [
             {
                 "model_id": row["model_id"],
                 "eligible": True,
@@ -210,6 +218,8 @@ def test_cli_selection_and_explicit_branch(tmp_path, monkeypatch):
         "any",
         "--framework-mode",
         "sweep",
+        "--speculative-decoding",
+        "off",
         "--output-dir",
         str(tmp_path),
     ]
@@ -231,7 +241,7 @@ def test_cli_selection_and_explicit_branch(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0
     assert "Selected model: org/a" in result.output
-    assert "Optimize Inference + Benchmark" in result.output
+    assert "Optional optimization actions" in result.output
     assert json.loads((tmp_path / "discovery.json").read_text())["selected_model_id"] == "org/a"
 
 
@@ -257,6 +267,8 @@ def test_discovery_json_stdout_excludes_scanner_trace(tmp_path, monkeypatch):
             "any",
             "--framework-mode",
             "sweep",
+            "--speculative-decoding",
+            "off",
             "--output-dir",
             str(tmp_path),
             "--json",
@@ -351,7 +363,10 @@ def test_discovery_researches_exact_dflash_draft_pair(tmp_path, monkeypatch):
     focused_query = next(query for query in queries if "draft target model" in query)
     assert "Qwen/Qwen3-4B" in focused_query
     assert "Qwen3.5-4B" not in focused_query
-    assert "DFlash" not in focused_query
+    focused_queries = [query for query in queries if "speculative decoding draft target model" in query]
+    assert "dspark" in focused_queries[0]
+    assert any("dflash" in query for query in focused_queries)
+    assert not any("dspark" in query and "dflash" in query for query in focused_queries)
     assert any(spec.request in query for query in queries if "User requirement:" in query)
     assert recommended["task_fit"]["speculative_decoding"] == "verified"
     assert "Qwen/Qwen3-4B" in recommended["reasoning"]

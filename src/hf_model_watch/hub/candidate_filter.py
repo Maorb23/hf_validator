@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from hf_model_watch.recommender.utilities import model_rejection_reasons, unsupported_model_format
 from hf_model_watch.errors import FailureCategory
 from hf_model_watch.hub.metadata import looks_like_causal_lm, requires_trust_remote_code
 
@@ -18,6 +19,15 @@ SUPPORTED_TRANSFORMERS_ARCH_HINTS = (
     "Deepseek",
     "DeepSeek",
 )
+
+# These multimodal wrappers also expose an autoregressive text decoder.
+# Do not admit arbitrary vision/audio checkpoints based on a pipeline tag alone.
+TEXT_GENERATING_MULTIMODAL_ARCHITECTURES = {
+    "Qwen3_5ForConditionalGeneration",
+    "Gemma3ForConditionalGeneration",
+    "Gemma4ForConditionalGeneration",
+    "Gemma4UnifiedForConditionalGeneration",
+}
 
 
 @dataclass(frozen=True)
@@ -49,12 +59,16 @@ def filter_candidate(
     pipeline_tag = candidate.get("pipeline_tag")
     allowed_pipeline_tags = set(scan_config.get("pipeline_tags") or ["text-generation"])
 
-    if (pipeline_tag and pipeline_tag not in allowed_pipeline_tags) or not looks_like_causal_lm(
+    text_wrapper = (
+        pipeline_tag in {"image-text-to-text", "any-to-any"}
+        and bool(set(config.get("architectures") or []) & TEXT_GENERATING_MULTIMODAL_ARCHITECTURES)
+    )
+    if not text_wrapper and ((pipeline_tag and pipeline_tag not in allowed_pipeline_tags) or not looks_like_causal_lm(
         config, pipeline_tag, tags
-    ):
+    )):
         reasons.append(FailureCategory.NOT_CAUSAL_LM.value)
-    if _has_unsupported_finetune_format(model_id, config, tags):
-        reasons.append(FailureCategory.UNSUPPORTED_FINETUNE_FORMAT.value)
+    # Shared format and keyword exclusions apply to Hub discovery and explicit models.
+    reasons.extend(model_rejection_reasons(candidate))
     if not candidate.get("has_tokenizer"):
         reasons.append(FailureCategory.MISSING_TOKENIZER.value)
     if not candidate.get("has_config"):
@@ -130,22 +144,7 @@ def _has_unsupported_finetune_format(
     config: dict[str, Any],
     tags: list[str],
 ) -> bool:
-    searchable = " ".join([model_id, *(str(tag) for tag in tags)]).lower()
-    quantization_config = config.get("quantization_config")
-    quantization_method = ""
-    if isinstance(quantization_config, dict):
-        quantization_method = str(
-            quantization_config.get("quant_method")
-            or quantization_config.get("format")
-            or ""
-        ).lower()
-    return (
-        "mlx" in searchable
-        or "gguf" in searchable
-        or "compressed-tensors" in searchable
-        or "compressed_tensors" in searchable
-        or quantization_method in {"compressed-tensors", "compressed_tensors"}
-    )
+    return unsupported_model_format(model_id, config, tags)
 
 
 def _normalize_license(value: Any) -> str | None:

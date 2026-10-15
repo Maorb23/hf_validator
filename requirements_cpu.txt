@@ -9,6 +9,7 @@ python-dotenv>=1.0
 openai>=1.0
 typer>=0.12
 rich>=13.7
+rapidfuzz>=3.0
 
 # Notebook kernel and UI.
 ipykernel>=6.29

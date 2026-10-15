@@ -10,6 +10,40 @@ from hf_model_watch.openclaw_adapter import OpenClawToolAdapter, dispatch
 from hf_model_watch.recommender.run_state import add_feedback, load_run, run_dir, save_run
 
 
+def test_gateway_environment_and_cache_follow_state_root(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import hf_model_watch.openclaw_adapter as module
+    from hf_model_watch.recommender.core import load_settings
+
+    monkeypatch.setenv("TAVILY_API_KEY", "onecli-managed")
+    monkeypatch.setenv("https_proxy", "http://gateway:8080")
+    monkeypatch.setenv("NEBIUS_API_BASE_URL", "https://example.org/v1")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(kwargs["env"])
+        return SimpleNamespace(stdout=b'{"status":"recommended"}', returncode=0)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    module._default_cli_runner(tmp_path)(["recommend", "test", "--state-root", str(tmp_path / "state")], 10)
+    assert captured["TAVILY_API_KEY"] == "onecli-managed"
+    assert captured["https_proxy"] == "http://gateway:8080"
+    assert captured["NEBIUS_API_BASE_URL"] == "https://example.org/v1"
+    monkeypatch.setenv("HF_MODEL_WATCH_STATE_ROOT", captured["HF_MODEL_WATCH_STATE_ROOT"])
+    assert load_settings()["tavily"]["cache_dir"] == str(tmp_path / "state" / "evidence_cache")
+
+
+def test_service_status_and_artifacts_are_visible_to_mcp():
+    run = {"status": "recommended", "research": {"source_count": 1},
+           "validation": {"status": "completed", "response_artifact": "/state/response.json"},
+           "artifact_directory": "/state/artifacts/run", "private": "hidden"}
+    view = OpenClawToolAdapter._safe_run_view(run)
+    assert view["validation"] == run["validation"]
+    assert view["research"] == run["research"]
+    assert "artifact_directory" not in view
+    assert "private" not in view
+
+
 class FakeCli:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -104,6 +138,9 @@ def test_recommendation_arguments_are_typed_and_not_shell_interpreted(adapter):
     assert result["status"] == "recommended"
     assert cli.calls[0][1] == request
     assert cli.calls[0][0] == "recommend"
+    assert cli.calls[0][cli.calls[0].index("--output-dir") + 1].startswith(
+        str(cli.root / "artifacts" / "mcp-")
+    )
     with pytest.raises(ValidationError):
         tool.recommend_models({"request": "x", "gpu_memory_gb": -1})
     with pytest.raises(ValidationError):
@@ -111,7 +148,7 @@ def test_recommendation_arguments_are_typed_and_not_shell_interpreted(adapter):
 
 
 def test_clarification_resumes_same_run_and_rejects_unrequested_fields(adapter):
-    tool, _ = adapter
+    tool, cli = adapter
     initial = tool.recommend_models({"request": "find a coding model"})
     with pytest.raises(ValueError, match="not requested"):
         tool.provide_recommendation_input(
@@ -122,6 +159,7 @@ def test_clarification_resumes_same_run_and_rejects_unrequested_fields(adapter):
     )
     assert result["run_id"] == initial["run_id"]
     assert result["status"] == "recommended"
+    assert "--output-dir" not in cli.calls[-1]
 
 
 def test_selection_requires_explicit_confirmation_and_feedback_targets_selection(adapter):

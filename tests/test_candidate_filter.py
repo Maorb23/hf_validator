@@ -2,6 +2,29 @@ from __future__ import annotations
 
 from hf_model_watch.errors import FailureCategory
 from hf_model_watch.hub.candidate_filter import filter_candidate
+import pytest
+
+
+@pytest.mark.parametrize("architecture,pipeline", [
+    ("Qwen3_5ForConditionalGeneration", "image-text-to-text"),
+    ("Gemma3ForConditionalGeneration", "image-text-to-text"),
+    ("Gemma4ForConditionalGeneration", "any-to-any"),
+    ("Gemma4UnifiedForConditionalGeneration", "any-to-any"),
+])
+def test_text_generating_multimodal_wrapper(architecture, pipeline):
+    candidate = _valid_candidate()
+    candidate.update(pipeline_tag=pipeline, architecture=[architecture],
+                     config={"architectures": [architecture]})
+    assert filter_candidate(candidate, _scan_config()).eligible
+    candidate["has_tokenizer"] = False
+    assert FailureCategory.MISSING_TOKENIZER.value in filter_candidate(candidate, _scan_config()).blocking_reasons
+
+
+def test_unrecognized_multimodal_wrapper_is_rejected():
+    candidate = _valid_candidate()
+    candidate.update(pipeline_tag="image-text-to-text", architecture=["VisionEncoderDecoderModel"],
+                     config={"architectures": ["VisionEncoderDecoderModel"]})
+    assert FailureCategory.NOT_CAUSAL_LM.value in filter_candidate(candidate, _scan_config()).blocking_reasons
 
 
 def test_candidate_filter_blocks_missing_tokenizer() -> None:

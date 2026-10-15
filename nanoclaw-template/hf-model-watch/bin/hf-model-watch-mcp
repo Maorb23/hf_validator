@@ -1,0 +1,6 @@
+#!/workspace/extra/hf-model-watch/runtime/.venv/bin/python
+from hf_model_watch.nanoclaw_mcp import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

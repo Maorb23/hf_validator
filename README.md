@@ -546,8 +546,7 @@ PYTHONPATH=src python -m hf_model_watch recommend "Score social posts quickly" -
 
 ```bash
 maorb@MaorLaptop:/mnt/c/Users/maorb/work/hf_validator$ PYTHONPATH=src python -m hf_model_watch recommend
-     --nemotron-model nvidia/nemotron-3-super-120b-a12b     "Recommend similar models to openbmb/MiniCPM5-2B, prefer speculative
-  decoding"  --max-prompt-chars 120000 --validation-max-tokens 6000
+     --nemotron-model nvidia/nemotron-3-super-120b-a12b     "Recommend similar models to openbmb/MiniCPM5-2B, prefer speculative decoding"  --max-prompt-chars 120000 --validation-max-tokens 6000
 ```
 
 ```bash
@@ -568,7 +567,7 @@ on its Hugging Face page can verify a feature; a credible source that names the
 candidate can support an inference. Speculative decoding requires an exact
 model, draft, and runtime pairing before it is marked verified. The terminal
 then presents up to three recommendations and prompts for a selection. The selected model is saved in
-`discovery.json`; **Optimize Inference + Benchmark** is a placeholder action only.
+`discovery.json`; **Inference optimization** is optional; see [setup and usage](docs/optimization.md).
 
 With `(nemotron_runner)` active at the repository root, start the interactive
 terminal flow with a plain request:
@@ -619,8 +618,8 @@ sessions and restarts.
 Configure the plugin with this repository as `projectRoot` and `.venv/bin/python` as
 `pythonExecutable`; see `openclaw-plugin/README.md` for build and install commands. OpenClaw
 2026.5.17 or newer and Node 24.16+/26.1+ are required by its supported typed-tool interface.
-There is deliberately no optimization or benchmark tool: the existing action remains a
-non-executable placeholder until Phase 3 connects an approved external API.
+Optional controller-backed optimization actions are available through the recommender CLI
+and NanoClaw; see [optimization setup](docs/optimization.md).
 
 Benchmarking is a separate action:
 

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "hf-model-watch": {
+      "type": "stdio",
+      "command": "./bin/hf-model-watch-mcp",
+      "cwd": "${PLUGIN_ROOT}",
+      "env": {
+        "TAVILY_API_KEY": "onecli-managed",
+        "NEBIUS_API_KEY": "onecli-managed",
+        "HF_HOME": "${PLUGIN_DATA}/state/huggingface"
+      },
+      "args": [
+        "--project-root",
+        "/workspace/extra/hf-model-watch/runtime",
+        "--state-root",
+        "${PLUGIN_DATA}/state"
+      ]
+    }
+  }
+}

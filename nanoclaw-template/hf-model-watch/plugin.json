@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hf-model-watch",
+  "version": "0.1.0",
+  "description": "Evidence-backed Hugging Face model recommendations through a restricted MCP tool surface.",
+  "extensions": {
+    "ai.nanoco.nanoclaw": {
+      "agentName": "HF Model Watch"
+    }
+  }
+}
