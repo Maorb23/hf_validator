@@ -1,0 +1,798 @@
+{
+  "schema_version": "1.0.0",
+  "name": "task_size_catalog",
+  "description": "User-supplied heuristic task-to-size guidance; not benchmark-derived model rankings.",
+  "size_unit": "billions_of_parameters",
+  "lookup_guidance": {
+    "normalize": "Unicode casefold; replace punctuation, underscores, and hyphens with spaces; collapse repeated whitespace.",
+    "strategy": [
+      "Prefer exact use_case ID where supplied.",
+      "Otherwise match complete aliases after normalization.",
+      "Use keyword overlap to retrieve a shortlist, not as a sufficient condition to choose a single use case.",
+      "If multiple use cases match or there is no confident match, apply semantic retrieval over use_case, aliases, and examples or ask the agent to disambiguate."
+    ],
+    "important": "Do not grep the model names or size fields to infer task intent. Matching is descriptive only; check deployment constraints and benchmark candidate models before selection."
+  },
+  "use_cases": [
+    {
+      "id": "intent_routing",
+      "use_case": "Intent classification and request routing",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 0.27,
+        "max_b": 0.8,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "classify user intent",
+          "detect what the user wants",
+          "route an incoming request",
+          "choose an application workflow",
+          "categorize customer requests",
+          "map a query to an intent",
+          "decide which handler should receive a message",
+          "request classification",
+          "classify the user command",
+          "dispatch a support request"
+        ],
+        "keywords": [
+          "intent",
+          "routing",
+          "route",
+          "dispatch",
+          "classify",
+          "category",
+          "handler",
+          "workflow"
+        ],
+        "example_requests": [
+          "Which workflow should handle this customer message?"
+        ]
+      },
+      "deployment_note": "Use a fixed intent taxonomy and confidence-based fallback; labels must be validated."
+    },
+    {
+      "id": "sentiment_feedback",
+      "use_case": "Sentiment analysis and feedback classification",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 0.27,
+        "max_b": 1.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "analyze review sentiment",
+          "classify positive and negative feedback",
+          "label customer satisfaction",
+          "group app reviews by complaint",
+          "detect tone in user comments",
+          "identify feature requests in feedback",
+          "analyze product reviews",
+          "categorize survey responses",
+          "tag negative comments",
+          "feedback topic classification"
+        ],
+        "keywords": [
+          "sentiment",
+          "review",
+          "feedback",
+          "satisfaction",
+          "complaint",
+          "survey",
+          "positive",
+          "negative"
+        ],
+        "example_requests": [
+          "Tag 100000 user reviews with sentiment and complaint category."
+        ]
+      },
+      "deployment_note": "For fixed labels at scale, benchmark a dedicated encoder classifier against generative SLMs."
+    },
+    {
+      "id": "support_triage",
+      "use_case": "Customer support ticket triage",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 0.8,
+        "max_b": 2.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "route customer support tickets",
+          "classify helpdesk issues",
+          "assign incoming tickets to teams",
+          "identify ticket urgency",
+          "prioritize customer incidents",
+          "tag support requests by product",
+          "sort support email by severity",
+          "detect payment support issues",
+          "escalate critical tickets",
+          "ticket queue triage"
+        ],
+        "keywords": [
+          "ticket",
+          "support",
+          "helpdesk",
+          "urgency",
+          "priority",
+          "escalation",
+          "queue",
+          "incident"
+        ],
+        "example_requests": [
+          "Categorize this failed-payment ticket and flag it for human review."
+        ]
+      },
+      "deployment_note": "Apply explicit escalation policies for urgent, safety-related, or account-security issues."
+    },
+    {
+      "id": "entity_parameter_extraction",
+      "use_case": "Named entity and parameter extraction",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 1.7,
+        "max_b": 3.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "extract names and dates",
+          "identify entities in text",
+          "pull hardware requirements from a request",
+          "extract latency and memory constraints",
+          "find product names and quantities",
+          "turn a sentence into key fields",
+          "recognize technical specifications",
+          "extract numeric parameters and units",
+          "parse customer requirements",
+          "named entity recognition"
+        ],
+        "keywords": [
+          "extract",
+          "entity",
+          "entities",
+          "parameter",
+          "field",
+          "requirement",
+          "date",
+          "quantity",
+          "unit",
+          "specification"
+        ],
+        "example_requests": [
+          "Extract GPU memory, latency target, and cost budget from this sentence."
+        ]
+      },
+      "deployment_note": "Validate numbers, units, and entity relationships against the source text."
+    },
+    {
+      "id": "text_to_json",
+      "use_case": "Natural language to structured JSON",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 1.7,
+        "max_b": 4.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "convert user instructions to JSON",
+          "generate a structured configuration",
+          "turn natural language into a schema",
+          "parse a free text command into actions",
+          "extract API arguments as JSON",
+          "create structured output",
+          "transform plain English into machine readable data",
+          "produce JSON from an instruction",
+          "serialize user requirements",
+          "convert editing instructions to operations"
+        ],
+        "keywords": [
+          "json",
+          "schema",
+          "structured",
+          "configuration",
+          "serialize",
+          "api",
+          "argument",
+          "parse",
+          "operation"
+        ],
+        "example_requests": [
+          "Turn the video-editing request into a validated list of JSON operations."
+        ]
+      },
+      "deployment_note": "Use schema-constrained decoding when available and validate fields before downstream execution."
+    },
+    {
+      "id": "sensitive_info_detection",
+      "use_case": "Sensitive information detection",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 0.6,
+        "max_b": 2.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "find personally identifiable information",
+          "detect private information",
+          "redact customer phone numbers",
+          "identify PII in messages",
+          "mask email addresses in transcripts",
+          "classify sensitive data fields",
+          "remove account identifiers from text",
+          "find secrets in logs",
+          "check text for confidential details",
+          "detect sensitive information"
+        ],
+        "keywords": [
+          "pii",
+          "private",
+          "sensitive",
+          "redact",
+          "mask",
+          "confidential",
+          "phone",
+          "email",
+          "secret",
+          "account"
+        ],
+        "example_requests": [
+          "Remove names, phone numbers, and account IDs before sending text to a third party."
+        ]
+      },
+      "deployment_note": "Never rely on a generative SLM alone for privacy protection; combine with deterministic detection and validation."
+    },
+    {
+      "id": "query_rewriting",
+      "use_case": "Search query rewriting and expansion",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 0.6,
+        "max_b": 2.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "rewrite a search query",
+          "expand search terms",
+          "turn a vague question into better search queries",
+          "optimize queries for retrieval",
+          "generate synonyms for search",
+          "improve RAG search queries",
+          "rephrase a user search",
+          "formulate web search keywords",
+          "query expansion",
+          "rewrite follow-up queries"
+        ],
+        "keywords": [
+          "query",
+          "search",
+          "rewrite",
+          "expansion",
+          "synonym",
+          "retrieval",
+          "rag",
+          "rephrase",
+          "keywords"
+        ],
+        "example_requests": [
+          "Rewrite a vague GPU-inference question into precise retrieval queries."
+        ]
+      },
+      "deployment_note": "Preserve the user intent and hard constraints; do not silently introduce new requirements."
+    },
+    {
+      "id": "semantic_embeddings",
+      "use_case": "Semantic search and vector embeddings",
+      "model_type": "embedding_model",
+      "recommended_size": {
+        "min_b": 0.02,
+        "max_b": 0.6,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "create text embeddings",
+          "encode documents as vectors",
+          "semantic document search",
+          "vectorize user queries",
+          "build a vector database retrieval system",
+          "find conceptually similar passages",
+          "retrieve by semantic similarity",
+          "index documents for RAG",
+          "embedding based search",
+          "match questions to documents"
+        ],
+        "keywords": [
+          "embedding",
+          "vector",
+          "semantic",
+          "similarity",
+          "index",
+          "retrieval",
+          "rag",
+          "nearest"
+        ],
+        "example_requests": [
+          "Build a multilingual vector index of technical documents for semantic search."
+        ]
+      },
+      "deployment_note": "These are specialized embedding encoders, not generative chat SLMs. Benchmark on the target language and corpus."
+    },
+    {
+      "id": "result_reranking",
+      "use_case": "Search result reranking",
+      "model_type": "reranker_model",
+      "recommended_size": {
+        "min_b": 0.02,
+        "max_b": 0.6,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "rerank retrieved documents",
+          "rescore search results",
+          "sort passages by relevance",
+          "choose the most relevant search hits",
+          "reorder vector search candidates",
+          "rank query document pairs",
+          "improve retrieval precision",
+          "pick top evidence for RAG",
+          "filter irrelevant retrieval results",
+          "cross encoder ranking"
+        ],
+        "keywords": [
+          "rerank",
+          "ranking",
+          "relevance",
+          "rescore",
+          "retrieval",
+          "passage",
+          "evidence",
+          "candidate",
+          "cross-encoder"
+        ],
+        "example_requests": [
+          "Rerank 30 retrieved passages to choose the 5 most relevant to the question."
+        ]
+      },
+      "deployment_note": "These are specialized ranking models, not general-purpose text generators."
+    },
+    {
+      "id": "short_summarization",
+      "use_case": "Short-form text summarization",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 1.7,
+        "max_b": 4.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "summarize a short article",
+          "condense a support chat",
+          "make a brief conversation recap",
+          "summarize a single email",
+          "write a concise abstract from short text",
+          "extract main points from a short passage",
+          "summarize meeting messages",
+          "compress a few paragraphs",
+          "create a short text synopsis",
+          "summarize a small document"
+        ],
+        "keywords": [
+          "summary",
+          "summarize",
+          "condense",
+          "recap",
+          "synopsis",
+          "brief",
+          "short",
+          "email",
+          "conversation"
+        ],
+        "example_requests": [
+          "Summarize a 15-message support conversation into three sentences."
+        ]
+      },
+      "deployment_note": "Use bounded inputs; verify important claims and preserve relevant actions or decisions."
+    },
+    {
+      "id": "long_document_summarization",
+      "use_case": "Long-document summarization and synthesis",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 4.0,
+        "max_b": 9.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "summarize a long technical report",
+          "analyze a 50 page paper",
+          "summarize a research paper with many sections",
+          "synthesize findings across a large document",
+          "review a lengthy document",
+          "summarize a book chapter collection",
+          "analyze a multi section report",
+          "extract key findings from a long pdf",
+          "summarize 50 pages",
+          "summarize an extensive whitepaper"
+        ],
+        "keywords": [
+          "long",
+          "lengthy",
+          "report",
+          "research",
+          "paper",
+          "50-page",
+          "50 pages",
+          "document",
+          "pdf",
+          "synthesis",
+          "multi-section"
+        ],
+        "example_requests": [
+          "Summarize a 50-page technical report and cite findings, limitations, and recommendations."
+        ]
+      },
+      "deployment_note": "4B is a candidate for SECTION-LEVEL or hierarchical summarization, not a validated one-pass 50-page solution. Require source citations and evaluate omissions and factuality against the entire document; for complex single-pass synthesis, benchmark larger models."
+    },
+    {
+      "id": "meeting_notes",
+      "use_case": "Meeting transcript post-processing",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 2.0,
+        "max_b": 4.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "turn transcript into meeting notes",
+          "extract action items from meeting",
+          "summarize a recorded meeting",
+          "identify meeting decisions and owners",
+          "structure call notes",
+          "clean up speech to text transcript",
+          "prepare meeting minutes",
+          "summarize an interview transcript",
+          "extract deadlines from a call",
+          "generate action item list"
+        ],
+        "keywords": [
+          "meeting",
+          "transcript",
+          "action",
+          "owner",
+          "deadline",
+          "minutes",
+          "call",
+          "decision",
+          "speech"
+        ],
+        "example_requests": [
+          "Extract decisions, task owners, and deadlines from this meeting transcript."
+        ]
+      },
+      "deployment_note": "The SLM processes a transcript; a separate ASR model handles speech recognition. Do not invent owners or deadlines."
+    },
+    {
+      "id": "email_rewriting",
+      "use_case": "Email drafting and text rewriting",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 2.0,
+        "max_b": 4.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "draft an email",
+          "draft professional business emails",
+          "draft business emails",
+          "rewrite text professionally",
+          "improve grammar and tone",
+          "compose a short follow up",
+          "turn bullet notes into an email",
+          "change message tone",
+          "polish customer correspondence",
+          "rewrite a paragraph concisely",
+          "draft a reply",
+          "edit business writing"
+        ],
+        "keywords": [
+          "email",
+          "draft",
+          "rewrite",
+          "grammar",
+          "tone",
+          "compose",
+          "reply",
+          "polish",
+          "writing"
+        ],
+        "example_requests": [
+          "Turn informal meeting notes into a concise customer follow-up email."
+        ]
+      },
+      "deployment_note": "Give the model explicit facts and audience; review outbound communications before sending."
+    },
+    {
+      "id": "translation_localization",
+      "use_case": "Multilingual translation and localization",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 2.0,
+        "max_b": 4.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "translate text into another language",
+          "localize an app interface",
+          "translate product instructions",
+          "translate support messages",
+          "convert English to Hebrew",
+          "translate technical documentation",
+          "adapt UI strings for another language",
+          "multilingual translation",
+          "preserve terminology across languages",
+          "localize software copy"
+        ],
+        "keywords": [
+          "translate",
+          "translation",
+          "localize",
+          "localization",
+          "multilingual",
+          "language",
+          "hebrew",
+          "english",
+          "spanish"
+        ],
+        "example_requests": [
+          "Translate technical app instructions from English into Hebrew without losing terminology."
+        ]
+      },
+      "deployment_note": "Validate accuracy separately for each language pair; size alone does not imply good translation quality."
+    },
+    {
+      "id": "rag_support",
+      "use_case": "Retrieval augmented support assistant",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 3.0,
+        "max_b": 5.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "answer questions using internal documents",
+          "build a RAG customer support chatbot",
+          "respond from a knowledge base",
+          "answer product FAQ with sources",
+          "ground support responses in retrieved docs",
+          "knowledge grounded question answering",
+          "document backed helpdesk assistant",
+          "retrieve manuals and answer user questions",
+          "answer from company documentation",
+          "RAG based support"
+        ],
+        "keywords": [
+          "rag",
+          "knowledge",
+          "documentation",
+          "faq",
+          "support",
+          "retrieval",
+          "grounded",
+          "question",
+          "answer"
+        ],
+        "example_requests": [
+          "Answer a setup question using only retrieved product documentation and cite the source."
+        ]
+      },
+      "deployment_note": "Require evidence citations and an abstention/escalation path when documents do not answer the question."
+    },
+    {
+      "id": "tool_calling",
+      "use_case": "Tool calling and API orchestration",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 3.0,
+        "max_b": 5.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "choose which tool to call",
+          "generate tool arguments",
+          "invoke an external API",
+          "route to a function",
+          "decide whether to search the web",
+          "orchestrate one or two tools",
+          "select a tool based on user request",
+          "make a function call",
+          "call search and interpret results",
+          "API tool use"
+        ],
+        "keywords": [
+          "tool",
+          "function",
+          "api",
+          "call",
+          "invoke",
+          "argument",
+          "orchestrate",
+          "search"
+        ],
+        "example_requests": [
+          "Select the search API and construct valid arguments for a GPU pricing request."
+        ]
+      },
+      "deployment_note": "Validate arguments and permissions, and keep side effects under application control."
+    },
+    {
+      "id": "multi_step_agent",
+      "use_case": "Multi-step agent workflow planning",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 3.8,
+        "max_b": 9.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "plan a multistep agent workflow",
+          "break a task into subtasks",
+          "coordinate multiple agent tools",
+          "manage dependencies between tasks",
+          "create a research and execution plan",
+          "orchestrate a complex user request",
+          "plan tool sequences",
+          "delegate steps across a pipeline",
+          "manage an agent workflow",
+          "decide next action after tool feedback"
+        ],
+        "keywords": [
+          "agent",
+          "plan",
+          "workflow",
+          "multistep",
+          "multi-step",
+          "subtask",
+          "dependency",
+          "orchestrate",
+          "delegate"
+        ],
+        "example_requests": [
+          "Plan model discovery, benchmark retrieval, and deployment recommendation as separate agent steps."
+        ]
+      },
+      "deployment_note": "Use deterministic state management, bounded tool permissions, and escalation for complex or high-risk decisions."
+    },
+    {
+      "id": "natural_language_sql",
+      "use_case": "Natural language to SQL",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 4.0,
+        "max_b": 9.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "generate SQL from English",
+          "turn business questions into database queries",
+          "text to SQL",
+          "write a SELECT query from a request",
+          "query a relational database with natural language",
+          "generate joins and group by clauses",
+          "translate a question to postgres SQL",
+          "create analytical database queries",
+          "produce SQL from table schemas",
+          "ask database questions in plain English"
+        ],
+        "keywords": [
+          "sql",
+          "database",
+          "query",
+          "schema",
+          "join",
+          "select",
+          "postgres",
+          "analytics"
+        ],
+        "example_requests": [
+          "Generate read-only SQL for the five highest-spending customers in the last 30 days."
+        ]
+      },
+      "deployment_note": "Provide a schema and enforce read-only credentials, allowlisted tables, query validation, and execution limits."
+    },
+    {
+      "id": "coding_assistance",
+      "use_case": "Code completion, generation, and localized refactoring",
+      "model_type": "generative_slm",
+      "recommended_size": {
+        "min_b": 3.0,
+        "max_b": 7.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "write a Python function",
+          "complete code",
+          "generate unit tests",
+          "refactor a single function",
+          "fix a small coding bug",
+          "implement a short utility",
+          "generate code from a specification",
+          "write a script",
+          "provide inline code suggestions",
+          "modify one source file"
+        ],
+        "keywords": [
+          "code",
+          "coding",
+          "python",
+          "function",
+          "test",
+          "refactor",
+          "script",
+          "complete",
+          "bug"
+        ],
+        "example_requests": [
+          "Write a Python function to parse inference benchmarks and calculate p95 latency."
+        ]
+      },
+      "deployment_note": "Provide relevant interfaces and run tests; localized edits are more realistic than autonomous multi-file redesign."
+    },
+    {
+      "id": "image_screenshot_understanding",
+      "use_case": "Image and screenshot understanding",
+      "model_type": "multimodal_slm",
+      "recommended_size": {
+        "min_b": 2.0,
+        "max_b": 4.0,
+        "unit": "billions_of_parameters"
+      },
+      "match": {
+        "aliases": [
+          "understand a screenshot",
+          "describe an image",
+          "identify UI elements in a picture",
+          "answer questions about an application screenshot",
+          "read text in an image",
+          "interpret a visual document",
+          "extract fields from a scanned form",
+          "explain what is on the screen",
+          "image question answering",
+          "inspect a picture of an interface"
+        ],
+        "keywords": [
+          "image",
+          "screenshot",
+          "picture",
+          "visual",
+          "ui",
+          "screen",
+          "multimodal",
+          "ocr",
+          "scan"
+        ],
+        "example_requests": [
+          "Identify the buttons and visible status on an app screenshot."
+        ]
+      },
+      "deployment_note": "Use vision-enabled checkpoints and benchmark OCR and spatial understanding on representative images."
+    }
+  ]
+}

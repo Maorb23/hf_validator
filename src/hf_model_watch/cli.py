@@ -74,11 +74,29 @@ def format_fit_checks(assessment: dict[str, object], spec: object) -> list[str]:
     ]
 
 
+@app.command("task-size")
+def task_size(
+    task: Annotated[str, typer.Argument(help="Task description; no model name is needed.")],
+    model: Annotated[str | None, typer.Option("--nemotron-model")] = None,
+    config: Annotated[Path, typer.Option("--config")] = Path("config/recommender.yaml"),
+) -> None:
+    """Test Nemotron's task-to-size tool without scanning or recommending models."""
+    from hf_model_watch.recommender.core import load_settings
+    from hf_model_watch.recommender.task_sizes import infer_task_size
+    try:
+        result = infer_task_size(task, load_settings(config), model=model)
+    except Exception as exc:
+        typer.echo(json.dumps({"status": "error", "error_type": type(exc).__name__}))
+        raise typer.Exit(code=1) from None
+    typer.echo(json.dumps(result, indent=2))
+
+
 @app.command()
 def recommend(
     request: Annotated[str | None, typer.Argument(help="Natural-language task request.")] = None,
     gpu_memory_gb: Annotated[float | None, typer.Option("--gpu-memory-gb")] = None,
     gpu_count: Annotated[int, typer.Option("--gpu-count")] = 1,
+    task_size_guidance: Annotated[bool, typer.Option("--task-size-guidance", help="Ask Nemotron for a heuristic task-size range when size is unspecified; enforce that range during discovery.")] = False,
     budget_usd_per_hour: Annotated[float | None, typer.Option("--budget-usd-per-hour")] = None,
     gpu_hourly_cost_usd: Annotated[float | None, typer.Option("--gpu-hourly-cost-usd")] = None,
     license: Annotated[str | None, typer.Option("--license")] = None,
@@ -253,6 +271,22 @@ def recommend(
             settings["nebius"]["validation_max_tokens"] = validation_max_tokens
         if max_prompt_chars is not None:
             settings["nebius"]["max_prompt_chars"] = max_prompt_chars
+        sizing = None
+        size_kwargs = {}
+        if task_size_guidance and not model_id and spec.constraints["target_params_billion"] is None:
+            from hf_model_watch.recommender.task_sizes import infer_task_size
+            typer.echo("Nemotron task-size lookup...", err=True)
+            sizing = infer_task_size(spec.request, settings, model=model)
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "task_size_guidance.json").write_text(json.dumps(sizing, indent=2) + "\n")
+            if sizing["status"] != "matched":
+                raise ValueError("Task size needs clarification; run task-size to inspect candidate use cases, then supply an explicit size in the request")
+            selected = sizing["selected"]
+            if selected["model_type"] not in {"generative_slm", "multimodal_slm"}:
+                raise ValueError("This task needs an embedding or reranker model; generative discovery does not support it")
+            band = selected["recommended_size"]
+            size_kwargs["size_range"] = (band["min_b"], band["max_b"])
+            typer.echo(f"Heuristic task size: {band['min_b']:g}–{band['max_b']:g}B ({selected['id']}); not a benchmark guarantee.", err=True)
         if model_id:
             def explicit_progress(message: str) -> None:
                 if not verbose and message.startswith("Tool call: "):
@@ -291,6 +325,7 @@ def recommend(
                     settings,
                     destination,
                     progress=lambda message: typer.echo(message, err=True),
+                    **size_kwargs,
                 )
         else:
             result = discover_models(
@@ -298,7 +333,10 @@ def recommend(
                 settings,
                 destination,
                 progress=lambda message: typer.echo(message, err=True),
+                **size_kwargs,
             )
+        if sizing is not None:
+            result["task_sizing"] = sizing
     except Exception as exc:
         if json_mode:
             typer.echo(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}))

@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from hf_model_watch.optimization.contracts import NewStudyIntent, ReuseIntent, StudyContext
+from hf_model_watch.recommender.task_sizes import TaskSizeInputs, lookup_task_size
 from hf_model_watch.recommender.run_state import (
     MAX_FEEDBACK_CHARS,
     MAX_REQUEST_CHARS,
@@ -230,6 +231,9 @@ def _default_cli_runner(project_root: Path, progress: Callable[[str], None] | No
 
 class OpenClawToolAdapter:
     """Restricted OpenClaw-facing facade over the authoritative CLI."""
+
+    def lookup_task_size(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        return lookup_task_size(**TaskSizeInputs.model_validate(raw).model_dump(exclude_none=True))
 
     def __init__(
         self,
@@ -463,6 +467,7 @@ class OpenClawToolAdapter:
 
 
 TOOL_MODELS: dict[str, type[StrictModel]] = {
+    "lookup_task_size": TaskSizeInputs,
     "recommend_models": RecommendationInputs,
     "provide_recommendation_input": ClarificationInputs,
     "select_model": SelectionInputs,

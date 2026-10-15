@@ -49,6 +49,7 @@ def _tool_definition(name: str) -> dict[str, Any]:
     return {
         "name": name,
         "description": {
+            "lookup_task_size": "Return model-independent heuristic size ranges for a task. Use when size is unspecified; clarify ambiguous matches. Returns no model names and starts no research.",
             "recommend_models": "Discover evidence-backed Hugging Face model recommendations.",
             "provide_recommendation_input": "Answer outstanding clarification fields for a run.",
             "select_model": "Persist an explicitly confirmed recommended model selection.",

@@ -29,6 +29,7 @@ def test_mcp_initialization_and_tool_inventory_are_restricted(tmp_path):
     listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {tool["name"] for tool in listed["result"]["tools"]}
     assert names == {
+        "lookup_task_size",
         "recommend_models",
         "provide_recommendation_input",
         "select_model",

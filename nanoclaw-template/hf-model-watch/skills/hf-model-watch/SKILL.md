@@ -5,6 +5,15 @@ description: Recommend Hugging Face models through the restricted hf-model-watch
 
 # Hugging Face model recommendations
 
+When the user describes a task without a desired parameter size, call `lookup_task_size`.
+Its catalog returns heuristic size ranges and model types, never model names. Exact use-case
+IDs take precedence; keyword overlap is only a shortlist. For ambiguous or unmatched tasks,
+ask for clarification or semantically disambiguate the returned descriptions with the user.
+Present the proposed range as a starting point, not benchmark evidence. Preserve any explicit
+user size requirement. Embedding and reranker tasks need specialized models, not a chat-model
+substitute. Range-constrained discovery will be connected in the next revision; do not claim
+the existing recommendation tools enforce the catalog's exact min/max range yet.
+
 At the start of a workload conversation, read `get_conversation_context`. The group has one
 remembered workload and one active recommendation. Use `start_recommendation` for a new request;
 it returns immediately with a background job ID and reuses saved preferences. Explicit new

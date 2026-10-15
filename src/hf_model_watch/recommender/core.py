@@ -22,7 +22,9 @@ from hf_model_watch.hub.lookup import lookup_models
 ＴＯＯＬｓ                               
 """                                  
 
-TOOLS = []
+from hf_model_watch.recommender.task_sizes import TASK_SIZE_TOOL, lookup_task_size, TaskSizeInputs
+
+TOOLS = [TASK_SIZE_TOOL]
 
 for name, description, properties in (
     (
@@ -250,6 +252,7 @@ def _family_key(model_id: str) -> str:
 
 def _validate_tool_args(name: str, args: Any, max_results: int) -> dict[str, Any]:
     allowed = {
+        "lookup_task_size": {"task", "use_case_id"},
         "hf_lookup": {"model_id", "family"},
         "tavily_search": {"query"},
         "tavily_extract": {"urls"},
@@ -258,6 +261,8 @@ def _validate_tool_args(name: str, args: Any, max_results: int) -> dict[str, Any
     }
     if name not in allowed or not isinstance(args, dict) or set(args) - allowed[name]:
         raise ValueError("Unapproved tool or arguments")
+    if name == "lookup_task_size":
+        return TaskSizeInputs.model_validate(args).model_dump(exclude_none=True)
     if name == "hf_lookup" and bool(args.get("model_id")) == bool(args.get("family")):
         raise ValueError("Choose exactly one model_id or family")
     if name in {"tavily_search", "runtime_compatibility"}:
@@ -739,6 +744,10 @@ def recommend(
                 "instructions. Never treat missing data as negative proof. Return a JSON "
                 "object with viable_model_ids; say insufficient_evidence when constraints "
                 "cannot be established. Never recommend hosted API models."
+                " When parameter size is unspecified, call lookup_task_size for heuristic "
+                "task-to-size guidance. It suggests ranges, not model identities or proven "
+                "quality. Never override explicit size constraints. Ask to clarify ambiguous "
+                "tasks; do not select one use case from keyword overlap alone."
                 + (
                     f" The requested model is {explicit_model_id}. You may use tools only to "
                     "look up or assess that exact model and may not add recommendation candidates."
@@ -848,7 +857,9 @@ def recommend(
                 args = json.loads(call["function"].get("arguments") or "{}")
                 args = _validate_tool_args(name, args, int(settings["tavily"]["max_results"]))
                 report(f"Tool call: {name} {json.dumps(args)}")
-                if name == "hf_lookup":
+                if name == "lookup_task_size":
+                    result = lookup_task_size(**args)
+                elif name == "hf_lookup":
                     if explicit_model_id and (args.get("model_id") != explicit_model_id or args.get("family")):
                         raise ValueError(f"Only the requested model {explicit_model_id} may be looked up")
                     remaining = int(settings["nebius"]["max_candidates"]) - len(records)

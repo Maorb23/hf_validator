@@ -347,10 +347,13 @@ def discover_models(
     scan_config: dict[str, Any] | None = None,
     scoring_config: dict[str, Any] | None = None,
     progress: Callable[[str], None] | None = None,
+    size_range: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Discover, research, compare, and persist models when no model ID was supplied."""
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    if size_range is not None and not (0 < size_range[0] <= size_range[1]):
+        raise ValueError("Invalid task-size range")
     # The original natural-language request remains the source of discovery constraints.
     constraints = spec.constraints
     preference = spec.speculative_preference
@@ -420,7 +423,11 @@ def discover_models(
             "blockers": {},
         }
         for row in rows:
-            if not _approximately_sized(row, constraints["target_params_billion"]):
+            if size_range is not None:
+                size = row.get("estimated_params_billion")
+                if size is None or not size_range[0] <= float(size) <= size_range[1]:
+                    continue
+            elif not _approximately_sized(row, constraints["target_params_billion"]):
                 continue
             diagnostics[strategy]["size_matched"] += 1
             ident = str(row.get("model_id") or "")
@@ -726,6 +733,8 @@ def discover_models(
         "status": "recommended" if recommendations else "insufficient_evidence",
         "task_request": spec.request,
         "constraints": constraints,
+        "size_range": ({"min_b": size_range[0], "max_b": size_range[1],
+                        "unit": "billions_of_parameters"} if size_range else None),
         "scan_diagnostics": diagnostics,
         "research": {"source_count": sum(len(rows) for rows in evidence.values()), "errors": research_errors,
                      "method_order": method_order, "method_coverage": method_coverage,
