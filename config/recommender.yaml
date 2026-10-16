@@ -32,7 +32,7 @@ selection:
   # Shared feature bonuses; discovery expands research before final ranking.
   speculative_decoding:
     verified_bonus: 0.05
-    inferred_bonus: 0.02
+    inferred_bonus: 0.0
     research_candidates: 8
   weights:
     small_model: 5

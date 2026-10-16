@@ -39,9 +39,9 @@ def research_methods(selected, evidence, settings, order, search, progress=None)
     page_limit = int(settings["tavily"].get("discovery_draft_pages_per_method", 2))
     if method_limit < 0 or not 0 <= page_limit <= 8:
         raise ValueError("Invalid speculative method/page limits")
-    # Research each method across the shortlist before spending budget on the next method.
-    for method in order[:method_limit]:
-        for item in selected:
+    # Closest candidates arrive first; complete their method checks before expanding.
+    for item in selected:
+        for method in order[:method_limit]:
             ident = item["model_id"]
             query = f'"{ident}" {method} speculative decoding draft target model site:huggingface.co OR site:github.com'
             info = coverage[ident][method]

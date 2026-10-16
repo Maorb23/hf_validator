@@ -135,10 +135,10 @@ class ConversationAdapter(OpenClawToolAdapter):
             job = self._job(context)
             if job and job["status"] in {"starting", "running"}:
                 return {"status": "running", "job_id": job["job_id"], "message": "A recommendation is already running; use get_conversation_context."}
-            if job and job.get("result", {}).get("status") == "needs_input":
+            if job and job.get("result", {}).get("status") == "needs_input" and explicit["request"] == job.get("arguments", {}).get("request"):
                 return {"status": "needs_input", "run": job["result"], "message": "Answer the active run with provide_active_input before starting another."}
             parsed = extract_constraints(explicit["request"])
-            values = dict(context.get("workload", {}))
+            values = {k: v for k, v in context.get("workload", {}).items() if k in WORKLOAD_FIELDS}
             values.update({k: v for k, v in parsed.items() if k in WORKLOAD_FIELDS and v is not None})
             preference = speculative_preference(explicit["request"])
             if preference:
@@ -227,6 +227,10 @@ def run_worker(path: Path) -> None:
     try:
         # Base operations perform all authoritative validation and CLI work.
         result = getattr(adapter, job["operation"])(job["arguments"])
+        expected_request = job["arguments"].get("request")
+        actual_request = result.get("task_request") or result.get("request_spec", {}).get("request")
+        if job["operation"] == "recommend_models" and expected_request and actual_request and actual_request != expected_request:
+            raise ValueError("Recommendation returned a stale workload")
         job.update(status="completed", stage="finished", result=result, finished_at=time.time())
         with adapter._locked():
             context = adapter._context()

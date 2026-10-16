@@ -23,6 +23,7 @@ from hf_model_watch.hub.lookup import lookup_models
 """                                  
 
 from hf_model_watch.recommender.task_sizes import TASK_SIZE_TOOL, lookup_task_size, TaskSizeInputs
+from hf_model_watch.recommender.capacity import estimate_memory
 
 TOOLS = [TASK_SIZE_TOOL]
 
@@ -67,6 +68,7 @@ from hf_model_watch.recommender.utilities import (
     SpeculativePreference, _pair_evidence, _normalize_inline_markdown, extract_constraints,
     normalize_prompt, detect_features, speculative_preference, speculative_status, speculative_bonus,
     speculative_rank, speculative_method_order,
+    requested_method, pair_method,
     documented_launches, official_target_source, evidence_excerpt, normalize_license, license_assessment,
     model_rejection_reasons,
 )
@@ -94,7 +96,8 @@ class RequestSpec(BaseModel):
 
     @property
     def constraints(self) -> dict[str, Any]:
-        return extract_constraints(self.request, self.speculative_decoding)
+        return {**extract_constraints(self.request, self.speculative_decoding),
+                **{key: getattr(self, key) for key in ("gpu_memory_gb", "gpu_count", "budget_usd_per_hour", "gpu_hourly_cost_usd", "license", "framework_mode")}}
 
 
 class EvidenceFieldAssessment(BaseModel):
@@ -558,13 +561,10 @@ def rank_candidates(
         )
         pair = runtime["speculative_decoding"]
         use_pair = pair["usable"] and spec.speculative_preference != "off"
-        # Reserve twice the target weight footprint for an unscanned drafter, plus
-        # 16 GB for KV cache and serving overhead. This is a capacity estimate.
-        memory = (
-            target_memory_gb * (3 if use_pair else 1) + 16
-            if target_memory_gb is not None else None
-        )
+        # Unmeasured fallback: reserve 25% of target weights for the drafter.
+        memory, memory_details = estimate_memory(target_memory_gb, use_pair, pair.get("draft_weights_gb"))
         support = speculative_status(record, evidence.get(ident, []), pair)
+        bonus_support = support if not requested_method(spec.request) or pair_method(pair) == requested_method(spec.request) else "unknown"
         preference = spec.speculative_preference
         blockers = model_rejection_reasons(record)
         # Required support must survive deterministic verification, not just web mentions.
@@ -604,7 +604,7 @@ def rank_candidates(
         if not compatible:
             blockers.append("runtime_unverified")
         # GPU memory does not establish an hourly price.
-        hourly = spec.gpu_hourly_cost_usd
+        hourly = spec.gpu_hourly_cost_usd * spec.gpu_count if spec.gpu_hourly_cost_usd is not None else None
         if hourly is None or float(hourly) > spec.budget_usd_per_hour:
             blockers.append("budget_unverified_or_exceeded")
         pair_runtimes = (pair.get("runtimes") or [pair.get("runtime")]) if use_pair else []
@@ -623,7 +623,7 @@ def rank_candidates(
             for field in ("license", "revision", "estimated_params_billion", "context_length")
         )
         score_breakdown = {
-            "speculative_decoding": speculative_bonus(support, preference, settings),
+            "speculative_decoding": speculative_bonus(bonus_support, preference, settings),
             "small_model": -float(weights["small_model"]) * float(params or 1e6),
             "deployability": float(weights["deployability"]) * len(compatible),
             "verified_evidence": float(weights["verified_evidence"]) * verified_fields,
@@ -638,10 +638,11 @@ def rank_candidates(
                 "license_assessment": checked_license,
                 "parameters_billion": params,
                 "estimated_bf16_memory_gb": memory,
-                "memory_estimate_basis": (
-                    "target weights + 2x target weights reserved for drafter + 16 GB KV/runtime"
-                    if use_pair else "target weights + 16 GB KV/runtime"
-                ),
+                "estimated_serving_memory_gb": memory,
+                "memory_estimate_basis": memory_details["basis"],
+                "memory_estimate": memory_details,
+                "gpu_count": spec.gpu_count,
+                "available_memory_gb": spec.gpu_memory_gb * usable_gpu_count * float(settings["selection"]["memory_safety_margin"]),
                 "context_length": context_length,
                 "estimated_hourly_usd": hourly,
                 "hourly_cost_source": "user_supplied" if hourly is not None else None,
@@ -651,7 +652,7 @@ def rank_candidates(
                 "runtime_assessment": runtime,
                 "speculative_decoding": {**runtime["speculative_decoding"], "status": support},
                 "speculative_decoding_preference": preference,
-                "feature_bonus": speculative_bonus(support, preference, settings),
+                "feature_bonus": speculative_bonus(bonus_support, preference, settings),
                 "eligible": not blockers,
                 "infra_score": round(sum(score_breakdown.values()), 4),
                 "score_breakdown": score_breakdown,

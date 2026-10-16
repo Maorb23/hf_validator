@@ -95,7 +95,7 @@ def task_size(
 def recommend(
     request: Annotated[str | None, typer.Argument(help="Natural-language task request.")] = None,
     gpu_memory_gb: Annotated[float | None, typer.Option("--gpu-memory-gb")] = None,
-    gpu_count: Annotated[int, typer.Option("--gpu-count")] = 1,
+    gpu_count: Annotated[int | None, typer.Option("--gpu-count", min=1)] = None,
     task_size_guidance: Annotated[bool, typer.Option("--task-size-guidance", help="Ask Nemotron for a heuristic task-size range when size is unspecified; enforce that range during discovery.")] = False,
     budget_usd_per_hour: Annotated[float | None, typer.Option("--budget-usd-per-hour")] = None,
     gpu_hourly_cost_usd: Annotated[float | None, typer.Option("--gpu-hourly-cost-usd")] = None,
@@ -200,6 +200,7 @@ def recommend(
     if request is not None and len(request) > MAX_REQUEST_CHARS:
         raise typer.BadParameter(f"Request exceeds {MAX_REQUEST_CHARS} characters")
     supplied_inputs = {
+        "gpu_count": gpu_count,
         "gpu_memory_gb": gpu_memory_gb,
         "budget_usd_per_hour": budget_usd_per_hour,
         "gpu_hourly_cost_usd": gpu_hourly_cost_usd,
@@ -223,6 +224,7 @@ def recommend(
             raise typer.BadParameter(str(exc)) from exc
     else:
         values = {"request": request, **supplied_inputs}
+        values["gpu_count"] = values.get("gpu_count") or 1
         missing = [key for key, value in values.items() if value is None]
     if json_mode and missing:
         response = {
@@ -262,7 +264,6 @@ def recommend(
     try:
         spec = RequestSpec(
             **values,
-            gpu_count=gpu_count,
             model=model,
             candidates=([model_id] if model_id else candidate or []),
         )
@@ -350,7 +351,7 @@ def recommend(
         **result,
         "recommendations": result.get("recommendations")
         or ([result["recommendation"]] if result.get("recommendation") else []),
-        "request_spec": values,
+        "request_spec": {**values, "gpu_count": spec.gpu_count},
         "artifact_directory": str(destination),
         "artifact_path": str(
             destination / ("recommendation.json" if model_id else "discovery.json")
@@ -372,6 +373,12 @@ def recommend(
                 f"{gemma.get('size_matched', 0)} near target size, none eligible. "
                 f"Main blockers: {reasons or 'no size match'}"
             )
+    if model_id is None and not json_mode and not result["recommendations"]:
+        typer.echo(f"Run {active_run_id}: {result['status']}; no eligible recommendations.")
+        for ident, reasons in result.get("candidate_rejections", {}).items():
+            typer.echo(f"  {ident}: {', '.join(reasons)}")
+    if result.get("size_fallback") and not json_mode:
+        typer.echo("Size fallback: no eligible candidate within 25% of the requested size; results use the broader half-to-double range.")
     if model_id is None and not json_mode and result["recommendations"]:
         typer.echo("Recommended models")
         for number, item in enumerate(result["recommendations"], 1):

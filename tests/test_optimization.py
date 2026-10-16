@@ -84,8 +84,9 @@ def test_skip_leaves_recommendation_unchanged_and_catalog_is_empty(tmp_path):
 def test_objective_mapping_and_validation():
     assert objectives_for(1) == ["mean_e2e_latency_ms", "mean_ttft_ms"]
     assert objectives_for(4) == ["output_throughput", "mean_e2e_latency_ms"]
+    assert context(objectives=["output_throughput"]).objectives == ["output_throughput"]
     with pytest.raises(ValueError):
-        context(objectives=["output_throughput"])
+        context(objectives=["invalid"])
     with pytest.raises(ValueError):
         objectives_for(0)
 
@@ -218,6 +219,13 @@ def test_controller_results_keep_successful_trials_from_failed_framework():
             "status": "failed" if framework == "sglang" else "completed",
             "artifacts": {"results.json": f"s3://bucket/{framework}/results.json"},
             "test_results": [
+                {"config": {"batch": 3}, "optimization": {"trial_number": 3},
+                 "results": {"output_throughput": 999, "mean_e2e_latency_ms": 1}},
+                {"config": {"batch": 4}, "optimization": {"state": "PRUNED"},
+                 "results": {"output_throughput": 999, "mean_e2e_latency_ms": 1}},
+                {"config": {"batch": 5},
+                 "results": {"completed": 50, "total_requests": 50,
+                             "output_throughput": 999, "mean_e2e_latency_ms": 1}},
                 {
                     "config": {"batch": 1},
                     "results": {"output_throughput": 100, "mean_e2e_latency_ms": 10},
@@ -232,6 +240,7 @@ def test_controller_results_keep_successful_trials_from_failed_framework():
                 },
             ],
             "study_summary": {
+                "trial_states": {"3": "FAIL"},
                 "importance_per_objective": {
                     "output_throughput": {"status": "available", "values": {"batch": 1}}
                 }
@@ -381,3 +390,18 @@ def test_version_and_objective_compatibility_are_explicit():
     assert "objectives" in incompatibilities(context(), context(concurrency=1))
     with pytest.raises(ValueError):
         context(schema_version=2)
+
+
+def test_scalar_pruning_payload_and_pareto_rejection():
+    controller = Mock()
+    controller.submit.return_value = {"run_id": "scalar"}
+    adapter = OptimizationAdapter(controller, {"optuna": {
+        "pruner": "MedianPruner", "min_completed_requests": 64}})
+    intent = NewStudyIntent(context=context(objectives=["output_throughput"]),
+                            frameworks=["vllm"], idempotency_key="scalar")
+    adapter.submit(intent)
+    payload = controller.submit.call_args.args[0]
+    assert payload["optuna"]["objectives"] == ["output_throughput"]
+    assert payload["optuna"]["min_completed_requests"] == 64
+    with pytest.raises(ValueError, match="unconstrained scalar"):
+        adapter.submit(intent.model_copy(update={"context": context()}))

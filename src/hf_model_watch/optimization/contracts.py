@@ -60,6 +60,8 @@ class StudyContext(Contract):
         expected = objectives_for(self.concurrency)
         if not self.objectives:
             self.objectives = expected
+        elif len(self.objectives) == 1:
+            pass  # Explicit scalar studies support native intermediate pruning.
         elif self.objectives != expected:
             raise ValueError(f"Objectives for concurrency {self.concurrency} must be {expected}")
         return self
@@ -106,12 +108,15 @@ class Candidate(Contract):
     configuration: dict[str, Any]
     metrics: dict[str, float]
     artifacts: dict[str, str] = Field(default_factory=dict)
+    validation_status: str = "not_independently_validated"
 
 
 class StudySummary(Contract):
     study_reference: str
     context: StudyContext
     state: str
+    trial_state_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
+    gpu_seconds: dict[str, float] = Field(default_factory=dict)
     candidates: list[Candidate] = Field(default_factory=list)
     framework_errors: dict[str, str] = Field(default_factory=dict)
     importance_per_objective: dict[str, dict[str, Any]] = Field(default_factory=dict)

@@ -63,6 +63,6 @@ tests passed after it. Forced tool selection timed out. Switching to
 for `draft an email`, returning `email_rewriting`, 2–4B, with finish reason
 `tool_calls`. Expected tool name and unchanged task validation remain enforced.
 
-The eight pending memory/ranking/state/reporting changes remain separate. This
-source change has not replaced the live NanoClaw runtime. Current small-GPU memory
-limits can still reject all models despite a valid task-size lookup.
+The combined memory, GPU, research scheduling, metadata, state and reporting
+revision also exposes `task_size_guidance` through the NanoClaw adapter. See
+`reports/pipeline_revision.md` for deployment, validation, and estimate limitations.

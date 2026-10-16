@@ -90,3 +90,22 @@ complete trial vectors and compute parameter importance separately for each targ
 fANOVA evaluator and an [explicit target for each objective](https://optuna.readthedocs.io/en/v4.9.0/reference/generated/optuna.importance.get_param_importances.html). Importance is explicitly unavailable when measurements are insufficient or the
 optional `scikit-learn` dependency is missing. Install that dependency to calculate importance.
 Successful measurements remain analyzable when another framework or later trial fails.
+
+### Scalar studies with pruning
+
+The default objectives remain the concurrency-specific Pareto pair. Set
+`context.objectives` explicitly to one supported metric, for example
+`["mean_e2e_latency_ms"]`, for a scalar study. Execution defaults may then include:
+
+```json
+{"optuna": {"trials": 30, "sampler": "TPESampler", "pruner": "MedianPruner",
+ "pruner_kwargs": {"n_startup_trials": 10, "n_min_trials": 3},
+ "min_completed_requests": 64}}
+```
+
+Pruning is restricted to unconstrained scalar studies. Checkpoints report cumulative
+metrics at 25%, 50%, and 100% of completed requests, delayed by the observation
+minimum. Pruned trials cancel pending requests and clean up their server. They
+are excluded from recommendation candidates. Worker images must contain the
+updated optimizer. Search results still require independent full-budget validation
+before being treated as validated deployment recommendations.

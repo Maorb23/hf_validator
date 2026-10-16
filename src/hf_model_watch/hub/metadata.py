@@ -113,6 +113,18 @@ def estimate_params_billion(config: dict[str, Any], tags: list[str], model_id: s
     return None
 
 
+def parameter_estimate(config, tags, model_id, stored_elements=None):
+    """Quantized tensor elements are not the uncompressed model parameter count."""
+    import re
+    quantized = bool(config.get("quantization_config")) or bool(re.search(
+        r"fp[48]|nvfp4|gptq|awq|gguf|[248]bit|int[48]", model_id, re.I))
+    if quantized:
+        named = estimate_params_billion({}, [], model_id)
+        explicit = estimate_params_billion(config, [], "")
+        return explicit or named  # Unknown is preferable to a packed tensor count.
+    return stored_elements or estimate_params_billion(config, tags, model_id)
+
+
 def extract_architectures(config: dict[str, Any]) -> list[str]:
     architectures = config.get("architectures") or []
     if isinstance(architectures, str):

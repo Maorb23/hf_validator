@@ -9,7 +9,7 @@ from huggingface_hub import HfApi, hf_hub_download
 
 from hf_model_watch.hub.metadata import (
     estimate_download_size_gb,
-    estimate_params_billion,
+    estimate_params_billion, parameter_estimate,
     extract_architectures,
     extract_author,
     extract_context_length,
@@ -141,8 +141,8 @@ def _candidate_from_model_info(model_info: Any) -> dict[str, Any]:
         "has_tokenizer": has_tokenizer_file(files),
         "has_config": has_config_file(files),
         "has_weights": has_weight_file(files),
-        "estimated_params_billion": _safetensors_params_billion(info)
-        or estimate_params_billion(config, tags, model_id),
+        "stored_tensor_elements_billion": _safetensors_params_billion(info),
+        "estimated_params_billion": parameter_estimate(config, tags, model_id, _safetensors_params_billion(info)),
         "estimated_download_size_gb": estimate_download_size_gb(siblings),
         "architecture": extract_architectures(config),
         "context_length": context_length,
@@ -183,10 +183,8 @@ def _enrich_candidate_metadata(
             files = sibling_names(siblings)
             candidate["sibling_files"] = files
             candidate["estimated_download_size_gb"] = estimate_download_size_gb(siblings)
-            candidate["estimated_params_billion"] = (
-                _safetensors_params_billion(detailed_info)
-                or candidate.get("estimated_params_billion")
-            )
+            candidate["stored_tensor_elements_billion"] = _safetensors_params_billion(detailed_info)
+            candidate["estimated_params_billion"] = parameter_estimate(candidate.get("config") or {}, candidate.get("tags") or [], model_id, _safetensors_params_billion(detailed_info))
 
         downloaded_config = _download_optional_json(model_id, "config.json", revision)
         if downloaded_config:
@@ -202,9 +200,8 @@ def _enrich_candidate_metadata(
         candidate["context_length_source"] = (
             "metadata" if context_length is not None else None
         )
-        candidate["estimated_params_billion"] = candidate.get(
-            "estimated_params_billion"
-        ) or estimate_params_billion(config, candidate.get("tags") or [], model_id)
+        candidate["estimated_params_billion"] = parameter_estimate(config, candidate.get("tags") or [], model_id, candidate.get("stored_tensor_elements_billion"))
+        candidate["parameter_count_basis"] = "config_or_model_name" if config.get("quantization_config") or candidate["estimated_params_billion"] != candidate.get("stored_tensor_elements_billion") else "tensor_elements"
 
         tokenizer_config = _download_optional_json(model_id, "tokenizer_config.json", revision)
         if tokenizer_config:

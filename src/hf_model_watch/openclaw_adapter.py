@@ -43,6 +43,7 @@ class RecommendationInputs(StrictModel):
     request: str = Field(min_length=1, max_length=MAX_REQUEST_CHARS)
     gpu_memory_gb: float | None = Field(default=None, gt=0)
     gpu_count: int = Field(default=1, ge=1, le=64)
+    task_size_guidance: bool = False
     budget_usd_per_hour: float | None = Field(default=None, gt=0)
     gpu_hourly_cost_usd: float | None = Field(default=None, gt=0)
     license: str | None = Field(default=None, min_length=1, max_length=100)
@@ -251,7 +252,11 @@ class OpenClawToolAdapter:
         self._optimization_workflow = optimization_workflow
 
     def recommend_models(self, raw: Mapping[str, Any]) -> dict[str, Any]:
-        inputs = RecommendationInputs.model_validate(raw)
+        values = dict(raw)
+        if "gpu_count" not in values and isinstance(values.get("request"), str):
+            from hf_model_watch.recommender.utilities import extract_constraints
+            values["gpu_count"] = extract_constraints(values["request"]).get("gpu_count") or 1
+        inputs = RecommendationInputs.model_validate(values)
         return self._invoke_recommend(inputs)
 
     def provide_recommendation_input(self, raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -373,6 +378,8 @@ class OpenClawToolAdapter:
     @staticmethod
     def _recommend_arguments(inputs: RecommendationInputs) -> list[str]:
         arguments = ["recommend", inputs.request, "--gpu-count", str(inputs.gpu_count)]
+        if inputs.task_size_guidance:
+            arguments.append("--task-size-guidance")
         fields = {
             "gpu_memory_gb": "--gpu-memory-gb",
             "budget_usd_per_hour": "--budget-usd-per-hour",
@@ -432,6 +439,10 @@ class OpenClawToolAdapter:
             "task_request",
             "constraints",
             "request_spec",
+            "candidate_rejections",
+            "size_fallback",
+            "size_range",
+            "task_sizing",
             "scan_diagnostics",
             "recommendations",
             "research",
@@ -456,6 +467,9 @@ class OpenClawToolAdapter:
             "updated_at",
         }
         result = {key: value for key, value in run.items() if key in allowed}
+        effective = run.get("request_spec") or {}
+        result["constraints"] = {**(run.get("constraints") or {}),
+            **{k: v for k, v in effective.items() if k not in {"request", "model", "candidates"} and v is not None}}
         recommendations = result.get("recommendations")
         if isinstance(recommendations, list):
             result["recommendations"] = recommendations[:3]

@@ -11,8 +11,15 @@ IDs take precedence; keyword overlap is only a shortlist. For ambiguous or unmat
 ask for clarification or semantically disambiguate the returned descriptions with the user.
 Present the proposed range as a starting point, not benchmark evidence. Preserve any explicit
 user size requirement. Embedding and reranker tasks need specialized models, not a chat-model
-substitute. Range-constrained discovery will be connected in the next revision; do not claim
-the existing recommendation tools enforce the catalog's exact min/max range yet.
+substitute. Set `task_size_guidance: true` on a new recommendation when no parameter size
+was supplied to obtain Nemotron guidance and enforce the catalog min/max range.
+For a new task, pass its complete current wording to `start_recommendation`; never copy
+the previous run's request. Reuse only hardware/preferences the user intends to retain.
+Echo the active task and GPU setup in the acknowledgment so stale inputs are visible.
+Read effective hardware, prices and license from `request_spec` (cost is per GPU-hour;
+the runtime assessment reports total hourly cost). Explain `candidate_rejections` and
+`size_fallback` when results are empty or far from the requested size. Memory estimates
+include an unmeasured runtime/KV reserve and draft fallback, not verified peak usage.
 
 At the start of a workload conversation, read `get_conversation_context`. The group has one
 remembered workload and one active recommendation. Use `start_recommendation` for a new request;

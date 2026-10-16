@@ -68,7 +68,7 @@ def test_shared_verified_bonus_and_required_filter():
     off = core.rank_candidates([record], _spec(speculative_decoding='off'),
                                {record['model_id']: [draft]}, settings)[0]
     assert off['feature_bonus'] == 0
-    assert off['estimated_bf16_memory_gb'] == 24
+    assert off['estimated_bf16_memory_gb'] == 9
 
 
 def test_json_clarification_resumes_without_terminal_input(tmp_path, monkeypatch):
@@ -134,10 +134,10 @@ def test_preference_affects_shortlist_and_shared_configurable_bonus(tmp_path, mo
         return []
     result = discovery.discover_models(_spec(speculative_decoding='prefer'), settings, tmp_path,
         scan=lambda *_args: rows, lookup=lambda **_kwargs: [], search=search)
-    assert result['recommendations'][0]['model_id'] == rows[-1]['model_id']
-    assert any(rows[-1]['model_id'] in query for query in queries)
-    assert not any(rows[2]['model_id'] in query for query in queries)
-    assert result['recommendations'][0]['final_score'] == 1.0
+    assert result['recommendations'][0]['model_id'] == rows[0]['model_id']
+    assert not any(rows[-1]['model_id'] in query for query in queries)
+    assert any(rows[2]['model_id'] in query for query in queries)
+    assert result['recommendations'][0]['final_score'] == .9
 
 
 def test_interactive_confirmation_defaults_to_prefer(tmp_path, monkeypatch):

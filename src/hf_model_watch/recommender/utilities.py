@@ -217,7 +217,7 @@ def speculative_bonus(status: str, preference: str | None, settings: dict[str, A
     if preference not in {"prefer", "require"}:
         return 0.0
     weights = settings.get("selection", {}).get("speculative_decoding", {})
-    if status == "unknown":
+    if status != "verified":
         return 0.0
     defaults = {"verified": 0.05, "inferred": 0.02}
     return float(weights.get(status + "_bonus", defaults.get(status, 0)))
@@ -323,6 +323,13 @@ def pair_method(pair: dict[str, Any]) -> str:
         if re.search(pattern, text, re.I):
             return method
     return "unknown"
+
+
+def requested_method(request: str) -> str | None:
+    text = _PROTECTED_TEXT.sub("", request).lower()
+    if re.search(r"\b(?:dspark|d[-_]spark|dflash|d[-_]flash|eagle\d*|mtp|medusa)\b|multi.token prediction", text):
+        return speculative_method_order(request)[0]
+    return None
 
 
 def speculative_method_order(request: str, configured: list[str] | None = None) -> list[str]:
@@ -460,6 +467,9 @@ def extract_constraints(request: str, preference: str | None = None) -> dict[str
     original_request = request
     request = normalize_prompt(request)
     text = request.lower()
+    count = re.search(r"\b(\d+|one|two|three|four|eight)\s+gpus?\b", text)
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "eight": 8}
+    gpu_count = (int(count.group(1)) if count.group(1).isdigit() else words[count.group(1)]) if count else None
     # Recognize common capabilities directly from the original user request.
     features = detect_features(request, preference)
     for match in re.finditer(
@@ -488,6 +498,14 @@ def extract_constraints(request: str, preference: str | None = None) -> dict[str
     cost = re.search(
         r"(?:gpu hourly cost|gpu cost|rental cost)[^$\n]{0,20}\$\s*(\d+(?:\.\d+)?)", request, re.I
     )
+    if cost is None:
+        cost = re.search(r"(?:costing|costs?|rental(?: is)?)[^$\n]{0,25}\$\s*(\d+(?:\.\d+)?)", request, re.I)
+    total_cost = re.search(r"\$\s*(\d+(?:\.\d+)?)(?:\s*/\s*(?:hour|hr|h))?\s+total", request, re.I)
+    hourly = float(cost.group(1)) if cost else None
+    if total_cost:
+        hourly = float(total_cost.group(1)) / (gpu_count or 1)
+    elif cost and re.search(r"total\s+(?:gpu\s+)?(?:rental|cost)", text):
+        hourly /= gpu_count or 1
     tokens = re.search(
         r"(?:maximum|max|up to)\s+(?:of\s+)?(\d[\d,]*)\s+(?:generated\s+)?tokens", request, re.I
     )
@@ -513,8 +531,9 @@ def extract_constraints(request: str, preference: str | None = None) -> dict[str
         else None,
         "gpu_type": (re.search(r"\b(?:A100|H100|L40S|RTX\s*\d{4})\b", request, re.I) or [None])[0],
         "gpu_memory_gb": float(memory.group(1)) if memory else None,
+        "gpu_count": gpu_count,
         "budget_usd_per_hour": float(budget.group(1)) if budget else None,
-        "gpu_hourly_cost_usd": float(cost.group(1)) if cost else None,
+        "gpu_hourly_cost_usd": hourly,
         "max_generation_tokens": int(tokens.group(1).replace(",", "")) if tokens else None,
         "license": license_match.group(1).lower() if license_match else None,
         "framework_mode": "sweep"
@@ -541,6 +560,7 @@ def discovery_inputs(request: str, supplied: dict[str, Any]) -> tuple[dict[str, 
     parsed = extract_constraints(request)
     values = {"request": request}
     for key in (
+        "gpu_count",
         "gpu_memory_gb",
         "budget_usd_per_hour",
         "gpu_hourly_cost_usd",
@@ -551,6 +571,7 @@ def discovery_inputs(request: str, supplied: dict[str, Any]) -> tuple[dict[str, 
         values[key] = supplied.get(key) if supplied.get(key) is not None else parsed.get(key)
     values["speculative_decoding"] = speculative_preference(request, values["speculative_decoding"])
     # Cost is a user price assumption, never inferred from GPU memory or budget.
+    values["gpu_count"] = values["gpu_count"] or 1
     missing = [key for key, value in values.items() if value is None]
     return values, missing
 

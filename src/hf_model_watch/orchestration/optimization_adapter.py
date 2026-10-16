@@ -79,6 +79,11 @@ class OptimizationAdapter:
             raise ValueError("Framework overrides cannot change objectives or workload")
         if payload["optuna"].get("client_args") or "objective" in payload["optuna"]:
             raise ValueError("Execution settings cannot override fixed workload or objectives")
+        for framework in intent.frameworks:
+            settings = {**payload["optuna"], **overrides.get(framework, {})}
+            if settings.get("pruner", "NopPruner") != "NopPruner":
+                if len(c.objectives) != 1 or c.constraints:
+                    raise ValueError("Pruning requires an unconstrained scalar objective")
         return self.controller.submit(payload, idempotency_key=intent.idempotency_key)
 
     def status(self, reference: str) -> dict[str, Any]:
@@ -127,9 +132,22 @@ class OptimizationAdapter:
             summary.importance_per_objective[framework] = manifest.get("study_summary", {}).get(
                 "importance_per_objective", {}
             )
+            stats = manifest.get("study_summary", {})
+            summary.trial_state_counts[framework] = stats.get("trial_state_counts", {})
+            summary.gpu_seconds[framework] = stats.get("gpu_seconds", 0)
             # Full measurements, including successful trials from failed frameworks.
             for row in manifest.get("test_results", []):
+                trial = row.get("optimization", {})
+                state = stats.get("trial_states", {}).get(
+                    str(trial.get("trial_number")), trial.get("state", "COMPLETE")
+                )
+                if state != "COMPLETE":
+                    continue
                 metrics = row.get("results", {})
+                expected = context.workload.num_prompts
+                if (metrics.get("total_requests", expected) != expected
+                    or metrics.get("completed", expected) != expected):
+                    continue
                 if metrics.get("benchmark_valid") is False or metrics.get("failure_rate", 0) != 0:
                     continue
                 config = row.get("config", {})

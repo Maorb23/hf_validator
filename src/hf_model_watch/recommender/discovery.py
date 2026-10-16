@@ -35,6 +35,8 @@ from hf_model_watch.recommender.utilities import (
     speculative_method_order, documented_pairs, speculative_rank,
 )
 from hf_model_watch.recommender.speculative_research import ResearchBudget, research_methods
+from hf_model_watch.recommender.capacity import estimate_memory
+from hf_model_watch.recommender.utilities import requested_method, pair_method
 
 
 class DiscoveryClaim(BaseModel):
@@ -376,6 +378,7 @@ def discover_models(
         )
     # `sources` deduplicates model IDs while retaining every strategy that found them.
     sources: dict[str, dict[str, Any]] = {}
+    candidate_rejections = {}
     diagnostics: dict[str, dict[str, Any]] = {}
     if progress:
         progress("Scanning recent Hugging Face models...")
@@ -423,11 +426,14 @@ def discover_models(
             "blockers": {},
         }
         for row in rows:
+            ident = str(row.get("model_id") or "")
             if size_range is not None:
                 size = row.get("estimated_params_billion")
                 if size is None or not size_range[0] <= float(size) <= size_range[1]:
+                    candidate_rejections[ident] = ["outside_task_size_range"]
                     continue
             elif not _approximately_sized(row, constraints["target_params_billion"]):
+                candidate_rejections[ident] = ["outside_requested_size_range"]
                 continue
             diagnostics[strategy]["size_matched"] += 1
             ident = str(row.get("model_id") or "")
@@ -440,6 +446,7 @@ def discover_models(
             if diagnosis["eligible"]:
                 diagnostics[strategy]["eligible"] += 1
             else:
+                candidate_rejections[ident] = diagnosis["blocking_reasons"]
                 for reason in diagnosis["blocking_reasons"]:
                     counts = diagnostics[strategy]["blockers"]
                     counts[reason] = counts.get(reason, 0) + 1
@@ -452,9 +459,11 @@ def discover_models(
             continue
         params = row.get("estimated_params_billion")
         footprint = row.get("estimated_download_size_gb") or (float(params) * 2 if params else None)
-        if footprint is None or float(footprint) + 16 > spec.gpu_memory_gb * float(
+        memory, _ = estimate_memory(footprint)
+        if memory is None or memory > spec.gpu_memory_gb * spec.gpu_count * float(
             settings["selection"]["memory_safety_margin"]
         ):
+            candidate_rejections[row["model_id"]] = ["discovery_memory_estimate_exceeds_capacity"]
             continue
         candidates.append({**scored, "record": row, "discovery_strategies": entry["strategies"]})
     # Card evidence can improve the shortlist; exact support is checked after research.
@@ -467,9 +476,22 @@ def discover_models(
     research_limit = 3 if preference not in {"prefer", "require"} else max(
         3, int(settings["selection"].get("speculative_decoding", {}).get("research_candidates", 8))
     )
-    # Preserve variety while keeping the strongest HF scored models.
+    target = constraints["target_params_billion"]
+    if target:
+        candidates.sort(key=lambda item: (abs(float(item["record"]["estimated_params_billion"]) / target - 1), -item["score"]))
+        near = [item for item in candidates if abs(float(item["record"]["estimated_params_billion"]) / target - 1) <= .25]
+        if near:
+            for item in candidates:
+                if item not in near:
+                    candidate_rejections[item['model_id']] = ['outside_preferred_size_band']
+            candidates = near
+    if preference in {"prefer", "require"}:
+        methods = max(1, int(settings["tavily"].get("discovery_methods_per_target", 3)))
+        calls_per_candidate = 1 + sum(f != "speculative decoding" for f in constraints["features"]) + methods
+        research_limit = min(research_limit, max(1, min(search.search_limit // calls_per_candidate, search.extract_limit // calls_per_candidate)))
+    # Complete method coverage for the closest candidates before expanding the shortlist.
     selected = []
-    for strategy in ("recent_similar", "same_family", "gemma", "qwen"):
+    for strategy in (() if target else ("recent_similar", "same_family", "gemma", "qwen")):
         match = next(
             (
                 item
@@ -485,6 +507,9 @@ def discover_models(
             break
         if item not in selected:
             selected.append(item)
+    for item in candidates:
+        if item not in selected:
+            candidate_rejections[item['model_id']] = ['research_shortlist_limit']
     if progress:
         progress(f"Selected {len(selected)} candidates for task-fit research.")
     # Research each shortlisted model against the original task request.
@@ -596,9 +621,14 @@ def discover_models(
         ):
             blockers.remove("context_window_unverified_or_insufficient")
         if blockers:
+            candidate_rejections[ident] = blockers
             continue
         sources_for_model = evidence[ident]
         limitations = []
+        if target and abs(float(item["record"]["estimated_params_billion"]) / target - 1) > .25:
+            limitations.append("Size fallback: outside 25% of requested size; no closer eligible candidate in the scanned pool")
+        if requested_method(spec.request) and not (pair_method(assessment.get("speculative_decoding") or {}) == requested_method(spec.request) and assessment.get("speculative_decoding", {}).get("usable")):
+            limitations.append(f"Requested {requested_method(spec.request)} pairing is not documented; other methods are fallbacks")
         if constraints["max_generation_tokens"]:
             limitations.append("Prompt length is unspecified; context fit is an estimate")
         if not sources_for_model:
@@ -615,9 +645,11 @@ def discover_models(
             if status == "unknown":
                 limitations.append(f"{feature.capitalize()} support is unverified")
         if preference == "require" and feature_statuses.get("speculative_decoding") != "verified":
+            candidate_rejections[ident] = ["speculative_decoding_unverified"]
             continue
         # Keep the speculative bonus identical to core; cap other feature bonuses separately.
-        feature_score = speculative_bonus(feature_statuses.get("speculative_decoding", "unknown"),
+        method_matches = not requested_method(spec.request) or pair_method(pair) == requested_method(spec.request)
+        feature_score = speculative_bonus(feature_statuses.get("speculative_decoding", "unknown") if method_matches else "unknown",
                                           preference, settings) + min(
             0.1, sum(0.05 if status == "verified" else 0.02 if status == "inferred" else 0
                      for feature, status in feature_statuses.items()
@@ -630,7 +662,7 @@ def discover_models(
         if constraints["target_params_billion"] is not None:
             reasoning_parts.append(
                 f"Its estimated {item['record']['estimated_params_billion']:g}B parameters "
-                f"are near the requested {constraints['target_params_billion']:g}B scale."
+                f"are compared against the requested {constraints['target_params_billion']:g}B scale; see size-fallback limitations."
             )
         memory = assessment.get("estimated_bf16_memory_gb")
         if memory is not None:
@@ -733,6 +765,9 @@ def discover_models(
         "status": "recommended" if recommendations else "insufficient_evidence",
         "task_request": spec.request,
         "constraints": constraints,
+        "request_spec": spec.model_dump(exclude_none=True),
+        "candidate_rejections": candidate_rejections,
+        "size_fallback": bool(target and not any(abs(float(i['record']['estimated_params_billion']) / target - 1) <= .25 for i in candidates)),
         "size_range": ({"min_b": size_range[0], "max_b": size_range[1],
                         "unit": "billions_of_parameters"} if size_range else None),
         "scan_diagnostics": diagnostics,
