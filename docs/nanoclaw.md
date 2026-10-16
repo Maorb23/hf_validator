@@ -71,8 +71,11 @@ ncl groups restart --id <group-id> --rebuild
 
 Use NanoClaw's configured local CLI chat surface to describe a workload. The agent should call
 `recommend_models`, ask for any returned clarifications, present the supplied shortlist, require
-explicit selection, record feedback, and offer a justified revision. The `Optimize Inference +
-Benchmark` action must remain unavailable.
+explicit selection by model name or unambiguous shortlist number, persist it with `select_model`,
+verify the saved run with `get_run_status`, and offer optional optimization and benchmarking.
+The returned `optimization_handoff` reports saved inputs and remaining integration gaps.
+An absent optimizer must be reported as not connected. GPU work always requires explicit approval;
+selection does not authorize a study.
 
 ## Security and limits
 
@@ -85,3 +88,14 @@ Live conversation validation requires Docker plus a provider credential. The Pyt
 be validated without either using the test suite below.
 
 Optional inference optimization setup and contracts are documented in [optimization.md](optimization.md).
+
+Status responses are deliberately compact: raw model-card excerpts and large runtime
+records can exceed OpenCode's tool-output window and hide the next conversation step.
+Use `get_active_model_evidence` with an optional explicit `run_id` for detailed historical
+or active evidence. Status retains source URLs, evidence classifications, method coverage,
+memory assumptions and aggregate rejection reasons. The next selection question comes first.
+
+The optional controller connection can be supplied through the operator-owned
+`runtime/config/optimizer.json`; see [optimization.md](optimization.md). A verified SQLite
+connection is not a verified worker image, GPU configuration, or live benchmark. Start with
+dry-run defaults and do not start the external reconciliation loop as a connection test.

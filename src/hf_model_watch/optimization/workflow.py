@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from hf_model_watch.orchestration.optimization_adapter import OptimizationAdapter
@@ -145,3 +146,33 @@ def configured_workflow(state_root: Path) -> OptimizationWorkflow:
 
     execution = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
     return OptimizationWorkflow(state_root, OptimizationAdapter(Controller(database), execution))
+
+
+def connection_status() -> dict:
+    """Probe imports, existing controller tables and defaults without creating/ticking jobs."""
+    database = os.getenv("HF_MODEL_WATCH_OPTIMIZER_DATABASE")
+    result = {"connected": False, "execution_ready": False, "gpu_jobs_started": 0}
+    if not database:
+        return {**result, "status": "not_connected", "reason": "Optimizer database is not configured"}
+    try:
+        from llm_optimizer.remote.controller import Controller  # noqa: F401
+        path = Path(database).resolve(strict=True)
+        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"runs", "jobs"} <= tables:
+                raise ValueError("Controller schema is missing")
+            # Schema verification is read-only, unlike constructing Controller.
+            db.execute("SELECT id, request FROM runs LIMIT 0")
+            db.execute("SELECT run_id, framework, state FROM jobs LIMIT 0")
+        execution = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
+        if not isinstance(execution, dict):
+            raise ValueError("Invalid execution defaults")
+        return {**result, "connected": True, "status": "connected",
+                "execution_mode": "dry_run" if execution.get("dry_run", True) else "live",
+                "frameworks": sorted(execution.get("images", {})),
+                "timeout_minutes": execution.get("timeout_minutes"),
+                "trials": execution.get("optuna", {}).get("trials"),
+                "controller_reconciliation": "external; not started by this probe",
+                "limitation": "Connection verified; selected context, prices, study budget and approval are still required."}
+    except (ImportError, OSError, ValueError, sqlite3.Error, TypeError) as exc:
+        return {**result, "status": "not_connected", "reason": type(exc).__name__}

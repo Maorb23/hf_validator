@@ -13,9 +13,9 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from hf_model_watch.conversation import (
     ConversationAdapter, ContextInputs, WorkloadInputs, ActiveAnswersInputs, EvidenceInputs,
@@ -27,6 +27,7 @@ from hf_model_watch.openclaw_adapter import (
     TOOL_MODELS,
     OpenClawToolAdapter,
     RecommendationInputs,
+    OptimizationStartInputs,
     dispatch,
 )
 
@@ -40,8 +41,18 @@ CONVERSATION_TOOLS = {
     "start_recommendation": RecommendationInputs,
     "provide_active_input": ActiveAnswersInputs,
     "get_active_model_evidence": EvidenceInputs,
+    "get_optimization_connection": ContextInputs,
 }
-MCP_TOOL_MODELS = {**TOOL_MODELS, **CONVERSATION_TOOLS}
+class ApprovedOptimizationInputs(OptimizationStartInputs):
+    user_approved: Literal[True]
+    approved_gpu_type: str = Field(pattern=r"^gpu-")
+    approved_gpu_hourly_cost_usd: float = Field(gt=0)
+    max_cost_usd: float = Field(gt=0)
+    approved_timeout_minutes: int = Field(ge=60, le=10080)
+
+
+MCP_TOOL_MODELS = {**TOOL_MODELS, **CONVERSATION_TOOLS,
+                   "start_optimization": ApprovedOptimizationInputs}
 
 
 def _tool_definition(name: str) -> dict[str, Any]:
@@ -52,7 +63,7 @@ def _tool_definition(name: str) -> dict[str, Any]:
             "lookup_task_size": "Return model-independent heuristic size ranges for a task. Use when size is unspecified; clarify ambiguous matches. Returns no model names and starts no research.",
             "recommend_models": "Discover evidence-backed Hugging Face model recommendations.",
             "provide_recommendation_input": "Answer outstanding clarification fields for a run.",
-            "select_model": "Persist an explicitly confirmed recommended model selection.",
+            "select_model": "Persist the user choice for the exact shown run. Then read get_run_status and ask whether to optimize and benchmark; selection never approves GPU work.",
             "record_model_feedback": "Persist user-reported feedback for the selected model.",
             "revise_recommendation": "Create a bounded, traceable revised recommendation run.",
             "get_run_status": "Retrieve the canonical persisted recommendation run.",
@@ -61,7 +72,8 @@ def _tool_definition(name: str) -> dict[str, Any]:
             "list_prior_studies": "List prior studies and their compatibility; initially empty.",
             "reuse_optimization_study": "Reanalyze stored measurements without running trials.",
             "cancel_optimization": "Cancel the selected model's new optimization study.",
-            "get_conversation_context": "Read remembered workload, active run, questions, and background-job progress. Never starts research.",
+            "get_conversation_context": "Read active run and progress. For a recommended unselected run, give a concise shortlist and end with its selection_prompt verbatim. Never starts research.",
+            "get_optimization_connection": "Read-only check of the optimizer connection and execution mode. Never submits or ticks GPU jobs.",
             "update_workload": "Save explicitly supplied workload defaults; null removes an optional remembered value.",
             "start_recommendation": "Start one background recommendation using remembered workload and explicit overrides; returns immediately. Poll get_conversation_context.",
             "provide_active_input": "Answer only the active run's outstanding questions, without requiring the user to supply a run ID. Returns immediately.",
@@ -92,6 +104,7 @@ class NanoClawMcpServer:
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                    "instructions": "Keep replies conversational and concise. After successful unselected recommendations ask selection_prompt verbatim. After saving selection verify the run, check optimizer connection, and ask whether to optimize and benchmark. Never start GPU work without explicit study approval.",
                 },
             )
         if method == "tools/list":
@@ -112,6 +125,10 @@ class NanoClawMcpServer:
         if not isinstance(arguments, Mapping):
             return self._tool_error(message_id, "Tool arguments must be an object")
         try:
+            if name == "start_optimization":
+                approved = ApprovedOptimizationInputs.model_validate(arguments)
+                self.adapter.validate_optimization_approval(approved)
+                arguments = approved.model_dump(exclude={"user_approved", "max_cost_usd", "approved_timeout_minutes", "approved_gpu_type", "approved_gpu_hourly_cost_usd"})
             if name in CONVERSATION_TOOLS:
                 validated = CONVERSATION_TOOLS[name].model_validate(arguments)
                 result = getattr(self.adapter, name)(validated.model_dump(exclude_unset=True))
@@ -151,8 +168,26 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def load_optimizer_config(project_root: Path) -> None:
+    """Load optional operator-owned defaults from the read-only installed runtime."""
+    path = project_root / "config" / "optimizer.json"
+    if not path.is_file():
+        return
+    config = json.loads(path.read_text())
+    if not isinstance(config, dict) or set(config) != {"database", "execution"}:
+        raise ValueError("Optimizer config requires database and execution only")
+    if not isinstance(config["database"], str) or not Path(config["database"]).is_absolute():
+        raise ValueError("Optimizer database path must be absolute")
+    if not isinstance(config["execution"], dict):
+        raise ValueError("Optimizer execution defaults must be an object")
+    os.environ.setdefault("HF_MODEL_WATCH_OPTIMIZER_DATABASE", config["database"])
+    os.environ.setdefault("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", json.dumps(config["execution"]))
+
+
 def main() -> int:
     args = _parse_args()
+    if args.project_root:
+        load_optimizer_config(Path(args.project_root))
     adapter = ConversationAdapter(
         state_root=Path(args.state_root),
         project_root=Path(args.project_root) if args.project_root else None,

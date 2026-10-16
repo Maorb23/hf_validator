@@ -82,3 +82,31 @@ def test_reused_pid_marks_job_interrupted(tmp_path):
                                                "process_identity": "not-the-current-process"})
     context = ConversationAdapter(state_root=tmp_path).get_conversation_context({})
     assert context["job"]["status"] == "interrupted"
+
+
+def test_status_is_compact_and_evidence_is_read_separately_for_historical_run(tmp_path):
+    run = {"run_id": "run_large", "status": "recommended", "selected_model_id": None,
+           "action_status": "placeholder", "recommendations": [{"model_id": "org/model",
+               "evidence": [{"source_url": f"https://example.org/{i}", "retrieved_text": "x"*10000}
+                            for i in range(30)], "runtime_assessment": {"hf_evidence": "x"*50000}}]}
+    save_run(tmp_path / "run_large", run)
+    adapter = ConversationAdapter(state_root=tmp_path)
+    view = adapter.get_run_status({"run_id": "run_large"})
+    assert next(iter(view)) == "conversation_next_step"
+    assert view["conversation_next_step"] == "Which model would you like to select?"
+    assert len(json.dumps(view)) < 10000
+    assert view["action_status"] == "not_requested"
+    assert len(adapter.get_active_model_evidence({"model_id": "org/model", "run_id": "run_large"})["evidence"]) == 20
+
+
+def test_selected_handoff_uses_verified_connection_status(tmp_path, monkeypatch):
+    from hf_model_watch.optimization import workflow
+    monkeypatch.setattr(workflow, "connection_status", lambda: {
+        "status": "connected", "connected": True, "execution_mode": "dry_run"})
+    run = {"run_id":"run_selected", "status":"recommended", "selected_model_id":"org/model",
+           "selection":{"revision":"a"*40}, "recommendations":[{"model_id":"org/model"}]}
+    save_run(tmp_path / "run_selected", run)
+    view = ConversationAdapter(state_root=tmp_path).get_run_status({"run_id":"run_selected"})
+    assert view["optimization_handoff"]["controller_status"] == "connected"
+    assert view["optimization_handoff"]["execution_mode"] == "dry_run"
+    assert view["optimization_handoff"]["execution_ready"] is False

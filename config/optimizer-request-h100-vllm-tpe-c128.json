@@ -1,0 +1,45 @@
+{
+  "model": "Qwen/Qwen3-4B",
+  "frameworks": [
+    "vllm"
+  ],
+  "gpu_type": "gpu-h100-sxm",
+  "gpu_count": 1,
+  "preset": "1gpu-16vcpu-200gb",
+  "images": {
+    "vllm": "docker.io/maorb23/llm-optimizer-vllm:pruning-20261015T120303Z"
+  },
+  "bucket": "hf-model-watch",
+  "prefix": "llm-optimizer",
+  "client_args": [
+    "dataset_name=random;random_input_len=128;random_output_len=32;random_range_ratio=1.0;num_prompts=1024;max_concurrency=128;seed=1;output_details=true"
+  ],
+  "server_args": {
+    "vllm": [
+      "async_scheduling*no_async_scheduling:(bool,bool)=[[False,True],[True,False]]",
+      "performance_mode=['balanced','interactivity','throughput']",
+      "attention_backend=['auto','FLASH_ATTN','FLASHINFER']",
+      "kv_cache_dtype=['auto','fp8']",
+      "enable_prefix_caching*no_enable_prefix_caching:(bool,bool)=[[False,True],[True,False]]",
+      "compilation_config=['{\"cudagraph_mode\":\"NONE\"}', '{\"cudagraph_mode\":\"PIECEWISE\"}', '{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"}']",
+      "max_num_batched_tokens=range(1024,32769,256)",
+      "max_num_seqs=range(8,129,8)"
+    ]
+  },
+  "search_strategy": "optuna",
+  "optuna": {
+    "trials": 30,
+    "objective": "output_throughput",
+    "sampler": "TPESampler",
+    "sampler_kwargs": {
+      "multivariate": true,
+      "group": true
+    },
+    "pruner": "NopPruner",
+    "seed": 7
+  },
+  "timeout_minutes": 120,
+  "preemptible": true,
+  "dry_run": false,
+  "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+}

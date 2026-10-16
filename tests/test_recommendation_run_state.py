@@ -16,7 +16,7 @@ def _complete_args(root, request="Find a model"):
         "--budget-usd-per-hour", "5",
         "--gpu-hourly-cost-usd", "3",
         "--license", "any",
-        "--framework-mode", "sweep",
+        "--framework-mode", "sweep", "--speculative-decoding", "prefer",
         "--state-root", str(root),
         "--json",
     ]
@@ -54,7 +54,7 @@ def test_needs_input_has_questions_and_can_resume(tmp_path, monkeypatch):
             "recommend", "Find a coding model", "--run-id", initial["run_id"],
             "--gpu-memory-gb", "80", "--budget-usd-per-hour", "5",
             "--gpu-hourly-cost-usd", "3", "--license", "any",
-            "--framework-mode", "sweep", "--state-root", str(tmp_path), "--json",
+            "--framework-mode", "sweep", "--speculative-decoding", "prefer", "--state-root", str(tmp_path), "--json",
         ],
     )
     assert resumed.exit_code == 0

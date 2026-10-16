@@ -504,3 +504,61 @@ def test_nemotron_discovery_claim_validation(tmp_path, monkeypatch):
     discovery._validate_with_nemotron(_spec(), [row], settings, tmp_path)
     assert row["nemotron"]["task_fit"] == "unknown"
     assert row["nemotron"]["rationale"] == ""
+
+
+def test_near_size_shortlist_preserves_quality_and_replaces_failed_candidates(tmp_path, monkeypatch):
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+    records = [
+        {"model_id": "Qwen/Qwen3-8B", "estimated_params_billion": 8.191, "quality": .95},
+        {"model_id": "Qwen/Qwen2.5-7B-Instruct", "estimated_params_billion": 7.616, "quality": .94},
+        {"model_id": "Qwen/Qwen3.5-9B", "estimated_params_billion": 9.653, "quality": .93},
+        {"model_id": "other/replacement", "estimated_params_billion": 8.2, "quality": .92},
+        *[{"model_id": f"new/clone-{i}", "estimated_params_billion": 8.189, "quality": .66}
+          for i in range(5)],
+    ]
+    for row in records:
+        row["estimated_download_size_gb"] = 15
+    monkeypatch.setattr(discovery, "score_candidate", lambda row, *_: {
+        "model_id": row["model_id"], "score": row["quality"], "eligible": True})
+    researched = []
+    def rank(rows, *args, **kwargs):
+        researched.extend(row["model_id"] for row in rows)
+        return [{"model_id": row["model_id"], "blocking_reasons": (
+            ["gpu_memory_unverified_or_insufficient"] if row["model_id"].startswith("Qwen/") else []),
+            "compatible_frameworks": ["vllm"], "estimated_bf16_memory_gb": 20,
+            "speculative_decoding": {"usable": False}}
+            for row in rows]
+    monkeypatch.setattr(discovery, "rank_candidates", rank)
+    settings = load_settings()
+    result = discovery.discover_models(
+        _spec(request="Find a model near 8B for customer support; prefer speculative decoding"),
+        settings, tmp_path, scan=lambda *_: records, lookup=lambda **_: [], search=lambda *a, **k: [])
+    assert researched[:3] == ["Qwen/Qwen3-8B", "Qwen/Qwen2.5-7B-Instruct", "Qwen/Qwen3.5-9B"]
+    assert "other/replacement" in researched
+    assert result["status"] == "recommended"
+    assert result["recommendations"][0]["model_id"] == "other/replacement"
+    assert not result["size_fallback"]
+    assert result["research"]["searches"] <= settings["tavily"]["discovery_search_budget"]
+    assert result["research"]["extracts"] <= settings["tavily"]["discovery_extract_budget"]
+
+
+def test_nemotron_schema_rejects_wrong_shape_and_incomplete_candidate_coverage(tmp_path, monkeypatch):
+    import pytest
+    from types import SimpleNamespace
+    monkeypatch.setenv("NEBIUS_API_KEY", "test")
+    row = {"model_id": "org/a", "eligible": True, "hf_score": .8, "final_score": .9,
+           "runtime_assessment": {}, "task_fit": {}, "evidence": []}
+    response = {"type": "text"}
+    def create(**request):
+        assert request["response_format"]["type"] == "json_schema"
+        assert request["response_format"]["json_schema"]["strict"]
+        message = SimpleNamespace(model_dump=lambda **_: {"content": json.dumps(response)})
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+    monkeypatch.setattr(discovery, "OpenAI", lambda **_: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    with pytest.raises(ValueError):
+        discovery._validate_with_nemotron(_spec(), [row], load_settings(), tmp_path)
+    response = {"assessments": []}
+    with pytest.raises(ValueError, match="exactly once"):
+        discovery._validate_with_nemotron(_spec(), [row], load_settings(), tmp_path)
+    assert "nemotron" not in row

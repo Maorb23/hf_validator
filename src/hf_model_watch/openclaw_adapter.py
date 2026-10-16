@@ -334,6 +334,42 @@ class OpenClawToolAdapter:
         _, run = load_run(self.state_root, inputs.run_id)
         return self._safe_run_view(run)
 
+    def get_optimization_connection(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        if raw:
+            raise ValueError("Connection check takes no arguments")
+        from hf_model_watch.optimization.workflow import connection_status
+        return connection_status()
+
+    def validate_optimization_approval(self, approved: Any) -> None:
+        """NanoClaw spending gate; CLI contracts retain their existing behavior."""
+        _, run = load_run(self.state_root, approved.run_id)
+        context = approved.intent.context
+        selection = run.get("selection") or {}
+        if run.get("selected_model_id") != context.model_id or not selection.get("revision"):
+            raise ValueError("Save a selected model with its fixed revision before optimization")
+        if selection["revision"] != context.revision:
+            raise ValueError("Optimization revision differs from selected revision")
+        spec = run.get("request_spec") or {}
+        count, price, budget = (spec.get(k) for k in ("gpu_count", "gpu_hourly_cost_usd", "budget_usd_per_hour"))
+        if count is None or price is None or budget is None:
+            raise ValueError("Saved GPU count, hourly price and budget are required")
+        if approved.approved_gpu_type != context.gpu_type or approved.approved_gpu_hourly_cost_usd != price:
+            raise ValueError("Confirm the exact optimizer GPU type and its saved hourly price")
+        if context.gpu_count != count or count * price > budget:
+            raise ValueError("Optimization GPU count or hourly cost conflicts with the saved budget")
+        execution = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
+        timeout = execution.get("timeout_minutes")
+        if not isinstance(timeout, int) or timeout > approved.approved_timeout_minutes:
+            raise ValueError("Execution timeout exceeds or lacks the approved duration")
+        # Bound all framework jobs, even if an external controller runs them together.
+        if count * price * len(approved.intent.frameworks) > budget:
+            raise ValueError("Potential concurrent framework cost exceeds the saved hourly budget; run one framework")
+        ceiling = count * price * timeout / 60 * len(approved.intent.frameworks)
+        if ceiling > approved.max_cost_usd:
+            raise ValueError("Maximum framework GPU runtime cost exceeds the approved study budget")
+        if not self.get_optimization_connection({})["connected"]:
+            raise ValueError("Optimizer is not connected")
+
     def _optimizer(self):
         if self._optimization_workflow is None:
             from hf_model_watch.optimization.workflow import configured_workflow
@@ -347,6 +383,9 @@ class OpenClawToolAdapter:
 
     def get_optimization_status(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         inputs = RunStatusInputs.model_validate(raw)
+        _, run = load_run(self.state_root, inputs.run_id)
+        if not run.get("optimization_reference"):
+            return {"status": "not_requested", "optimization_reference": None}
         return self._optimizer().status(inputs.run_id)
 
     def list_prior_studies(self, raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -474,6 +513,39 @@ class OpenClawToolAdapter:
         if isinstance(recommendations, list):
             result["recommendations"] = recommendations[:3]
             result["recommendation_count"] = len(recommendations)
+        if run.get("status") == "recommended" and recommendations and not run.get("selected_model_id"):
+            result["next_action"] = "Ask selection_prompt verbatim after a concise shortlist; do not stop at reporting results."
+            result["selection_prompt"] = "Which model would you like to select?"
+            result["selection_choices"] = [
+                {"number": index, "model_id": row["model_id"]}
+                for index, row in enumerate(recommendations[:3], 1)
+            ]
+        if run.get("selected_model_id"):
+            selection = run.get("selection") or {}
+            constraints = result["constraints"]
+            fields = {
+                "model_id": run["selected_model_id"],
+                "revision": selection.get("revision"),
+                "workload": run.get("task_request") or effective.get("request"),
+                "gpu_memory_gb": constraints.get("gpu_memory_gb"),
+                "gpu_count": constraints.get("gpu_count"),
+                "budget_usd_per_hour": constraints.get("budget_usd_per_hour"),
+                "gpu_hourly_cost_usd": constraints.get("gpu_hourly_cost_usd"),
+            }
+            result["optimization_handoff"] = {
+                "run_id": run["run_id"], **fields,
+                "missing_saved_fields": [key for key, value in fields.items() if value is None],
+                "controller_status": "configured_unverified" if os.getenv("HF_MODEL_WATCH_OPTIMIZER_DATABASE") else "not_connected",
+                "execution_ready": False,
+                "next_question": "Would you like to optimize and benchmark it?",
+                "connection_tool": "get_optimization_connection",
+                "requires_explicit_approval": True,
+                "integration_gaps": [
+                    "Verify controller connectivity and execution configuration before submission.",
+                    "Confirm optimizer GPU type, token workload, prompt count, seed, concurrency, frameworks and study limits.",
+                    "NanoClaw requires approved duration and maximum study cost; cost checks use the saved user-supplied GPU price.",
+                ],
+            }
         # Legacy recommendation action metadata is preserved; execution is optional.
         if result.get("action_status") == "placeholder":
             result["optimization_available"] = bool(os.getenv("HF_MODEL_WATCH_OPTIMIZER_DATABASE"))

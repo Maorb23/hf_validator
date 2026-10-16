@@ -109,3 +109,29 @@ minimum. Pruned trials cancel pending requests and clean up their server. They
 are excluded from recommendation candidates. Worker images must contain the
 updated optimizer. Search results still require independent full-budget validation
 before being treated as validated deployment recommendations.
+
+### NanoClaw connection and spending checks
+
+`get_optimization_connection` verifies imports and an existing controller schema with a
+read-only SQLite connection. It never creates a database, submits a study, or ticks the
+controller. Connected is distinct from execution-ready, and the tool reports dry-run mode.
+The operator may put `config/optimizer.json` in the read-only installed runtime:
+
+```json
+{"database":"/workspace/extra/hf-model-watch/optimizer-controller/optimizer-controller.sqlite",
+ "execution":{"dry_run":true,"timeout_minutes":60,"optuna":{"trials":16}}}
+```
+
+The database directory must be explicitly allowlisted and mounted; no cloud credentials
+are needed for the connection probe or queuing. An external controller environment owns
+reconciliation and cloud credentials. Never start reconciliation merely to test connectivity.
+Worker images and live execution defaults must be verified separately before live submission.
+
+NanoClaw's `start_optimization` requires `user_approved: true`, `approved_gpu_type`,
+`approved_gpu_hourly_cost_usd`, `approved_timeout_minutes`, and `max_cost_usd` in addition
+to the intent. These must reflect actual user approval. The gate verifies the selected
+revision, GPU count and price against the saved request, bounds potential concurrent
+framework cost by the hourly budget, and bounds all framework job durations by the approved
+study cost. The cost ceiling uses the user-supplied GPU price and the controller's job timeout;
+it is not a provider billing guarantee and excludes non-GPU charges. A new hardware price
+requires updated user inputs, not silently replacing the saved recommendation assumptions.

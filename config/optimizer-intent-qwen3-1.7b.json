@@ -1,0 +1,26 @@
+{
+  "mode": "new",
+  "idempotency_key": "run_20261016_183539_7bbdfa99-tpe-c128-001",
+  "context": {
+    "model_id": "Qwen/Qwen3-1.7B",
+    "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "gpu_type": "gpu-h100-sxm",
+    "gpu_count": 1,
+    "workload": {
+      "input_tokens": 128,
+      "output_tokens": 32,
+      "num_prompts": 1024,
+      "seed": 1
+    },
+    "concurrency": 128,
+    "objectives": [
+      "output_throughput"
+    ]
+  },
+  "frameworks": [
+    "vllm"
+  ],
+  "selection_policy": {
+    "name": "throughput_first"
+  }
+}

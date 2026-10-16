@@ -405,3 +405,24 @@ def test_scalar_pruning_payload_and_pareto_rejection():
     assert payload["optuna"]["min_completed_requests"] == 64
     with pytest.raises(ValueError, match="unconstrained scalar"):
         adapter.submit(intent.model_copy(update={"context": context()}))
+
+
+def test_connection_probe_is_read_only_and_never_creates_database(tmp_path, monkeypatch):
+    import sqlite3
+    import sys
+    from types import ModuleType
+    from hf_model_watch.optimization.workflow import connection_status
+    fake = ModuleType("llm_optimizer.remote.controller")
+    fake.Controller = lambda *_: (_ for _ in ()).throw(AssertionError("must not instantiate"))
+    monkeypatch.setitem(sys.modules, "llm_optimizer.remote.controller", fake)
+    database = tmp_path / "controller.sqlite"
+    monkeypatch.setenv("HF_MODEL_WATCH_OPTIMIZER_DATABASE", str(database))
+    assert not connection_status()["connected"]
+    assert not database.exists()
+    with sqlite3.connect(database) as db:
+        db.executescript("CREATE TABLE runs(id TEXT, request TEXT); CREATE TABLE jobs(run_id TEXT, framework TEXT, state TEXT);")
+    before = database.read_bytes()
+    monkeypatch.setenv("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", '{"dry_run":true}')
+    assert connection_status()["connected"]
+    assert connection_status()["execution_mode"] == "dry_run"
+    assert database.read_bytes() == before

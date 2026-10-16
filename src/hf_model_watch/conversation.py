@@ -18,7 +18,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from hf_model_watch.openclaw_adapter import (
-    OpenClawToolAdapter, RecommendationInputs, ClarificationInputs, StrictModel, _default_cli_runner,
+    OpenClawToolAdapter, RecommendationInputs, ClarificationInputs, SelectionInputs, StrictModel, _default_cli_runner,
 )
 from hf_model_watch.recommender.run_state import load_run
 from hf_model_watch.recommender.utilities import extract_constraints, speculative_preference
@@ -38,6 +38,7 @@ class ActiveAnswersInputs(StrictModel):
 
 class EvidenceInputs(StrictModel):
     model_id: str
+    run_id: str | None = None
 
 
 WORKLOAD_FIELDS = set(RecommendationInputs.model_fields) - {"request"}
@@ -65,6 +66,83 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 
 class ConversationAdapter(OpenClawToolAdapter):
     """One active recommendation and workload profile per group state root."""
+
+    @staticmethod
+    def _safe_run_view(run: Mapping[str, Any]) -> dict[str, Any]:
+        result = OpenClawToolAdapter._safe_run_view(run)
+        if result.get("action_status") == "placeholder":
+            result["action"] = "Optional optimization after model selection"
+            result["action_status"] = "not_requested"
+            result.pop("optimization_available", None)
+        if result.get("optimization_handoff"):
+            from hf_model_watch.optimization.workflow import connection_status
+            connection = connection_status()
+            result["optimization_handoff"]["controller_status"] = connection["status"]
+            result["optimization_handoff"]["execution_mode"] = connection.get("execution_mode")
+        # Status must fit in the provider's tool window. Full evidence has its own tool.
+        rows = []
+        for row in result.get("recommendations", []):
+            compact = {key: row[key] for key in (
+                "model_id", "revision", "hf_score", "final_score", "eligible", "why_it_fits",
+                "limitations", "task_fit") if key in row}
+            runtime = row.get("runtime_assessment") or {}
+            compact["runtime_assessment"] = {key: runtime[key] for key in (
+                "revision", "estimated_params_billion", "eligible", "blocking_reasons",
+                "estimated_bf16_memory_gb", "estimated_serving_memory_gb", "available_memory_gb",
+                "parameters_billion", "memory_estimate", "memory_estimate_basis", "memory_estimate_components",
+                "estimated_hourly_usd", "runtime", "compatible_frameworks", "context_length", "license") if key in runtime}
+            pair = runtime.get("speculative_decoding") or {}
+            compact["runtime_assessment"]["speculative_decoding"] = {
+                key: pair[key] for key in ("method", "draft_model", "runtime", "runtimes", "usable",
+                                          "confidence", "source_url", "reason") if key in pair}
+            compact["source_urls"] = list(dict.fromkeys(
+                source["source_url"] for source in row.get("evidence", []) if source.get("source_url")))[:3]
+            if row.get("nemotron"):
+                compact["nemotron"] = {key: row["nemotron"].get(key) for key in ("task_fit", "rationale", "uncertainty")}
+            rows.append(compact)
+        if "recommendations" in result:
+            result["recommendations"] = rows
+        rejected = result.get("candidate_rejections") or {}
+        counts = {}
+        for reasons in rejected.values():
+            for reason in reasons:
+                counts[reason] = counts.get(reason, 0) + 1
+        result["candidate_rejection_counts"] = counts
+        result["candidate_rejection_count"] = len(rejected)
+        result["candidate_rejections"] = dict(list(rejected.items())[:8])
+        research = result.get("research") or {}
+        coverage = research.get("method_coverage") or {}
+        result["research"] = {key: value for key, value in research.items() if key != "method_coverage"}
+        result["research"]["method_coverage"] = {
+            model: {method: {"status": info.get("status"), "reason": info.get("reason")}
+                    for method, info in methods.items()} for model, methods in coverage.items()
+            if model in {row.get("model_id") for row in rows}}
+        if result.get("selection_prompt"):
+            result = {"conversation_next_step": result["selection_prompt"], **result}
+            result["response_guidance"] = (
+                "Give a concise shortlist with a reason and limitation per model. "
+                "End with conversation_next_step verbatim. Use get_active_model_evidence "
+                "with run_id for detail; do not inspect tool output files with shell commands."
+            )
+        return result
+
+    def select_model(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        inputs = SelectionInputs.model_validate(raw)
+        _, run = load_run(self.state_root, inputs.run_id)
+        # Resolve only the displayed shortlist for this run, never another run's order.
+        rows = run.get("recommendations", [])[:3]
+        choice = inputs.model_id.strip()
+        ids = [row["model_id"] for row in rows]
+        if choice.isdecimal():
+            index = int(choice) - 1
+            matches = ids[index:index + 1] if 0 <= index < len(ids) else []
+        else:
+            matches = [model for model in ids if model.casefold() == choice.casefold()]
+            if not matches:
+                matches = [model for model in ids if model.rsplit("/", 1)[-1].casefold() == choice.casefold()]
+        if len(matches) != 1:
+            raise ValueError("Choice is ambiguous or absent from this run's shortlist; ask for the full model ID or a single listed number")
+        return super().select_model({"run_id": inputs.run_id, "model_id": matches[0], "confirmed": True})
 
     @property
     def context_path(self) -> Path:
@@ -196,9 +274,16 @@ class ConversationAdapter(OpenClawToolAdapter):
         return result
 
     def get_active_model_evidence(self, raw: Mapping[str, Any]) -> dict[str, Any]:
-        model_id = EvidenceInputs.model_validate(raw).model_id
-        context = self.get_conversation_context({})
-        run = context.get("run", {})
+        inputs = EvidenceInputs.model_validate(raw)
+        model_id = inputs.model_id
+        if inputs.run_id:
+            run = self.get_run_status({"run_id": inputs.run_id})
+        else:
+            context = self.get_conversation_context({})
+            run = context.get("run", {})
+        # Read evidence from the canonical file; status responses intentionally omit it.
+        if run.get("run_id"):
+            _, run = load_run(self.state_root, run["run_id"])
         rows = [row for row in run.get("recommendations", []) if row.get("model_id") == model_id]
         if not rows:
             raise ValueError("Model is not in the active shortlist")
