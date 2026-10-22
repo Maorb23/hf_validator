@@ -1,0 +1,4 @@
+---
+const { title, text } = Astro.props;
+---
+<section class="page-intro section"><h1>{title}</h1>{text && <p>{text}</p>}<slot /></section>

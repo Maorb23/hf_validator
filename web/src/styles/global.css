@@ -1,0 +1,22 @@
+
+/* Recorded inference runs share the existing scientific explorer layout. */
+.measured-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+.measured-controls label,.measured-controls select { min-width:0; max-width:100%; width:100%; }
+.measured-controls select { text-overflow:ellipsis; }
+.measured-replay { margin:24px 0; }
+.measured-replay .range-control { display:block; margin-top:20px; }
+.measured-replay input[type=range] { width:100%; }
+.measured-json { white-space:pre-wrap; overflow-wrap:anywhere; font-size:.75rem; max-height:320px; overflow:auto; }
+.measured-hash { overflow-wrap:anywhere; }
+.measured-explorer .comparison { margin-top:24px; }
+.measured-explorer .result-inspector { min-width:0; }
+@media(max-width:700px) { .measured-controls { grid-template-columns:minmax(0,1fr); } }
+.measured-filter-actions { margin:20px 0; }
+.measured-best { margin:24px 0; }
+.measured-best-value { color:var(--accent); font-size:clamp(1.5rem,4vw,2.5rem); }
+
+/* A clear title and instruction for the interactive architecture diagram. */
+.architecture .map-caption { align-items:center; gap:12px 20px; flex-wrap:wrap; }
+.architecture .map-caption h3 { margin:0; color:var(--fg); font:600 20px/1.3 var(--sans, 'Inter', sans-serif); letter-spacing:-.4px; }
+.architecture .map-caption > span:last-child { font:400 12px/1.5 var(--sans, 'Inter', sans-serif); letter-spacing:0; }
+@media(max-width:480px) { .architecture .map-caption h3 { font-size:18px; } }

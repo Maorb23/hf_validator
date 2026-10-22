@@ -1,0 +1,1450 @@
+{
+  "schemaVersion": 1,
+  "kind": "simulation",
+  "description": "Synthetic serving configurations calculated from an educational formula, not engine benchmarks. All engine labels use the same formula; no engine ranking is supported.",
+  "seed": 11,
+  "formula": "latency = 65 + 2.2*capacity + 85*(1-memory) + long_offset; throughput = (400 + 25*capacity)*memory*workload_factor; two configurations receive an inefficiency penalty.",
+  "rows": [
+    {
+      "id": "short-vllm-01",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 108.1,
+      "throughput": 420.0,
+      "ttft": 27.02,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-02",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 125.7,
+      "throughput": 560.0,
+      "ttft": 31.43,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-03",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 189.86,
+      "throughput": 697.2,
+      "ttft": 47.47,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-04",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 231.3,
+      "throughput": 1400.0,
+      "ttft": 57.83,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-05",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 99.6,
+      "throughput": 480.0,
+      "ttft": 24.9,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-06",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 117.2,
+      "throughput": 640.0,
+      "ttft": 29.3,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-07",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 152.4,
+      "throughput": 960.0,
+      "ttft": 38.1,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-08",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 262.9,
+      "throughput": 1328.0,
+      "ttft": 65.73,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-09",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 91.1,
+      "throughput": 540.0,
+      "ttft": 22.77,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-10",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 108.7,
+      "throughput": 720.0,
+      "ttft": 27.18,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-11",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 143.9,
+      "throughput": 1080.0,
+      "ttft": 35.98,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-vllm-12",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 214.3,
+      "throughput": 1800.0,
+      "ttft": 53.58,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-01",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 108.1,
+      "throughput": 420.0,
+      "ttft": 27.02,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-02",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 125.7,
+      "throughput": 560.0,
+      "ttft": 31.43,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-03",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 189.86,
+      "throughput": 697.2,
+      "ttft": 47.47,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-04",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 231.3,
+      "throughput": 1400.0,
+      "ttft": 57.83,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-05",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 99.6,
+      "throughput": 480.0,
+      "ttft": 24.9,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-06",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 117.2,
+      "throughput": 640.0,
+      "ttft": 29.3,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-07",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 152.4,
+      "throughput": 960.0,
+      "ttft": 38.1,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-08",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 262.9,
+      "throughput": 1328.0,
+      "ttft": 65.73,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-09",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 91.1,
+      "throughput": 540.0,
+      "ttft": 22.77,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-10",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 108.7,
+      "throughput": 720.0,
+      "ttft": 27.18,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-11",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 143.9,
+      "throughput": 1080.0,
+      "ttft": 35.98,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-sglang-12",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 214.3,
+      "throughput": 1800.0,
+      "ttft": 53.58,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-01",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 108.1,
+      "throughput": 420.0,
+      "ttft": 27.02,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-02",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 125.7,
+      "throughput": 560.0,
+      "ttft": 31.43,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-03",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 189.86,
+      "throughput": 697.2,
+      "ttft": 47.47,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-04",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 231.3,
+      "throughput": 1400.0,
+      "ttft": 57.83,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-05",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 99.6,
+      "throughput": 480.0,
+      "ttft": 24.9,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-06",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 117.2,
+      "throughput": 640.0,
+      "ttft": 29.3,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-07",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 152.4,
+      "throughput": 960.0,
+      "ttft": 38.1,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-08",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 262.9,
+      "throughput": 1328.0,
+      "ttft": 65.73,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-09",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 91.1,
+      "throughput": 540.0,
+      "ttft": 22.77,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-10",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 108.7,
+      "throughput": 720.0,
+      "ttft": 27.18,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-11",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 143.9,
+      "throughput": 1080.0,
+      "ttft": 35.98,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "short-tensorrt-llm-12",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "short",
+      "cohort": "short",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 128,
+      "outputTokens": 32,
+      "concurrency": 8,
+      "latency": 214.3,
+      "throughput": 1800.0,
+      "ttft": 53.58,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-01",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 198.1,
+      "throughput": 302.4,
+      "ttft": 49.52,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-02",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 215.7,
+      "throughput": 403.2,
+      "ttft": 53.92,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-03",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 296.06,
+      "throughput": 501.98,
+      "ttft": 74.02,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-04",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 321.3,
+      "throughput": 1008.0,
+      "ttft": 80.33,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-05",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 189.6,
+      "throughput": 345.6,
+      "ttft": 47.4,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-06",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 207.2,
+      "throughput": 460.8,
+      "ttft": 51.8,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-07",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 242.4,
+      "throughput": 691.2,
+      "ttft": 60.6,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-08",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 369.1,
+      "throughput": 956.16,
+      "ttft": 92.28,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-09",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 181.1,
+      "throughput": 388.8,
+      "ttft": 45.27,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-10",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 198.7,
+      "throughput": 518.4,
+      "ttft": 49.67,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-11",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 233.9,
+      "throughput": 777.6,
+      "ttft": 58.48,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-vllm-12",
+      "kind": "simulation",
+      "engine": "vLLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 304.3,
+      "throughput": 1296.0,
+      "ttft": 76.08,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-01",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 198.1,
+      "throughput": 302.4,
+      "ttft": 49.52,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-02",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 215.7,
+      "throughput": 403.2,
+      "ttft": 53.92,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-03",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 296.06,
+      "throughput": 501.98,
+      "ttft": 74.02,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-04",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 321.3,
+      "throughput": 1008.0,
+      "ttft": 80.33,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-05",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 189.6,
+      "throughput": 345.6,
+      "ttft": 47.4,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-06",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 207.2,
+      "throughput": 460.8,
+      "ttft": 51.8,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-07",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 242.4,
+      "throughput": 691.2,
+      "ttft": 60.6,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-08",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 369.1,
+      "throughput": 956.16,
+      "ttft": 92.28,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-09",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 181.1,
+      "throughput": 388.8,
+      "ttft": 45.27,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-10",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 198.7,
+      "throughput": 518.4,
+      "ttft": 49.67,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-11",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 233.9,
+      "throughput": 777.6,
+      "ttft": 58.48,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-sglang-12",
+      "kind": "simulation",
+      "engine": "SGLang",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 304.3,
+      "throughput": 1296.0,
+      "ttft": 76.08,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-01",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 198.1,
+      "throughput": 302.4,
+      "ttft": 49.52,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-02",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 215.7,
+      "throughput": 403.2,
+      "ttft": 53.92,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-03",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 296.06,
+      "throughput": 501.98,
+      "ttft": 74.02,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-04",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 321.3,
+      "throughput": 1008.0,
+      "ttft": 80.33,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.7
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-05",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 189.6,
+      "throughput": 345.6,
+      "ttft": 47.4,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-06",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 207.2,
+      "throughput": 460.8,
+      "ttft": 51.8,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-07",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 242.4,
+      "throughput": 691.2,
+      "ttft": 60.6,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-08",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 369.1,
+      "throughput": 956.16,
+      "ttft": 92.28,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.8
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-09",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 181.1,
+      "throughput": 388.8,
+      "ttft": 45.27,
+      "configuration": {
+        "serving_capacity": 8,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-10",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 198.7,
+      "throughput": 518.4,
+      "ttft": 49.67,
+      "configuration": {
+        "serving_capacity": 16,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-11",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 233.9,
+      "throughput": 777.6,
+      "ttft": 58.48,
+      "configuration": {
+        "serving_capacity": 32,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    },
+    {
+      "id": "long-tensorrt-llm-12",
+      "kind": "simulation",
+      "engine": "TensorRT-LLM",
+      "workload": "long",
+      "cohort": "long",
+      "model": "Illustrative model",
+      "gpu": "Illustrative GPU",
+      "inputTokens": 512,
+      "outputTokens": 128,
+      "concurrency": 32,
+      "latency": 304.3,
+      "throughput": 1296.0,
+      "ttft": 76.08,
+      "configuration": {
+        "serving_capacity": 64,
+        "memory_fraction": 0.9
+      },
+      "state": "COMPLETE"
+    }
+  ],
+  "sha256": "898295495f0804a18d2b0d0bd044d7edf4192c75b6745e0243b0a21197f035fe"
+}

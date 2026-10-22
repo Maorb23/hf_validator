@@ -1,0 +1,4 @@
+---
+const brands = [['Nemotron','nvidia.svg'],['SGLang','sglang.png'],['vLLM','vllm.svg'],['TensorRT-LLM','nvidia.svg'],['Nebius Serverless AI','nebius-dark.svg'],['LLM Optimizer',null],['Dynamo','nvidia.svg']];
+---
+<div class="integration-strip section"><p>Connected by design.</p><div>{brands.map(([name,logo])=><span class={`integration-brand ${name?.startsWith('Nebius')?'integration-nebius':''}`}>{logo ? <img src={`/logos/${logo}`} alt={name?.startsWith('Nebius')?'Nebius':''} width={name?.startsWith('Nebius')?58:25} height="25"/> : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M4 3v17h17M7 15l5-6 4 3 5-7"/></svg>}<span>{name?.startsWith('Nebius')?'Serverless AI':name}</span></span>)}</div></div>

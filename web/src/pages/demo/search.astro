@@ -1,0 +1,6 @@
+---
+import Site from '../../layouts/Site.astro';
+import PageIntro from '../../components/PageIntro.astro';
+import SearchLab from '../../components/SearchLab.jsx';
+---
+<Site title="Bayesian optimization playground"><PageIntro title="Watch the search learn." text="Explore how TPE, Gaussian-process optimization, and random search sample the same objective. Step through the recorded observations and compare what each strategy has found."/><section class="section lab-section"><SearchLab client:load/></section><section class="section content-section"><h2>What changes after observation?</h2><div class="two-cards"><article class="panel"><h3>Model-based proposals</h3><p>TPE models parameter distributions associated with objective outcomes. GP sampling uses a surrogate model to guide proposals. Their behavior depends on the objective, budget, and sampler settings.</p></article><article class="panel"><h3>A useful baseline</h3><p>Random search samples without learning from previous objective values. It can still perform well. This small, seeded demonstration is not evidence that one strategy is best for inference tuning.</p></article></div></section></Site>

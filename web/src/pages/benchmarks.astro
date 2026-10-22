@@ -1,0 +1,6 @@
+---
+import Site from '../layouts/Site.astro';
+import PageIntro from '../components/PageIntro.astro';
+import InferenceExplorer from '../components/InferenceExplorer.jsx';
+---
+<Site title="Inference benchmarks and configuration explorer"><PageIntro title="Compare configurations. Keep the context." text="Filter inference examples, inspect throughput and latency, and compare serving settings. Explore imported optimization runs and separately labeled synthetic examples. Model, draft model, seed, and workload stay attached to every recorded trial."/><section class="section lab-section"><InferenceExplorer client:load/></section><section class="section content-section"><h2>Inference metrics only.</h2><p class="lede">This explorer is about output-token throughput, E2E latency, and TTFT. It excludes quality scores, fine-tuning outcomes, and adaptation lift.</p><p>Recorded benchmarks use p95 E2E latency and p95 TTFT; synthetic examples use mean latency. Incomplete metadata is disclosed without removing runs. Match model, draft model, seed, workload, and known hardware before interpreting comparisons. No general engine ranking is inferred.</p><a href="/methodology" class="text-button">Inspect the measurement contract →</a></section></Site>

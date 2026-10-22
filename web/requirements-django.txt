@@ -1,0 +1,7 @@
+# CPU-only website serving. Independent of the inference/training environment.
+Django==5.2.18
+whitenoise==6.12.0
+gunicorn==24.1.1
+asgiref==3.12.1
+sqlparse==0.6.0
+packaging==26.3

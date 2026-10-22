@@ -1,0 +1,6 @@
+---
+import Site from '../../layouts/Site.astro';
+import PageIntro from '../../components/PageIntro.astro';
+import InferenceExplorer from '../../components/InferenceExplorer.jsx';
+---
+<Site title="Pareto-front explorer"><PageIntro title="There is more than one best." text="Explore the relationship between throughput and latency. A Pareto front preserves the tradeoffs; your workload requirements determine what is feasible."/><section class="section lab-section"><InferenceExplorer client:load/></section></Site>

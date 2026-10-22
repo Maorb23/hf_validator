@@ -1,0 +1,6 @@
+---
+import Site from '../../../layouts/Site.astro';
+import PageIntro from '../../../components/PageIntro.astro';
+import MeasuredExplorer from '../../../components/MeasuredExplorer.jsx';
+---
+<Site title="Recorded inference studies and replay"><PageIntro title="Follow the measured tradeoffs." text="Explore recorded optimization runs across vLLM, SGLang, and TensorRT-LLM. Replay throughput and p95 latency observations, inspect configurations, and keep failed and pruned trials in view."/><section class="section lab-section"><MeasuredExplorer client:load replay/></section></Site>
