@@ -27,15 +27,18 @@ from hf_model_watch.openclaw_adapter import (
     TOOL_MODELS,
     OpenClawToolAdapter,
     RecommendationInputs,
-    OptimizationStartInputs,
+    RunStatusInputs,
     dispatch,
 )
+
+from hf_model_watch.optimization.preparation import PreparationInputs
 
 SERVER_NAME = "hf-model-watch"
 SERVER_VERSION = "0.1.0"
 PROTOCOL_VERSION = "2025-03-26"
 
 CONVERSATION_TOOLS = {
+    "prepare_optimization": PreparationInputs,
     "get_conversation_context": ContextInputs,
     "update_workload": WorkloadInputs,
     "start_recommendation": RecommendationInputs,
@@ -43,7 +46,7 @@ CONVERSATION_TOOLS = {
     "get_active_model_evidence": EvidenceInputs,
     "get_optimization_connection": ContextInputs,
 }
-class ApprovedOptimizationInputs(OptimizationStartInputs):
+class ApprovedOptimizationInputs(RunStatusInputs):
     user_approved: Literal[True]
     approved_gpu_type: str = Field(pattern=r"^gpu-")
     approved_gpu_hourly_cost_usd: float = Field(gt=0)
@@ -61,21 +64,22 @@ def _tool_definition(name: str) -> dict[str, Any]:
         "name": name,
         "description": {
             "lookup_task_size": "Return model-independent heuristic size ranges for a task. Use when size is unspecified; clarify ambiguous matches. Returns no model names and starts no research.",
-            "recommend_models": "Discover evidence-backed Hugging Face model recommendations.",
-            "provide_recommendation_input": "Answer outstanding clarification fields for a run.",
-            "select_model": "Persist the user choice for the exact shown run. Then read get_run_status and ask whether to optimize and benchmark; selection never approves GPU work.",
+            "recommend_models": "Discover evidence-backed Hugging Face models from requirements alone. GPU, workload, pricing and license constraints are optional; collect deployment choices after selection, never block discovery on optimization inputs.",
+            "provide_recommendation_input": "Answer recommendation clarification fields only. After a model is selected, use prepare_optimization for cost, budget and workload changes.",
+            "select_model": "Save the exact selected model and automatically prepare optimization. Ask only for optimization_preparation.needs_input using prepare_optimization, then present saved configuration for approval. Never submits GPU work.",
+            "prepare_optimization": "Prepare or revise optimization intent and request files. Persist requested dry_run and trials even before model selection; missing selection returns needs_input and retains choices. For live execution set dry_run=false; for two trials per framework set trials=2. Apply explicit user changes even when preparation already exists; preserve other saved settings. execution accepts advanced overrides. Research uses sourced runtime evidence. Present returned summary and request separate explicit approval before start_optimization; preparation never submits.",
             "record_model_feedback": "Persist user-reported feedback for the selected model.",
             "revise_recommendation": "Create a bounded, traceable revised recommendation run.",
             "get_run_status": "Retrieve the canonical persisted recommendation run.",
-            "start_optimization": "Start an optional optimization study for the selected model.",
-            "get_optimization_status": "Read study status and analyze available measurements.",
+            "start_optimization": "When the user clearly approves the prepared configuration (including replies like yes, yeah, approved, or it's good), call this tool immediately; do not merely acknowledge or ask them to repeat approval. Pass run_id, user_approved=true, and the approved GPU type, saved GPU hourly price, timeout, and maximum study cost from the prepared summary. Do not pass intent; the server loads the exact saved intent. Only one active study is allowed. A terminal study requires a newly prepared and approved intent. submission_created=false means no new submission; never describe a returned terminal status as submitted.",
+            "get_optimization_status": "Read local framework states and provider IDs using either recommendation run ID or optimizer study ID. One call then reply; no shell or subagents. Set include_results=true only for an explicit benchmark results request. Report errors directly.",
             "list_prior_studies": "List prior studies and their compatibility; initially empty.",
             "reuse_optimization_study": "Reanalyze stored measurements without running trials.",
             "cancel_optimization": "Cancel the selected model's new optimization study.",
             "get_conversation_context": "Read active run and progress. For a recommended unselected run, give a concise shortlist and end with its selection_prompt verbatim. Never starts research.",
             "get_optimization_connection": "Read-only check of the optimizer connection and execution mode. Never submits or ticks GPU jobs.",
             "update_workload": "Save explicitly supplied workload defaults; null removes an optional remembered value.",
-            "start_recommendation": "Start one background recommendation using remembered workload and explicit overrides; returns immediately. Poll get_conversation_context.",
+            "start_recommendation": "Start discovery from model requirements alone. GPU/workload/pricing are optional and unknown fit stays unknown. Do not ask optimization questions before discovery. Returns immediately; poll get_conversation_context.",
             "provide_active_input": "Answer only the active run's outstanding questions, without requiring the user to supply a run ID. Returns immediately.",
             "get_active_model_evidence": "Read sourced evidence and assessments for one active shortlisted model without new research.",
         }[name],
@@ -104,7 +108,7 @@ class NanoClawMcpServer:
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                    "instructions": "Keep replies conversational and concise. After successful unselected recommendations ask selection_prompt verbatim. After saving selection verify the run, check optimizer connection, and ask whether to optimize and benchmark. Never start GPU work without explicit study approval.",
+                    "instructions": "Keep replies conversational and concise. After successful unselected recommendations ask selection_prompt verbatim. After selection read optimization_preparation. Ask only for missing required choices using prepare_optimization; present the prepared configuration and request approval before submission. When the user then clearly approves that configuration (yes/yeah/approved/it's good), call start_optimization immediately using the run ID and saved summary approval fields; do not just acknowledge or ask again. The server loads the exact persisted intent. Never start GPU work without explicit study approval.",
                 },
             )
         if method == "tools/list":
@@ -128,7 +132,13 @@ class NanoClawMcpServer:
             if name == "start_optimization":
                 approved = ApprovedOptimizationInputs.model_validate(arguments)
                 self.adapter.validate_optimization_approval(approved)
-                arguments = approved.model_dump(exclude={"user_approved", "max_cost_usd", "approved_timeout_minutes", "approved_gpu_type", "approved_gpu_hourly_cost_usd"})
+                intent_path = self.adapter.state_root / approved.run_id / "optimization-prepared/intent.json"
+                if not intent_path.is_file():
+                    raise ValueError("Prepare optimization before approval")
+                arguments = {
+                    **approved.model_dump(exclude={"user_approved", "max_cost_usd", "approved_timeout_minutes", "approved_gpu_type", "approved_gpu_hourly_cost_usd"}),
+                    "intent": json.loads(intent_path.read_text()),
+                }
             if name in CONVERSATION_TOOLS:
                 validated = CONVERSATION_TOOLS[name].model_validate(arguments)
                 result = getattr(self.adapter, name)(validated.model_dump(exclude_unset=True))
@@ -140,6 +150,14 @@ class NanoClawMcpServer:
             return self._result(message_id, {"content": [{"type": "text", "text": encoded}]})
         except (ValueError, FileNotFoundError, ValidationError, RuntimeError, KeyError) as exc:
             return self._tool_error(message_id, str(exc))
+        except Exception as exc:
+            # An adapter/storage failure must not kill the stdio server. Do not
+            # expose arbitrary exception strings: SDK errors can contain secrets.
+            return self._tool_error(message_id, json.dumps({
+                'status': 'tool_failed', 'error_type': type(exc).__name__,
+                'operation': name,
+                'message': 'Tool failed; connection remains available. Report the error without shell investigation or delegation.',
+            }))
 
     @staticmethod
     def _result(message_id: Any, result: dict[str, Any]) -> dict[str, Any]:

@@ -1,0 +1,143 @@
+--- a/container/agent-runner/src/providers/opencode.ts
++++ b/container/agent-runner/src/providers/opencode.ts
+@@ -741,7 +741,7 @@
+       let sessionId = input.continuation;
+       let initialized = false;
+       try {
+-        const knownModel = sessionId ? resumedContextModels.get(sessionId) : undefined;
++        let knownModel = sessionId ? resumedContextModels.get(sessionId) : undefined;
+         let runtime = self.runtime
+           ? await self.runtime.getRuntime(self.options, input.cwd)
+           : await ensureSharedRuntime(self.options, input.cwd, self.configuration, knownModel ? [knownModel] : []);
+@@ -767,10 +767,12 @@
+           }
+           if (model && (model.providerID !== knownModel?.providerID || model.modelID !== knownModel?.modelID)) {
+             resumedContextModels.set(sessionId, model);
++            knownModel = model;
+             runtime = await ensureSharedRuntime(self.options, input.cwd, self.configuration, [model]);
+             log('Applied context budget to saved session model before prompt');
+           }
+         }
++        // HF state is persisted by MCP. Never replay old run messages or summaries.
+         const pump = eventPump(runtime);
+         while (!abort.signal.aborted) {
+           while (!pending.length && !ended && !abort.signal.aborted) {
+@@ -781,6 +783,10 @@
+           }
+           if (abort.signal.aborted || (!pending.length && ended)) return;
+           const turn = pending.shift()!;
++          if (budgeted) {
++            sessionId = undefined;
++            initialized = false;
++          }
+           if (!sessionId) {
+             const created = await boundedOpenCodeCall(
+               (signal) => runtime.client.session.create({ signal }),
+@@ -789,6 +795,7 @@
+             if (created.error) throw new Error(`OpenCode failed to create session: ${JSON.stringify(created.error)}`);
+             sessionId = created.data?.id;
+             if (!sessionId) throw new Error('OpenCode failed to create session (no id)');
++            if (budgeted && knownModel) resumedContextModels.set(sessionId, knownModel);
+           }
+           if (!initialized) {
+             initialized = true;
+@@ -800,6 +807,7 @@
+             pump,
+             sessionId,
+             parts: buildPromptParts(turn.text, turn.attachments),
++            ...(budgeted && knownModel ? { model: knownModel } : {}),
+             prepare: () => {
+               prepareOpenCodeMemory(
+                 self.memorySessionHook!,
+--- a/container/agent-runner/src/providers/opencode-turn.ts
++++ b/container/agent-runner/src/providers/opencode-turn.ts
+@@ -29,7 +29,7 @@
+   create(params?: { signal?: AbortSignal }): Promise<{ data?: { id?: string }; error?: unknown }>;
+   prompt(params: {
+     path: { id: string };
+-    body: { messageID: string; parts: unknown[] };
++    body: { messageID: string; parts: unknown[]; model?: { providerID: string; modelID: string } };
+     signal?: AbortSignal;
+   }): Promise<{ data?: OpenCodeMessage; error?: unknown }>;
+   messages(params: {
+@@ -167,6 +167,7 @@
+   pump: OpenCodeEventPump;
+   sessionId: string;
+   parts: unknown[];
++  model?: { providerID: string; modelID: string };
+   signal: AbortSignal;
+   silenceMs: number;
+   idleMs: number;
+@@ -232,7 +233,7 @@
+     started = true;
+     promptRequest = client.prompt({
+       path: { id: sessionId },
+-      body: { messageID: messageId, parts: options.parts },
++      body: { messageID: messageId, parts: options.parts, ...(options.model ? { model: options.model } : {}) },
+       signal: request.signal,
+     });
+     void promptRequest.then(
+--- a/container/agent-runner/src/providers/opencode.shared-runtime.test.ts
++++ b/container/agent-runner/src/providers/opencode.shared-runtime.test.ts
+@@ -815,7 +815,13 @@
+         },
+       ],
+     });
+-    const second = fakeServer((sid, index) => second.reply(sid, 'bounded-' + index));
++    const seenSessions: string[] = [];
++    const second = fakeServer((sid, index) => {
++      seenSessions.push(sid);
++      second.reply(sid, 'bounded-' + index);
++    });
++    const prompt = mock(second.client.session.prompt);
++    second.client.session.prompt = prompt;
+     const { spawnServer } = installDeps([first, second]);
+     const provider = new OpenCodeProvider({}, undefined, config);
+     provider.registerMemorySessionHook(MEMORY_HOOK);
+@@ -830,7 +836,10 @@
+         },
+       },
+     });
++    expect(seenSessions[0]).not.toBe('ses_budgeted_resume');
++    expect(prompt.mock.calls[0][0].body.model).toEqual({ providerID: 'openrouter', modelID: 'older' });
+     expect(resultText(await runOneTurn(provider, 'ses_budgeted_resume'))).toEqual(['bounded-2']);
++    expect(seenSessions[1]).not.toBe(seenSessions[0]);
+     expect(spawnServer).toHaveBeenCalledTimes(2);
+   });
+   it('fails before prompting if saved model metadata cannot be determined', async () => {
+--- a/container/agent-runner/src/providers/opencode.resumed-budget.native.test.ts
++++ b/container/agent-runner/src/providers/opencode.resumed-budget.native.test.ts
+@@ -13,7 +13,7 @@
+ 
+ // Uses only a loopback fixture backend: no API credentials or billed model calls.
+ it.skipIf(!process.env.OPENCODE_TEST_BINARY)(
+-  'compacts a resumed legacy model before its next normal model request',
++  'starts fresh without old history while preserving the saved model',
+   async () => {
+     const root = mkdtempSync(path.join(tmpdir(), 'resumed-budget-'));
+     mkdirSync(path.join(root, 'workspace'));
+@@ -161,7 +161,7 @@
+         'Report status only.',
+         seed.id,
+       );
+-      expect(resumed.id).toBe(seed.id);
++      expect(resumed.id).not.toBe(seed.id);
+       expect(resumed.text).toContain('Fixture reply');
+       expect(spawnedConfigs.at(-1).provider.openai.models.legacy.limit.context).toBe(32768);
+       expect(spawnedConfigs.at(-1).provider.openai.models.legacy.limit.input).toBe(28672);
+@@ -169,12 +169,12 @@
+         await fetch(lastUrl + '/provider?directory=' + encodeURIComponent(path.join(root, 'workspace')))
+       ).json()) as any;
+       expect(catalog.all.find((p: any) => p.id === 'openai').models.legacy.limit.input).toBe(28672);
+-      expect(requests.some((r) => r.compact)).toBe(true);
++      expect(requests.some((r) => r.compact)).toBe(false);
+       const last = requests.filter((r) => !r.title && !r.compact).at(-1)!;
+       expect(last.model).toBe('legacy');
+-      expect(last.body).toContain('COMPACTED_HISTORY_MARKER');
++      expect(last.body).not.toContain('COMPACTED_HISTORY_MARKER');
+       expect(last.body).not.toContain('RAW_HISTORY_MARKER');
+-      console.log('Native regression: saved model unchanged; compaction precedes resumed normal request.');
++      console.log('Native regression: saved model unchanged; fresh session excludes prior run history.');
+     } finally {
+       destroySharedRuntime();
+       setSharedRuntimeDepsForTesting(undefined);

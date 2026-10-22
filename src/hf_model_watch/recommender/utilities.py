@@ -233,7 +233,7 @@ def _normalize_inline_markdown(text: str) -> str:
     )
 
 
-def documented_launches(text: str) -> list[dict[str, str]]:
+def documented_launches(text: str, *, include_arguments: bool = False) -> list[dict[str, Any]]:
     """Read complete launch commands; never combine flags from separate examples."""
     text = _normalize_inline_markdown(re.sub(r"\\\s*\n", " ", text))
     launches = []
@@ -268,6 +268,20 @@ def documented_launches(text: str) -> list[dict[str, str]]:
                 draft, algorithm = speculative.get("model"), speculative.get("method")
                 if isinstance(draft, str) and isinstance(algorithm, str) and draft and algorithm:
                     launch.update(draft_model=draft, algorithm=algorithm)
+        if include_arguments and launch.get("draft_model"):
+            serving = []
+            for index, argument in enumerate(args):
+                if not argument.startswith(("--speculative-", "--speculative_")):
+                    continue
+                key, separator, value = argument.partition("=")
+                if not separator:
+                    value = args[index + 1] if index + 1 < len(args) else ""
+                if not value or value.startswith("--"):
+                    serving = []
+                    break
+                parsed = int(value) if value.isdecimal() else value
+                serving.append(key[2:].replace("-", "_") + "=" + repr([parsed]))
+            launch["serving_arguments"] = serving
         launches.append(launch)
     return launches
 
@@ -572,6 +586,8 @@ def discovery_inputs(request: str, supplied: dict[str, Any]) -> tuple[dict[str, 
     values["speculative_decoding"] = speculative_preference(request, values["speculative_decoding"])
     # Cost is a user price assumption, never inferred from GPU memory or budget.
     values["gpu_count"] = values["gpu_count"] or 1
-    missing = [key for key, value in values.items() if value is None]
+    values["license"] = values["license"] or "any"
+    values["framework_mode"] = values["framework_mode"] or "sweep"
+    missing = ["request"] if not request.strip() else []
     return values, missing
 

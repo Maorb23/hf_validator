@@ -6,6 +6,7 @@ No model selection, benchmark, or spending is triggered by remembering a workloa
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -17,10 +18,12 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+from pydantic import Field
+
 from hf_model_watch.openclaw_adapter import (
     OpenClawToolAdapter, RecommendationInputs, ClarificationInputs, SelectionInputs, StrictModel, _default_cli_runner,
 )
-from hf_model_watch.recommender.run_state import load_run
+from hf_model_watch.recommender.run_state import load_run, locked_run, save_run
 from hf_model_watch.recommender.utilities import extract_constraints, speculative_preference
 
 
@@ -30,6 +33,13 @@ class ContextInputs(StrictModel):
 
 class WorkloadInputs(RecommendationInputs):
     request: str = "Update remembered workload"
+    gpu_type: str | None = Field(default=None, pattern=r"^gpu-")
+    input_tokens: int | None = Field(default=None, gt=0)
+    output_tokens: int | None = Field(default=None, gt=0)
+    concurrency: int | None = Field(default=None, gt=0)
+    num_prompts: int | None = Field(default=None, gt=0)
+    seed: int | None = None
+    frameworks: list[str] | None = None
 
 
 class ActiveAnswersInputs(StrictModel):
@@ -79,6 +89,9 @@ class ConversationAdapter(OpenClawToolAdapter):
             connection = connection_status()
             result["optimization_handoff"]["controller_status"] = connection["status"]
             result["optimization_handoff"]["execution_mode"] = connection.get("execution_mode")
+        if run.get("optimization_preparation"):
+            result["optimization_preparation"] = run["optimization_preparation"]
+            result.setdefault("optimization_handoff", {})["next_question"] = "Present prepared configuration for approval, or ask only for missing preparation choices."
         # Status must fit in the provider's tool window. Full evidence has its own tool.
         rows = []
         for row in result.get("recommendations", []):
@@ -126,6 +139,20 @@ class ConversationAdapter(OpenClawToolAdapter):
             )
         return result
 
+    def _activate_run(self, run_id: str) -> None:
+        _, run = load_run(self.state_root, run_id)
+        with self._locked():
+            context = self._context()
+            job = self._job(context)
+            if job and job.get("status") in {"starting", "running"}:
+                raise ValueError("A recommendation is still running")
+            context.pop("active_job", None)
+            context["active_run_id"] = run_id
+            context.setdefault("workload", {}).update({
+                k: v for k, v in {**run.get("request_spec", {}), **run.get("optimization_choices", {})}.items()
+                if k in WORKLOAD_FIELDS and v is not None})
+            write_json(self.context_path, context)
+
     def select_model(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         inputs = SelectionInputs.model_validate(raw)
         _, run = load_run(self.state_root, inputs.run_id)
@@ -142,7 +169,96 @@ class ConversationAdapter(OpenClawToolAdapter):
                 matches = [model for model in ids if model.rsplit("/", 1)[-1].casefold() == choice.casefold()]
         if len(matches) != 1:
             raise ValueError("Choice is ambiguous or absent from this run's shortlist; ask for the full model ID or a single listed number")
-        return super().select_model({"run_id": inputs.run_id, "model_id": matches[0], "confirmed": True})
+        result = super().select_model({"run_id": inputs.run_id, "model_id": matches[0], "confirmed": True})
+        self._activate_run(inputs.run_id)
+        result["optimization_preparation"] = self.prepare_optimization({"run_id": inputs.run_id})
+        return result
+
+    def prepare_optimization(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        from hf_model_watch.optimization.preparation import PreparationInputs, prepare
+        inputs = PreparationInputs.model_validate(raw)
+        with self._locked():
+            preferences = self._context().get("workload", {})
+        with locked_run(self.state_root, inputs.run_id) as (directory, run):
+            saved = {**preferences, **{k: v for k, v in run.get("request_spec", {}).items() if v is not None}}
+            for key, value in saved.items():
+                if key in PreparationInputs.model_fields and key != "run_id":
+                    run.setdefault("optimization_choices", {}).setdefault(key, value)
+            run.setdefault("optimization_choices", {}).setdefault("gpu_count", 1)
+            from hf_model_watch.optimization.intake import DEFAULT_GPU_HOURLY_COST_USD
+            run["optimization_choices"].setdefault("gpu_hourly_cost_usd", DEFAULT_GPU_HOURLY_COST_USD)
+            choices = inputs.model_dump(exclude_none=True, exclude={"run_id", "execution", "dry_run", "trials"})
+            if inputs.execution is not None:
+                run.setdefault("optimization_execution", {}).update(inputs.execution)
+            overrides = run.setdefault("optimization_execution", {})
+            if inputs.dry_run is not None:
+                overrides["dry_run"] = inputs.dry_run
+            run.setdefault("optimization_choices", {}).update(choices)
+            try:
+                # Older terminal runs persisted numeric answers as strings.
+                normalized = PreparationInputs.model_validate({**run["optimization_choices"], "run_id": inputs.run_id})
+                run["optimization_choices"] = normalized.model_dump(exclude_none=True, exclude={"run_id", "execution"})
+                execution = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
+                execution.update(run.get("optimization_execution", {}))
+                if inputs.trials is not None:
+                    execution["optuna"] = {**execution.get("optuna", {}), "trials": inputs.trials}
+                    overrides["optuna"] = execution["optuna"]
+                    execution["optuna_by_framework"] = {
+                        f: {**config, "trials": inputs.trials}
+                        for f, config in execution.get("optuna_by_framework", {}).items()
+                    }
+                    overrides["optuna_by_framework"] = execution["optuna_by_framework"]
+                if not run.get("selected_model_id"):
+                    result = {"status": "needs_input", "needs_input": ["selected_model_id"],
+                              "requires_explicit_approval": True}
+                else:
+                    result = prepare(run, preferences, execution, directory / "optimization-prepared",
+                                     self.project_root / "config/recommender.yaml")
+            except Exception as exc:
+                # Preserve selection and choices; no submission happens on research/config failure.
+                result = {"status": "preparation_failed", "error_type": type(exc).__name__, "reason": str(exc),
+                          "requires_explicit_approval": True, "retry_tool": "prepare_optimization"}
+            run["optimization_preparation"] = result
+            save_run(directory, run)
+        self._activate_run(inputs.run_id)
+        return result
+
+    def validate_optimization_approval(self, approved: Any) -> None:
+        super().validate_optimization_approval(approved)
+        path = self.state_root / approved.run_id / "optimization-prepared/request.json"
+        if not path.exists():
+            raise ValueError("Prepare optimization before approval")
+        payload = json.loads(path.read_text())
+        configured = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
+        _, run = load_run(self.state_root, approved.run_id)
+        configured.update(run.get("optimization_execution", {}))
+        if payload.get("timeout_minutes", 180) != configured.get("timeout_minutes", 180):
+            raise ValueError("Execution duration changed; prepare and approve again")
+
+    def start_optimization(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        from hf_model_watch.openclaw_adapter import OptimizationStartInputs
+        from hf_model_watch.optimization.contracts import NewStudyIntent
+        from hf_model_watch.optimization.workflow import OptimizationWorkflow
+        from hf_model_watch.orchestration.optimization_adapter import OptimizationAdapter
+        from llm_optimizer.remote.contracts import OptimizationRequest
+        inputs = OptimizationStartInputs.model_validate(raw)
+        _, run = load_run(self.state_root, inputs.run_id)
+        prepared = run.get("optimization_preparation") or {}
+        if prepared.get("status") != "prepared":
+            raise ValueError("Prepare and review the optimization request first")
+        directory = self.state_root / inputs.run_id / "optimization-prepared"
+        intent = NewStudyIntent.model_validate_json((directory / "intent.json").read_text())
+        if inputs.intent != intent:
+            raise ValueError("Approval intent differs from prepared intent")
+        payload = json.loads((directory / "request.json").read_text())
+        OptimizationRequest.parse(payload)
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        if digest != prepared.get("request_sha256"):
+            raise ValueError("Prepared request changed; prepare and approve again")
+        adapter = OptimizationAdapter(self._optimizer()._adapter().controller, payload)
+        if adapter.build_request(intent) != payload:
+            raise ValueError("Prepared request differs from its intent")
+        return OptimizationWorkflow(self.state_root, adapter).start(inputs.run_id, intent)
 
     @property
     def context_path(self) -> Path:
@@ -176,21 +292,62 @@ class ConversationAdapter(OpenClawToolAdapter):
                 write_json(path, job)
         return job
 
+    def get_run_status(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        result = super().get_run_status(raw)
+        # Audit records stay on disk; model context gets only authoritative active status.
+        reference = result.pop("optimization_reference", None)
+        for key in ("optimization_result", "parent_run_id", "revision_reason", "trigger_feedback_id"):
+            result.pop(key, None)
+        if reference:
+            status = self._optimizer()._adapter().status(reference["study_reference"])
+            terminal = status.get("state") in {"cancelled", "completed", "failed", "dry_run"}
+            result["optimization_status"] = ({"state": "not_active"} if terminal else {
+                key: status.get(key) for key in ("run_id", "state", "jobs")})
+        return result
+
     def get_conversation_context(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         ContextInputs.model_validate(raw)
         with self._locked():
             context = self._context()
             job = self._job(context)
-        result = {"workload": context.get("workload", {}), "active_run_id": context.get("active_run_id")}
+        active_run_id = context.get("active_run_id")
+        if job and job.get("operation") == "recommend_models":
+            if job.get("status") in {"starting", "running"}:
+                active_run_id = None
+            elif job.get("result", {}).get("run_id"):
+                active_run_id = job["result"]["run_id"]
+        result = {"workload": context.get("workload", {}), "active_run_id": active_run_id}
         if job:
             result["job"] = {k: job[k] for k in ("job_id", "status", "error_type", "stage") if k in job}
             if job.get("started_at"):
                 result["job"]["elapsed_seconds"] = round((job.get("finished_at") or time.time()) - job["started_at"], 1)
-            if job.get("result"):
-                result["active_run_id"] = job["result"].get("run_id")
-                result["run"] = self.get_run_status({"run_id": result["active_run_id"]})
-        elif result["active_run_id"]:
-            result["run"] = self.get_run_status({"run_id": result["active_run_id"]})
+        if result["active_run_id"]:
+            view = self.get_run_status({"run_id": result["active_run_id"]})
+            # Return current workflow state, not the full recommendation/evidence history.
+            result["run"] = {k: view[k] for k in (
+                "run_id", "status", "selected_model_id", "selection", "needs_input", "questions",
+                "optimization_preparation", "optimization_status", "selection_prompt") if k in view}
+            _, run = load_run(self.state_root, result["active_run_id"])
+            result["optimization_choices"] = run.get("optimization_choices", {})
+            execution = run.get("optimization_execution", {})
+            if run.get("selected_model_id"):
+                result["optimization_controls"] = {k: execution[k] for k in
+                    ("dry_run", "optuna", "timeout_minutes") if k in execution}
+            if run.get("selected_model_id"):
+                prepared = run.get("optimization_preparation") or {}
+                result["next_tool"] = ("start_optimization" if prepared.get("status") == "prepared"
+                                       else "prepare_optimization")
+                result["requires_explicit_approval"] = True
+                result["next_tool_arguments"] = {"run_id": result["active_run_id"]}
+                result["input_stage"] = "optimization"
+                result["run"].pop("needs_input", None)
+                result["run"].pop("questions", None)
+            else:
+                result["next_tool"] = "provide_active_input" if run.get("status") == "needs_input" else "select_model"
+                result["input_stage"] = "recommendation"
+                result["run"]["recommendations"] = [{k: row[k] for k in
+                    ("model_id", "revision", "eligible", "why_it_fits", "limitations", "task_fit", "source_urls") if k in row}
+                    for row in view.get("recommendations", [])[:3]]
         return result
 
     def update_workload(self, raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -198,7 +355,7 @@ class ConversationAdapter(OpenClawToolAdapter):
         with self._locked():
             context = self._context()
             for key, value in values.items():
-                if key in WORKLOAD_FIELDS:
+                if key in WorkloadInputs.model_fields and key != "request":
                     if value is None:
                         context.setdefault("workload", {}).pop(key, None)
                     else:
@@ -213,7 +370,9 @@ class ConversationAdapter(OpenClawToolAdapter):
             job = self._job(context)
             if job and job["status"] in {"starting", "running"}:
                 return {"status": "running", "job_id": job["job_id"], "message": "A recommendation is already running; use get_conversation_context."}
-            if job and job.get("result", {}).get("status") == "needs_input" and explicit["request"] == job.get("arguments", {}).get("request"):
+            if (job and job.get("result", {}).get("status") == "needs_input"
+                    and "request" in job.get("result", {}).get("needs_input", [])
+                    and explicit["request"] == job.get("arguments", {}).get("request")):
                 return {"status": "needs_input", "run": job["result"], "message": "Answer the active run with provide_active_input before starting another."}
             parsed = extract_constraints(explicit["request"])
             values = {k: v for k, v in context.get("workload", {}).items() if k in WORKLOAD_FIELDS}
@@ -227,22 +386,32 @@ class ConversationAdapter(OpenClawToolAdapter):
 
     def provide_active_input(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         answers = ActiveAnswersInputs.model_validate(raw).answers
+        optimization_run = None
         with self._locked():
             context = self._context()
             job = self._job(context)
             if job and job["status"] in {"starting", "running"}:
                 return {"status": "running", "job_id": job["job_id"]}
-            run_id = (job or {}).get("result", {}).get("run_id") or context.get("active_run_id")
+            run_id = context.get("active_run_id") or (job or {}).get("result", {}).get("run_id")
             if not run_id:
                 raise ValueError("No active run awaiting answers")
             _, run = load_run(self.state_root, run_id)
-            if run.get("status") != "needs_input":
-                raise ValueError("The active run is not awaiting input; use start_recommendation for a new request")
-            unexpected = set(answers) - set(run.get("needs_input", []))
-            if unexpected:
-                raise ValueError(f"Answers were not requested: {sorted(unexpected)}")
-            args = ClarificationInputs(run_id=run_id, answers=answers).model_dump()
-            return self._launch_locked(context, "provide_recommendation_input", args)
+            if run.get("selected_model_id"):
+                from hf_model_watch.optimization.preparation import PreparationInputs
+                unexpected = set(answers) - (set(PreparationInputs.model_fields) - {"run_id", "execution"})
+                if unexpected:
+                    raise ValueError(f"Unsupported optimization choices: {sorted(unexpected)}")
+                optimization_run = run_id
+            else:
+                if run.get("status") != "needs_input":
+                    raise ValueError("The active run is not awaiting recommendation input; select a model or use prepare_optimization")
+                unexpected = set(answers) - set(run.get("needs_input", []))
+                if unexpected:
+                    raise ValueError(f"Answers were not requested: {sorted(unexpected)}")
+                args = ClarificationInputs(run_id=run_id, answers=answers).model_dump()
+                return self._launch_locked(context, "provide_recommendation_input", args)
+        # Preparation takes the conversation lock itself; never nest it here.
+        return self.prepare_optimization({"run_id": optimization_run, **answers})
 
     def _launch_locked(self, context: dict[str, Any], operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
         ident = "job_" + uuid4().hex
@@ -258,6 +427,8 @@ class ConversationAdapter(OpenClawToolAdapter):
         job["process_identity"] = process_identity(process.pid)
         write_json(path, job)
         context["active_job"] = ident
+        if operation == "recommend_models":
+            context.pop("active_run_id", None)
         write_json(self.context_path, context)
         return {"status": "running", "job_id": ident, "message": "Recommendation started. Ask for status; no need to resend the request."}
 

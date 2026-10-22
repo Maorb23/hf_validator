@@ -489,9 +489,9 @@ def discover_models(
         params = row.get("estimated_params_billion")
         footprint = row.get("estimated_download_size_gb") or (float(params) * 2 if params else None)
         memory, _ = estimate_memory(footprint)
-        if memory is None or memory > spec.gpu_memory_gb * spec.gpu_count * float(
+        if spec.gpu_memory_gb is not None and (memory is None or memory > spec.gpu_memory_gb * spec.gpu_count * float(
             settings["selection"]["memory_safety_margin"]
-        ):
+        )):
             candidate_rejections[row["model_id"]] = ["discovery_memory_estimate_exceeds_capacity"]
             continue
         candidates.append({**scored, "record": row, "discovery_strategies": entry["strategies"]})
@@ -635,6 +635,12 @@ def discover_models(
             assessment.setdefault("speculative_decoding", {})["alternatives"] = documented_pairs(item["record"], evidence[ident], method_order)
             assessment["speculative_decoding"]["method_coverage"] = method_coverage.get(ident, {})
             blockers = list(assessment["blocking_reasons"])
+            deferred = []
+            if spec.gpu_memory_gb is None:
+                deferred.append("gpu_memory_unverified_or_insufficient")
+            if spec.budget_usd_per_hour is None or spec.gpu_hourly_cost_usd is None:
+                deferred.append("budget_unverified_or_exceeded")
+            blockers = [reason for reason in blockers if reason not in deferred]
             # The legacy runtime ranker defaults to a 64k document fixture for unrelated
             # requests. Discovery uses the requested generation length when available.
             context = assessment.get("context_length")
@@ -646,11 +652,21 @@ def discover_models(
                 and int(context) >= minimum_context
             ):
                 blockers.remove("context_window_unverified_or_insufficient")
+            assessment["blocking_reasons"] = blockers
+            assessment["eligible"] = not blockers
+            assessment["deployment_checks"] = {
+                "gpu_fit": "unknown" if spec.gpu_memory_gb is None else "inferred",
+                "budget_fit": "unknown" if spec.budget_usd_per_hour is None or spec.gpu_hourly_cost_usd is None else "inferred",
+            }
             if blockers:
                 candidate_rejections[ident] = blockers
                 continue
             sources_for_model = evidence[ident]
             limitations = []
+            if spec.gpu_memory_gb is None:
+                limitations.append("GPU suitability is unknown until hardware is provided")
+            if spec.budget_usd_per_hour is None or spec.gpu_hourly_cost_usd is None:
+                limitations.append("Deployment cost and budget fit are unknown until pricing and budget are provided")
             if target and abs(float(item["record"]["estimated_params_billion"]) / target - 1) > .25:
                 limitations.append("Size fallback: outside 25% of requested size; no closer eligible candidate in the scanned pool")
             if requested_method(spec.request) and not (pair_method(assessment.get("speculative_decoding") or {}) == requested_method(spec.request) and assessment.get("speculative_decoding", {}).get("usable")):
@@ -691,12 +707,12 @@ def discover_models(
                     f"are compared against the requested {constraints['target_params_billion']:g}B scale; see size-fallback limitations."
                 )
             memory = assessment.get("estimated_bf16_memory_gb")
-            if memory is not None:
+            if memory is not None and spec.gpu_memory_gb is not None:
                 reasoning_parts.append(
                     f"The estimated serving footprint is {memory:g} GB against "
                     f"{spec.gpu_count} GPUs with {spec.gpu_memory_gb:g} GB each; this is a capacity estimate."
                 )
-            if spec.gpu_hourly_cost_usd is not None:
+            if spec.gpu_hourly_cost_usd is not None and spec.budget_usd_per_hour is not None:
                 reasoning_parts.append(
                     f"The supplied total GPU cost of ${spec.gpu_hourly_cost_usd * spec.gpu_count:g}/hour "
                     f"is within the ${spec.budget_usd_per_hour:g}/hour budget."
@@ -742,13 +758,14 @@ def discover_models(
                         ],
                         f"HF scanner score {item['score']:.3f}",
                         f"Approximately {item['record'].get('estimated_params_billion')}B parameters",
-                        f"Fits the stated {spec.gpu_memory_gb:g} GB memory estimate",
+                        *([f"Fits the stated {spec.gpu_memory_gb:g} GB memory estimate"]
+                          if spec.gpu_memory_gb is not None else []),
                     ],
                     "limitations": limitations,
                     "task_fit": {
                         **feature_statuses,
                         "gpu_fit": "inferred"
-                        if assessment["estimated_bf16_memory_gb"] is not None
+                        if spec.gpu_memory_gb is not None and assessment["estimated_bf16_memory_gb"] is not None
                         else "unknown",
                         "framework_fit": "inferred"
                         if assessment["compatible_frameworks"]

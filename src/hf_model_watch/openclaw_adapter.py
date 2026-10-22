@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -40,6 +41,14 @@ class StrictModel(BaseModel):
 
 
 class RecommendationInputs(StrictModel):
+    gpu_type: str | None = Field(default=None, pattern=r"^gpu-")
+    input_tokens: int | None = Field(default=None, gt=0)
+    output_tokens: int | None = Field(default=None, gt=0)
+    concurrency: int | None = Field(default=None, gt=0)
+    frameworks: list[str] | None = None
+    optimizer_bucket: str | None = None
+    optimizer_preset: str | None = None
+    optimizer_images: str | None = None
     request: str = Field(min_length=1, max_length=MAX_REQUEST_CHARS)
     gpu_memory_gb: float | None = Field(default=None, gt=0)
     gpu_count: int = Field(default=1, ge=1, le=64)
@@ -116,6 +125,16 @@ class RunStatusInputs(StrictModel):
     @classmethod
     def valid_run_id(cls, value: str) -> str:
         return validate_run_id(value)
+
+
+class OptimizationStatusInputs(StrictModel):
+    run_id: str = Field(description='Recommendation run ID or 32-character optimizer study ID.')
+    include_results: bool = Field(default=False, description='Fetch full benchmark results only when explicitly requested; status alone reads the local controller.')
+
+    @field_validator("run_id")
+    @classmethod
+    def valid_identifier(cls, value: str) -> str:
+        return value if re.fullmatch(r'[0-9a-f]{32}', value) else validate_run_id(value)
 
 
 class OptimizationStartInputs(RunStatusInputs):
@@ -343,13 +362,18 @@ class OpenClawToolAdapter:
     def validate_optimization_approval(self, approved: Any) -> None:
         """NanoClaw spending gate; CLI contracts retain their existing behavior."""
         _, run = load_run(self.state_root, approved.run_id)
-        context = approved.intent.context
+        intent_path = self.state_root / approved.run_id / "optimization-prepared/intent.json"
+        if not intent_path.is_file():
+            raise ValueError("Prepare optimization before approval")
+        from hf_model_watch.optimization.contracts import NewStudyIntent
+        intent = NewStudyIntent.model_validate_json(intent_path.read_text())
+        context = intent.context
         selection = run.get("selection") or {}
         if run.get("selected_model_id") != context.model_id or not selection.get("revision"):
             raise ValueError("Save a selected model with its fixed revision before optimization")
         if selection["revision"] != context.revision:
             raise ValueError("Optimization revision differs from selected revision")
-        spec = run.get("request_spec") or {}
+        spec = {**(run.get("request_spec") or {}), **run.get("optimization_choices", {})}
         count, price, budget = (spec.get(k) for k in ("gpu_count", "gpu_hourly_cost_usd", "budget_usd_per_hour"))
         if count is None or price is None or budget is None:
             raise ValueError("Saved GPU count, hourly price and budget are required")
@@ -358,13 +382,14 @@ class OpenClawToolAdapter:
         if context.gpu_count != count or count * price > budget:
             raise ValueError("Optimization GPU count or hourly cost conflicts with the saved budget")
         execution = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
-        timeout = execution.get("timeout_minutes")
+        execution.update(run.get("optimization_execution", {}))
+        timeout = execution.get("timeout_minutes", 180)
         if not isinstance(timeout, int) or timeout > approved.approved_timeout_minutes:
             raise ValueError("Execution timeout exceeds or lacks the approved duration")
-        # Bound all framework jobs, even if an external controller runs them together.
-        if count * price * len(approved.intent.frameworks) > budget:
-            raise ValueError("Potential concurrent framework cost exceeds the saved hourly budget; run one framework")
-        ceiling = count * price * timeout / 60 * len(approved.intent.frameworks)
+        # Bound potential concurrent GPU spend across every selected framework.
+        if count * price * len(intent.frameworks) > budget:
+            raise ValueError("Potential concurrent framework cost exceeds the saved hourly budget")
+        ceiling = count * price * timeout / 60 * len(intent.frameworks)
         if ceiling > approved.max_cost_usd:
             raise ValueError("Maximum framework GPU runtime cost exceeds the approved study budget")
         if not self.get_optimization_connection({})["connected"]:
@@ -382,11 +407,21 @@ class OpenClawToolAdapter:
         return self._optimizer().start(inputs.run_id, inputs.intent)
 
     def get_optimization_status(self, raw: Mapping[str, Any]) -> dict[str, Any]:
-        inputs = RunStatusInputs.model_validate(raw)
-        _, run = load_run(self.state_root, inputs.run_id)
+        inputs = OptimizationStatusInputs.model_validate(raw)
+        run_id = inputs.run_id
+        if re.fullmatch(r'[0-9a-f]{32}', run_id):
+            matches = []
+            for path in self.state_root.glob('run_*/recommendation_run.json'):
+                run = json.loads(path.read_text())
+                if (run.get('optimization_reference') or {}).get('study_reference') == run_id:
+                    matches.append(path.parent.name)
+            if len(matches) != 1:
+                raise ValueError('Study is not uniquely linked to a recommendation in this group; provide its recommendation run ID')
+            run_id = matches[0]
+        _, run = load_run(self.state_root, run_id)
         if not run.get("optimization_reference"):
             return {"status": "not_requested", "optimization_reference": None}
-        return self._optimizer().status(inputs.run_id)
+        return self._optimizer().status(run_id, include_results=inputs.include_results)
 
     def list_prior_studies(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         inputs = PriorStudiesInputs.model_validate(raw)
@@ -420,6 +455,9 @@ class OpenClawToolAdapter:
         if inputs.task_size_guidance:
             arguments.append("--task-size-guidance")
         fields = {
+            **{k: "--" + k.replace("_", "-") for k in (
+                "gpu_type", "input_tokens", "output_tokens", "concurrency", "frameworks",
+                "optimizer_bucket", "optimizer_preset", "optimizer_images")},
             "gpu_memory_gb": "--gpu-memory-gb",
             "budget_usd_per_hour": "--budget-usd-per-hour",
             "gpu_hourly_cost_usd": "--gpu-hourly-cost-usd",
@@ -430,13 +468,16 @@ class OpenClawToolAdapter:
         for field, option in fields.items():
             value = getattr(inputs, field)
             if value is not None:
-                arguments.extend([option, str(value)])
+                arguments.extend([option, ",".join(value) if isinstance(value, list) else str(value)])
         return arguments
 
     @staticmethod
     def _answer_arguments(answers: Mapping[str, str | int | float]) -> list[str]:
         options = {
             "request": None,
+            **{k: "--" + k.replace("_", "-") for k in (
+                "gpu_type", "input_tokens", "output_tokens", "concurrency", "frameworks",
+                "optimizer_bucket", "optimizer_preset", "optimizer_images")},
             "gpu_memory_gb": "--gpu-memory-gb",
             "budget_usd_per_hour": "--budget-usd-per-hour",
             "gpu_hourly_cost_usd": "--gpu-hourly-cost-usd",
@@ -453,7 +494,7 @@ class OpenClawToolAdapter:
                 raise ValueError(f"Unsupported clarification field: {field}")
             option = options[field]
             if option:
-                arguments.extend([option, str(value)])
+                arguments.extend([option, ",".join(value) if isinstance(value, list) else str(value)])
         return arguments
 
     def _revision_depth(self, run: Mapping[str, Any]) -> int:
@@ -561,7 +602,7 @@ TOOL_MODELS: dict[str, type[StrictModel]] = {
     "revise_recommendation": RevisionInputs,
     "get_run_status": RunStatusInputs,
     "start_optimization": OptimizationStartInputs,
-    "get_optimization_status": RunStatusInputs,
+    "get_optimization_status": OptimizationStatusInputs,
     "list_prior_studies": PriorStudiesInputs,
     "reuse_optimization_study": OptimizationReuseInputs,
     "cancel_optimization": RunStatusInputs,

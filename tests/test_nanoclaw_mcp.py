@@ -29,6 +29,7 @@ def test_mcp_initialization_and_tool_inventory_are_restricted(tmp_path):
     listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {tool["name"] for tool in listed["result"]["tools"]}
     assert names == {
+        "prepare_optimization",
         "lookup_task_size",
         "recommend_models",
         "provide_recommendation_input",
@@ -110,6 +111,8 @@ def test_recommend_select_handoff_uses_saved_run(tmp_path, monkeypatch):
         return json.loads(result.stdout)
 
     adapter = ConversationAdapter(state_root=tmp_path, cli_runner=cli)
+    import hf_model_watch.optimization.preparation as preparation
+    monkeypatch.setattr(preparation, "research", lambda *a: {"sources": [], "inspection": {}})
     server = NanoClawMcpServer(adapter)
 
     def call(name, **arguments):
@@ -123,6 +126,9 @@ def test_recommend_select_handoff_uses_saved_run(tmp_path, monkeypatch):
         return json.loads(result["content"][0]["text"])
 
     recommended = payload("recommend_models", request="coding model", gpu_memory_gb=80,
+                          gpu_type="gpu-h100-sxm", input_tokens=128, output_tokens=32,
+                          concurrency=4, frameworks=["vllm"], optimizer_bucket="bucket",
+                          optimizer_preset="2gpu-32vcpu-192gb", optimizer_images='{"vllm":"test:image"}',
                           gpu_count=2, budget_usd_per_hour=8,
                           gpu_hourly_cost_usd=3, license="any", framework_mode="sweep",
                           speculative_decoding="off")
@@ -187,13 +193,16 @@ def test_optimization_submission_requires_approval_at_mcp_boundary(tmp_path):
     # Approval forwarding is isolated here; spending checks have separate tests.
     adapter.validate_optimization_approval = lambda approved: None
     server = NanoClawMcpServer(adapter)
-    arguments = {"run_id": "run_mcp", "max_cost_usd": 5, "approved_timeout_minutes": 60,
-                 "approved_gpu_type": "gpu-h100-sxm", "approved_gpu_hourly_cost_usd": 3, "intent": {
+    prepared_dir = tmp_path / "run_mcp" / "optimization-prepared"
+    prepared_dir.mkdir(parents=True)
+    (prepared_dir / "intent.json").write_text(json.dumps({
         "idempotency_key": "approved-study", "frameworks": ["vllm"],
         "context": {"model_id": "org/model", "revision": "a" * 40,
                     "gpu_type": "gpu-h100-sxm", "gpu_count": 1,
                     "workload": {"input_tokens": 128, "output_tokens": 32}, "concurrency": 1},
-    }}
+    }))
+    arguments = {"run_id": "run_mcp", "max_cost_usd": 5, "approved_timeout_minutes": 60,
+                 "approved_gpu_type": "gpu-h100-sxm", "approved_gpu_hourly_cost_usd": 3}
     for approval in ({}, {"user_approved": False}):
         response = server.handle({"id": 1, "method": "tools/call", "params": {
             "name": "start_optimization", "arguments": {**arguments, **approval},
@@ -215,22 +224,26 @@ def test_nanoclaw_spending_gate_checks_revision_hardware_and_cost(tmp_path, monk
     run.update(selected_model_id="org/model", selection={"revision": "a"*40}, request_spec={
         "gpu_count": 2, "gpu_hourly_cost_usd": 1, "budget_usd_per_hour": 2.5})
     save_run(run_dir(tmp_path, run["run_id"]), run)
+    prepared_dir = run_dir(tmp_path, run["run_id"]) / "optimization-prepared"
+    prepared_dir.mkdir()
+    prepared_intent = {"frameworks": ["vllm"], "idempotency_key": "budget-test", "context": {
+        "model_id": "org/model", "revision": "a"*40, "gpu_count":2,
+        "gpu_type":"gpu-l40s-d", "workload":{"input_tokens":128,"output_tokens":32},
+        "concurrency":1}}
+    (prepared_dir / "intent.json").write_text(json.dumps(prepared_intent))
     monkeypatch.setenv("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", '{"timeout_minutes":60}')
     adapter = OpenClawToolAdapter(state_root=tmp_path, cli_runner=lambda *_: {})
     adapter.get_optimization_connection = lambda _: {"connected": True}
     values = {"run_id": run["run_id"], "user_approved": True, "max_cost_usd": 2,
               "approved_timeout_minutes": 60, "approved_gpu_type": "gpu-l40s-d",
-              "approved_gpu_hourly_cost_usd": 1, "intent": {
-                  "frameworks": ["vllm"], "idempotency_key": "budget-test", "context": {
-                      "model_id": "org/model", "revision": "a"*40, "gpu_count":2,
-                      "gpu_type":"gpu-l40s-d", "workload":{"input_tokens":128,"output_tokens":32},
-                      "concurrency":1}}}
+              "approved_gpu_hourly_cost_usd": 1}
     adapter.validate_optimization_approval(ApprovedOptimizationInputs.model_validate(values))
     with pytest.raises(ValueError, match="study budget"):
         adapter.validate_optimization_approval(ApprovedOptimizationInputs.model_validate({**values, "max_cost_usd":1}))
     with pytest.raises(ValueError, match="exact optimizer GPU"):
         adapter.validate_optimization_approval(ApprovedOptimizationInputs.model_validate({**values, "approved_gpu_type":"gpu-h100-sxm"}))
-    values["intent"]["frameworks"].append("sglang")
+    prepared_intent["frameworks"].append("sglang")
+    (prepared_dir / "intent.json").write_text(json.dumps(prepared_intent))
     with pytest.raises(ValueError, match="concurrent framework"):
         adapter.validate_optimization_approval(ApprovedOptimizationInputs.model_validate(values))
 
@@ -246,3 +259,17 @@ def test_operator_optimizer_config_preserves_explicit_environment(tmp_path, monk
     import os
     assert os.environ["HF_MODEL_WATCH_OPTIMIZER_DATABASE"] == "/explicit/controller.sqlite"
     assert json.loads(os.environ["HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON"])["dry_run"]
+
+
+def test_unexpected_tool_exception_keeps_mcp_connection_usable(tmp_path, monkeypatch):
+    adapter = OpenClawToolAdapter(state_root=tmp_path)
+    def fail(*args):
+        raise OSError('secret credential must never be returned')
+    monkeypatch.setattr(adapter, 'get_optimization_status', fail)
+    server = NanoClawMcpServer(adapter)
+    response = server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
+        'name': 'get_optimization_status', 'arguments': {'run_id': 'run_missing'}}})
+    assert response['result']['isError'] is True
+    assert 'OSError' in json.dumps(response)
+    assert 'secret credential' not in json.dumps(response)
+    assert server.handle({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})['result']['tools']

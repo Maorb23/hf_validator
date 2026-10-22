@@ -21,6 +21,13 @@ from hf_model_watch.runtime.backend_transformers import GenerationResult
 from hf_model_watch.storage.sqlite_store import SQLiteStore
 
 
+OPTIMIZATION_ARGS = [
+    "--gpu-type", "gpu-h100-sxm", "--input-tokens", "128", "--output-tokens", "32",
+    "--concurrency", "4", "--frameworks", "vllm", "--optimizer-bucket", "test-bucket",
+    "--optimizer-preset", "1gpu-16vcpu-96gb", "--optimizer-images", '{"vllm":"test:image"}',
+]
+
+
 def _mock_nebius(monkeypatch, respond):
     def create(**payload):
         message = respond(payload)
@@ -151,12 +158,12 @@ def test_agent_tool_budget_and_saved_artifact(tmp_path):
     assert prevalidation["final_message"] is None
 
 
-def test_cli_needs_input_json():
-    result = CliRunner().invoke(app, ["recommend", "--json"])
+def test_cli_needs_input_json(tmp_path):
+    result = CliRunner().invoke(app, ["recommend", "--json", "--state-root", str(tmp_path)])
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["status"] == "needs_input"
-    assert "framework_mode" in data["needs_input"]
+    assert data["needs_input"] == ["request"]
 
 
 def test_cli_overrides_nebius_response_and_prompt_limits(tmp_path, monkeypatch):
@@ -537,7 +544,7 @@ def test_explicit_cli_explore_family_selects_and_saves_alternative(tmp_path, mon
         "recommend", "Score social posts", "--model-id", "org/x", "--explore-family",
         "--gpu-memory-gb", "80", "--budget-usd-per-hour", "5", "--gpu-hourly-cost-usd", "3",
         "--license", "any", "--framework-mode", "sweep", "--speculative-decoding", "off", "--output-dir", str(tmp_path),
-    ], input="2\n")
+    ] + OPTIMIZATION_ARGS, input="2\n")
     assert result.exit_code == 0, result.output
     assert captured["family_alternatives"] == [alternative]
     assert captured["settings"]["tavily"]["search_depth"] == "basic"

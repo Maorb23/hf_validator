@@ -100,6 +100,14 @@ class RequestSpec(BaseModel):
                 **{key: getattr(self, key) for key in ("gpu_memory_gb", "gpu_count", "budget_usd_per_hour", "gpu_hourly_cost_usd", "license", "framework_mode")}}
 
 
+class DiscoveryRequestSpec(RequestSpec):
+    """Discovery can assess model requirements before hardware is chosen."""
+    gpu_memory_gb: float | None = Field(default=None, gt=0)
+    budget_usd_per_hour: float | None = Field(default=None, gt=0)
+    license: str = "any"
+    framework_mode: Literal["fast", "sweep"] = "sweep"
+
+
 class EvidenceFieldAssessment(BaseModel):
     """
     Class for assessing the evidence for a specific field of a model.
@@ -605,7 +613,7 @@ def rank_candidates(
             blockers.append("runtime_unverified")
         # GPU memory does not establish an hourly price.
         hourly = spec.gpu_hourly_cost_usd * spec.gpu_count if spec.gpu_hourly_cost_usd is not None else None
-        if hourly is None or float(hourly) > spec.budget_usd_per_hour:
+        if hourly is None or spec.budget_usd_per_hour is None or float(hourly) > spec.budget_usd_per_hour:
             blockers.append("budget_unverified_or_exceeded")
         pair_runtimes = (pair.get("runtimes") or [pair.get("runtime")]) if use_pair else []
         selected = next(
@@ -614,7 +622,7 @@ def rank_candidates(
                   if name in compatible), None),
         )
         usable_gpu_count = spec.gpu_count if selected in {"vllm", "sglang", "trt-llm"} else 1
-        if memory is None or memory > spec.gpu_memory_gb * usable_gpu_count * float(
+        if memory is None or spec.gpu_memory_gb is None or memory > spec.gpu_memory_gb * usable_gpu_count * float(
             settings["selection"]["memory_safety_margin"]
         ):
             blockers.append("gpu_memory_unverified_or_insufficient")
@@ -642,7 +650,8 @@ def rank_candidates(
                 "memory_estimate_basis": memory_details["basis"],
                 "memory_estimate": memory_details,
                 "gpu_count": spec.gpu_count,
-                "available_memory_gb": spec.gpu_memory_gb * usable_gpu_count * float(settings["selection"]["memory_safety_margin"]),
+                "available_memory_gb": (spec.gpu_memory_gb * usable_gpu_count * float(settings["selection"]["memory_safety_margin"])
+                                        if spec.gpu_memory_gb is not None else None),
                 "context_length": context_length,
                 "estimated_hourly_usd": hourly,
                 "hourly_cost_source": "user_supplied" if hourly is not None else None,

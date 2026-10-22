@@ -94,6 +94,14 @@ def task_size(
 @app.command()
 def recommend(
     request: Annotated[str | None, typer.Argument(help="Natural-language task request.")] = None,
+    gpu_type: Annotated[str | None, typer.Option("--gpu-type")] = None,
+    input_tokens: Annotated[int | None, typer.Option("--input-tokens", min=1)] = None,
+    output_tokens: Annotated[int | None, typer.Option("--output-tokens", min=1)] = None,
+    concurrency: Annotated[int | None, typer.Option("--concurrency", min=1)] = None,
+    frameworks: Annotated[str | None, typer.Option("--frameworks")] = None,
+    optimizer_bucket: Annotated[str | None, typer.Option("--optimizer-bucket")] = None,
+    optimizer_preset: Annotated[str | None, typer.Option("--optimizer-preset")] = None,
+    optimizer_images: Annotated[str | None, typer.Option("--optimizer-images")] = None,
     gpu_memory_gb: Annotated[float | None, typer.Option("--gpu-memory-gb")] = None,
     gpu_count: Annotated[int | None, typer.Option("--gpu-count", min=1)] = None,
     task_size_guidance: Annotated[bool, typer.Option("--task-size-guidance", help="Ask Nemotron for a heuristic task-size range when size is unspecified; enforce that range during discovery.")] = False,
@@ -199,6 +207,8 @@ def recommend(
         request = typer.prompt("Describe what model you want")
     if request is not None and len(request) > MAX_REQUEST_CHARS:
         raise typer.BadParameter(f"Request exceeds {MAX_REQUEST_CHARS} characters")
+    remembered_path = state_root / "conversation.json"
+    remembered = json.loads(remembered_path.read_text()).get("workload", {}) if remembered_path.exists() else {}
     supplied_inputs = {
         "gpu_count": gpu_count,
         "gpu_memory_gb": gpu_memory_gb,
@@ -208,12 +218,11 @@ def recommend(
         "framework_mode": framework_mode.value if framework_mode else None,
         "speculative_decoding": speculative_decoding,
     }
-    if resumed:
-        prior = resumed.get("request_spec") or {}
-        supplied_inputs = {
-            key: value if value is not None else prior.get(key)
-            for key, value in supplied_inputs.items()
-        }
+    saved_inputs = {**remembered, **((resumed or {}).get("request_spec") or {})}
+    supplied_inputs = {k: v if v is not None else saved_inputs.get(k) for k, v in supplied_inputs.items()}
+    from hf_model_watch.optimization.intake import DEFAULT_GPU_HOURLY_COST_USD
+    if json_mode and model_id and supplied_inputs.get("gpu_hourly_cost_usd") is None:
+        supplied_inputs["gpu_hourly_cost_usd"] = DEFAULT_GPU_HOURLY_COST_USD
     if request is not None:
         try:
             values, missing = discovery_inputs(request, supplied_inputs)
@@ -225,7 +234,32 @@ def recommend(
     else:
         values = {"request": request, **supplied_inputs}
         values["gpu_count"] = values.get("gpu_count") or 1
-        missing = [key for key, value in values.items() if value is None]
+        missing = ([key for key, value in values.items() if value is None] if model_id else ["request"])
+    optimization_execution = {}
+    optimization_values = {}
+    if not model_id or explore_family:
+        from hf_model_watch.optimization.intake import intake
+        from hf_model_watch.nanoclaw_mcp import load_optimizer_config
+        load_optimizer_config(Path.cwd())
+        prior_choices = (resumed or {}).get("request_spec", {})
+        optimization_values = {**remembered, **prior_choices}
+        optimization_values.update({k: v for k, v in {
+            "gpu_type": gpu_type, "input_tokens": input_tokens, "output_tokens": output_tokens,
+            "concurrency": concurrency, "frameworks": frameworks, "optimizer_bucket": optimizer_bucket,
+            "optimizer_preset": optimizer_preset, "optimizer_images": optimizer_images,
+        }.items() if v is not None})
+        optimization_values.update(values)
+        optimization_execution = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
+        optimization_execution.update((resumed or {}).get("optimization_execution", {}))
+        try:
+            optimization_values, optimization_execution, optimization_missing = intake(optimization_values, optimization_execution)
+        except ValueError as exc:
+            if json_mode:
+                typer.echo(json.dumps({"status": "error", "error": str(exc)}))
+                raise typer.Exit(code=1) from None
+            raise typer.BadParameter(str(exc)) from exc
+        values.update(optimization_values)
+        # Optimization inputs are collected only after model selection.
     if json_mode and missing:
         response = {
             "status": "needs_input",
@@ -242,17 +276,22 @@ def recommend(
         }
         save_run(
             state_directory,
-            {**response, "request_spec": values, "artifact_directory": str(destination)},
+            {**response, "request_spec": values, "optimization_execution": optimization_execution,
+             "artifact_directory": str(destination)},
         )
         typer.echo(json.dumps(response, sort_keys=True))
         return
-    defaults = {"license": "any", "framework_mode": "sweep"}
+    defaults = {"license": "any", "framework_mode": "sweep",
+                "gpu_hourly_cost_usd": DEFAULT_GPU_HOURLY_COST_USD}
     for key in missing:
         # JSON runs return questions above; only terminal runs can read a confirmation.
         if key == "speculative_decoding":
             values[key] = "prefer" if typer.confirm("Prefer speculative decoding when supported?", default=True) else "off"
             continue
-        values[key] = typer.prompt(key.replace("_", " "), default=defaults.get(key))
+        label = ("GPU hourly cost in USD per GPU (spot estimate; enter for default)"
+                 if key == "gpu_hourly_cost_usd" else key.replace("_", " "))
+        numeric_type = float if key in {"gpu_memory_gb", "budget_usd_per_hour", "gpu_hourly_cost_usd"} else str
+        values[key] = typer.prompt(label, default=defaults.get(key), type=numeric_type)
     if parent_run_id and parent and request == parent.get("task_request"):
         parent_spec = parent.get("request_spec") or {}
         if all(values.get(key) == parent_spec.get(key) for key in values):
@@ -262,11 +301,15 @@ def recommend(
                 raise typer.Exit(code=1)
             raise typer.BadParameter(message)
     try:
-        spec = RequestSpec(
+        from hf_model_watch.recommender.core import DiscoveryRequestSpec
+        spec_type = RequestSpec if model_id else DiscoveryRequestSpec
+        spec = spec_type(
             **values,
             model=model,
             candidates=([model_id] if model_id else candidate or []),
         )
+        # Persist Pydantic's normalized values, including numeric terminal answers.
+        values.update(spec.model_dump(exclude={"model", "candidates"}))
         settings = load_settings(config)
         if validation_max_tokens is not None:
             settings["nebius"]["validation_max_tokens"] = validation_max_tokens
@@ -352,6 +395,7 @@ def recommend(
         "recommendations": result.get("recommendations")
         or ([result["recommendation"]] if result.get("recommendation") else []),
         "request_spec": {**values, "gpu_count": spec.gpu_count},
+        "optimization_execution": optimization_execution,
         "artifact_directory": str(destination),
         "artifact_path": str(
             destination / ("recommendation.json" if model_id else "discovery.json")
@@ -428,11 +472,7 @@ def recommend(
             "status": "selected",
         }
         save_run(state_directory, state)
-        typer.echo(
-            "Model selection is complete. Optional optimization actions: "
-            "start, status, list-prior-studies, reuse."
-        )
-        typer.echo(f"Use: hf-watch optimization <action> --run-id {active_run_id}")
+        _prepare_selected_optimization(state_root, active_run_id)
     if json_mode:
         typer.echo(
             json.dumps(
@@ -529,7 +569,40 @@ def recommend(
                     "status": "selected",
                 }
                 save_run(state_directory, state)
+                _prepare_selected_optimization(state_root, active_run_id)
         typer.echo(f"Saved: {destination / 'recommendation.json'}")
+
+
+def _prepare_selected_optimization(state_root: Path, run_id: str, *, display: bool = True,
+                                   choices: dict | None = None) -> dict:
+    from hf_model_watch.conversation import ConversationAdapter
+    from hf_model_watch.nanoclaw_mcp import load_optimizer_config
+
+    try:
+        load_optimizer_config(Path.cwd())
+        result = ConversationAdapter(state_root=state_root).prepare_optimization(
+            {**(choices or {}), "run_id": run_id})
+    except (ValueError, OSError) as exc:
+        from hf_model_watch.recommender.run_state import locked_run, save_run
+        result = {"status": "preparation_failed", "reason": str(exc),
+                  "requires_explicit_approval": True}
+        with locked_run(state_root, run_id) as (directory, run):
+            run["optimization_preparation"] = result
+            save_run(directory, run)
+    if display:
+        typer.echo("Optimization preparation: " + result["status"])
+        if result.get("summary"):
+            typer.echo(json.dumps(result["summary"], sort_keys=True))
+        for field in ("intent_file", "request_file", "research_file"):
+            if result.get(field):
+                typer.echo(f"{field}: {result[field]}")
+        if result.get("needs_input"):
+            typer.echo("Missing required settings: " + ", ".join(result["needs_input"]))
+        if result.get("reason"):
+            typer.echo(result["reason"])
+        if result.get("next_command"):
+            typer.echo("Next (requires explicit approval): " + result["next_command"])
+    return result
 
 
 @app.command("select")
@@ -581,6 +654,8 @@ def select_recommendation(
             typer.echo(json.dumps({"status": "error", "error": str(exc)}))
             raise typer.Exit(code=1) from None
         raise typer.BadParameter(str(exc)) from exc
+    preparation = _prepare_selected_optimization(state_root, run_id, display=not json_mode)
+    selection["optimization_preparation"] = preparation
     typer.echo(
         json.dumps(selection, sort_keys=True) if json_mode else f"Selected model: {model_id}"
     )
@@ -1276,7 +1351,7 @@ def _update_manifest_artifacts(run_dir: Path, artifacts: dict[str, str]) -> None
 @app.command("optimization")
 def optimization_action(
     operation: Annotated[
-        str, typer.Argument(help="start, status, list-prior-studies, reuse, or cancel")
+        str, typer.Argument(help="prepare, start, status, list-prior-studies, reuse, or cancel")
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
     request_file: Annotated[
@@ -1284,9 +1359,14 @@ def optimization_action(
         typer.Option("--request-file", help="JSON intent (start/reuse) or context (list)"),
     ] = None,
     state_root: Annotated[Path, typer.Option("--state-root")] = Path("artifacts/recommendations"),
+    user_approved: Annotated[bool, typer.Option("--user-approved")] = False,
+    gpu_hourly_cost_usd: Annotated[
+        float | None, typer.Option("--gpu-hourly-cost-usd", min=0.000001,
+                                  help="Per-GPU hourly price estimate for preparation")
+    ] = None,
 ) -> None:
     """Optional inference optimization after explicit model selection; always emits JSON."""
-    from hf_model_watch.openclaw_adapter import OpenClawToolAdapter, dispatch
+    from hf_model_watch.openclaw_adapter import dispatch
 
     operations = {
         "start": "start_optimization",
@@ -1296,6 +1376,15 @@ def optimization_action(
         "cancel": "cancel_optimization",
     }
     try:
+        if operation == "prepare":
+            choices = json.loads(request_file.read_text()) if request_file else {}
+            if gpu_hourly_cost_usd is not None:
+                choices["gpu_hourly_cost_usd"] = gpu_hourly_cost_usd
+            result = _prepare_selected_optimization(state_root, run_id, display=False, choices=choices)
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
+        if operation == "start" and not user_approved:
+            raise ValueError("Review prepared files and explicitly approve with --user-approved")
         if operation not in operations:
             raise ValueError(f"Unknown optimization action: {operation}")
         arguments = {"run_id": run_id}
@@ -1305,8 +1394,11 @@ def optimization_action(
             arguments["context" if operation == "list-prior-studies" else "intent"] = json.loads(
                 request_file.read_text()
             )
+        from hf_model_watch.conversation import ConversationAdapter
+        from hf_model_watch.nanoclaw_mcp import load_optimizer_config
+        load_optimizer_config(Path.cwd())
         result = dispatch(
-            OpenClawToolAdapter(state_root=state_root),
+            ConversationAdapter(state_root=state_root),
             {"operation": operations[operation], "arguments": arguments},
         )
     except (ValueError, OSError, RuntimeError, KeyError) as exc:

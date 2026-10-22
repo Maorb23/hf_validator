@@ -7,6 +7,7 @@
   "preset": "1gpu-16vcpu-200gb",
   "timeout_minutes": 120,
   "preemptible": true,
+  "follows_spot_price": true,
   "dry_run": false,
   "server_args": {
     "vllm": [

@@ -180,7 +180,8 @@ def test_submission_is_idempotent_and_locks_selected_intent(tmp_path):
     )
     workflow = OptimizationWorkflow(tmp_path, adapter)
     intent = NewStudyIntent(context=context(), frameworks=["vllm"], idempotency_key="request-1")
-    assert workflow.start("run_opt", intent) == workflow.start("run_opt", intent)
+    assert workflow.start("run_opt", intent)["submission_created"] is True
+    assert workflow.start("run_opt", intent)["submission_created"] is False
     controller.submit.assert_called_once()
     payload = controller.submit.call_args.args[0]
     assert controller.submit.call_args.kwargs == {"idempotency_key": "request-1"}
@@ -426,3 +427,98 @@ def test_connection_probe_is_read_only_and_never_creates_database(tmp_path, monk
     assert connection_status()["connected"]
     assert connection_status()["execution_mode"] == "dry_run"
     assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize('identifier', ['run_opt', 'a' * 32])
+def test_status_accepts_both_ids_without_fetching_cloud_results(tmp_path, identifier):
+    from hf_model_watch.conversation import ConversationAdapter
+    from hf_model_watch.nanoclaw_mcp import NanoClawMcpServer
+    import json
+    run = selected_run(tmp_path)
+    intent = NewStudyIntent(context=context(), frameworks=['vllm'], idempotency_key='test')
+    run['optimization_reference'] = {'schema_version': 1, 'mode': 'new',
+        'study_reference': 'a' * 32, 'intent': intent.model_dump(mode='json')}
+    save_run(run_dir(tmp_path, 'run_opt'), run)
+    backend = Mock()
+    backend.status.return_value = {'run_id': 'a' * 32, 'state': 'running', 'jobs': [
+        {'framework': 'vllm', 'state': 'queued', 'nebius_id': None}]}
+    backend.results.side_effect = AssertionError('Status must not touch S3')
+    adapter = ConversationAdapter(state_root=tmp_path)
+    adapter._optimization_workflow = OptimizationWorkflow(tmp_path, backend)
+    server = NanoClawMcpServer(adapter)
+    result = server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {'name': 'get_optimization_status', 'arguments': {'run_id': identifier}}})
+    assert not result['result'].get('isError')
+    payload = json.loads(result['result']['content'][0]['text'])
+    assert payload['run_id'] == 'run_opt'
+    assert payload['study_reference'] == 'a' * 32
+    assert payload['jobs'][0]['state'] == 'queued'
+    assert len(json.dumps(payload)) < 1000
+    backend.results.assert_not_called()
+
+
+@pytest.mark.parametrize('ready', [True, False])
+def test_managed_controller_readiness_is_required_before_submission(tmp_path, monkeypatch, ready):
+    from pathlib import Path
+    import json
+    from llm_optimizer.remote import service
+    selected_run(tmp_path)
+    database = tmp_path/'controller.sqlite'
+    import sqlite3
+    with sqlite3.connect(database) as db:
+        db.execute('CREATE TABLE jobs (run_id TEXT, state TEXT)')
+    Path(str(database)+'.controller-managed.json').write_text(json.dumps({'managed': True}))
+    adapter = Mock()
+    adapter.controller.database = str(database)
+    adapter.submit.return_value = {'run_id': 'new-study', 'state': 'running', 'jobs': []}
+    check = Mock(return_value={'managed':True,'healthy':True,'concurrency':3})
+    if not ready:
+        check.side_effect = RuntimeError('controller unavailable; nothing was submitted')
+    monkeypatch.setattr(service, 'ensure_running', check)
+    workflow = OptimizationWorkflow(tmp_path, adapter)
+    intent = NewStudyIntent(context=context(), frameworks=['vllm'], idempotency_key='managed-test')
+    if ready:
+        result = workflow.start('run_opt', intent)
+        assert result['controller']['healthy'] is True
+        adapter.submit.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError, match='nothing was submitted'):
+            workflow.start('run_opt', intent)
+        adapter.submit.assert_not_called()
+        assert not load_run(tmp_path, 'run_opt')[1].get('optimization_reference')
+    check.assert_called_once_with(str(database))
+
+
+@pytest.mark.parametrize("terminal", ["cancelled", "completed", "failed", "dry_run"])
+def test_terminal_study_requires_fresh_preparation_key(tmp_path, terminal):
+    selected_run(tmp_path)
+    controller = Mock()
+    controller.submit.return_value = {"run_id": "old", "state": "running"}
+    workflow = OptimizationWorkflow(tmp_path, OptimizationAdapter(
+        controller, {"images": {"vllm": "image"}, "bucket": "bucket", "dry_run": True}))
+    intent = NewStudyIntent(context=context(), frameworks=["vllm"], idempotency_key="first")
+    workflow.start("run_opt", intent)
+    controller.status.return_value = {"run_id": "old", "state": terminal}
+    assert workflow.start("run_opt", intent)["submission_created"] is False
+    assert controller.submit.call_count == 1
+    controller.submit.return_value = {"run_id": "new", "state": "running"}
+    fresh = intent.model_copy(update={"idempotency_key": "fresh"})
+    assert workflow.start("run_opt", fresh)["run_id"] == "new"
+    assert controller.submit.call_count == 2
+    assert load_run(tmp_path, "run_opt")[1]["optimization_reference"]["study_reference"] == "new"
+
+
+def test_other_active_study_blocks_submission(tmp_path):
+    import sqlite3
+    selected_run(tmp_path)
+    database = tmp_path / "controller.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE jobs (run_id TEXT, state TEXT)")
+        db.execute("INSERT INTO jobs VALUES ('other', 'submission_unknown')")
+    controller = Mock()
+    controller.database = database
+    workflow = OptimizationWorkflow(tmp_path, OptimizationAdapter(controller, {}))
+    intent = NewStudyIntent(context=context(), frameworks=["vllm"], idempotency_key="fresh")
+    with pytest.raises(ValueError, match="other is still active"):
+        workflow.start("run_opt", intent)
+    controller.submit.assert_not_called()

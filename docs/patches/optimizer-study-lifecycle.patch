@@ -1,0 +1,15 @@
+--- a/src/llm_optimizer/remote/controller.py
++++ b/src/llm_optimizer/remote/controller.py
+@@ -178,6 +178,12 @@
+                             "idempotency key belongs to a different request"
+                         )
+                     return self.status(previous["id"])
++            active = db.execute(
++                "SELECT run_id FROM jobs WHERE state NOT IN "
++                "('completed','failed','cancelled','dry_run') LIMIT 1"
++            ).fetchone()
++            if active:
++                raise ValueError(f"Optimizer study {active['run_id']} is still active; no new study submitted")
+             db.execute(
+                 "INSERT INTO runs VALUES (?, ?, ?, ?, 0)",
+                 (run_id, idempotency_key, json.dumps(request.to_dict()), _now()),

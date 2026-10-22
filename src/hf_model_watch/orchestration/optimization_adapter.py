@@ -58,11 +58,14 @@ class OptimizationAdapter:
         self.controller = controller
         self.execution = execution
 
-    def submit(self, intent: NewStudyIntent) -> dict[str, Any]:
+    def build_request(self, intent: NewStudyIntent) -> dict[str, Any]:
+        """Build without submitting; shared by preparation and execution."""
         c = intent.context
+        from hf_model_watch.optimization.intake import execution_defaults
+        execution = execution_defaults(c.model_dump(), self.execution, intent.frameworks)
         # Explicit semantic fields override execution defaults so workloads cannot drift.
         payload = {
-            **self.execution,
+            **execution,
             "model": c.model_id,
             "revision": c.revision,
             "frameworks": intent.frameworks,
@@ -74,6 +77,23 @@ class OptimizationAdapter:
             "optuna": {**self.execution.get("optuna", {}), "objectives": c.objectives},
             "semantic_context": c.model_dump(mode="json"),
         }
+        from llm_optimizer.search_profiles import expanded_server_args, merge_server_args
+        # The optimizer owns parameter domains and framework-native rendering.
+        payload["optuna"] = {"trials": 30, "sampler": "TPESampler", **payload["optuna"]}
+        payload["server_args"] = dict(execution.get("server_args", {}))
+        payload["server_config_files"] = dict(execution.get("server_config_files", {}))
+        for framework in intent.frameworks:
+            if framework not in {"vllm", "sglang", "trtllm"}:
+                continue
+            defaults, files = expanded_server_args(framework, c.concurrency, c.workload.input_tokens)
+            supplied = payload["server_args"].get(framework, [])
+            # Optuna-specific overrides must not collide with profile dimensions.
+            tuned = {**payload["optuna"], **execution.get("optuna_by_framework", {}).get(framework, {})}.get("server_args", [])
+            merged = merge_server_args(defaults, [*supplied, *tuned])
+            payload["server_args"][framework] = merged[:-len(tuned)] if tuned else merged
+            if files and any("@LLM_OPTIMIZER_CONFIG@/" in arg for arg in payload["server_args"][framework]):
+                payload["server_config_files"][framework] = {
+                    **files, **payload["server_config_files"].get(framework, {})}
         overrides = self.execution.get("optuna_by_framework", {})
         if any(set(v) & {"objective", "objectives", "client_args"} for v in overrides.values()):
             raise ValueError("Framework overrides cannot change objectives or workload")
@@ -84,7 +104,10 @@ class OptimizationAdapter:
             if settings.get("pruner", "NopPruner") != "NopPruner":
                 if len(c.objectives) != 1 or c.constraints:
                     raise ValueError("Pruning requires an unconstrained scalar objective")
-        return self.controller.submit(payload, idempotency_key=intent.idempotency_key)
+        return payload
+
+    def submit(self, intent: NewStudyIntent) -> dict[str, Any]:
+        return self.controller.submit(self.build_request(intent), idempotency_key=intent.idempotency_key)
 
     def status(self, reference: str) -> dict[str, Any]:
         return self.controller.status(reference)

@@ -1,0 +1,22 @@
+{
+  "name": "infiro-design-prototypes",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4317 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4317 --strictPort",
+    "capture": "node scripts/capture.mjs"
+  },
+  "dependencies": {
+    "@fontsource/inter": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "vite": "8.3.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}

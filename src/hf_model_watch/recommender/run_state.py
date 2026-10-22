@@ -60,6 +60,10 @@ def questions_for(missing: list[str]) -> list[dict[str, Any]]:
             "choices": ["fast", "sweep"],
         },
     }
+    from hf_model_watch.optimization.intake import QUESTIONS
+    definitions.update({key: {"prompt": prompt, "type": "integer" if key in
+                              {"input_tokens", "output_tokens", "concurrency"} else "string"}
+                        for key, prompt in QUESTIONS.items()})
     return [{"field": field, **definitions[field]} for field in missing]
 
 

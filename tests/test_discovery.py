@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from tests.test_recommender import _spec
+from tests.test_recommender import _spec, OPTIMIZATION_ARGS
 from typer.testing import CliRunner
 
 from hf_model_watch.cli import app, format_fit_checks
@@ -237,11 +237,12 @@ def test_cli_selection_and_explicit_branch(tmp_path, monkeypatch):
         },
     )
     result = CliRunner().invoke(
-        app, [arg for arg in args if arg not in ("--model-id", "org/exact")], input="1\n"
+        app, [arg for arg in args if arg not in ("--model-id", "org/exact")] + OPTIMIZATION_ARGS, input="1\n"
     )
     assert result.exit_code == 0
     assert "Selected model: org/a" in result.output
-    assert "Optional optimization actions" in result.output
+    assert "Optimization preparation: needs_input" in result.output
+    assert "Missing required settings:" in result.output
     assert json.loads((tmp_path / "discovery.json").read_text())["selected_model_id"] == "org/a"
 
 
@@ -272,7 +273,7 @@ def test_discovery_json_stdout_excludes_scanner_trace(tmp_path, monkeypatch):
             "--output-dir",
             str(tmp_path),
             "--json",
-        ],
+        ] + OPTIMIZATION_ARGS,
     )
     assert result.exit_code == 0
     assert json.loads(result.stdout)["status"] == "insufficient_evidence"
@@ -562,3 +563,64 @@ def test_nemotron_schema_rejects_wrong_shape_and_incomplete_candidate_coverage(t
     with pytest.raises(ValueError, match="exactly once"):
         discovery._validate_with_nemotron(_spec(), [row], load_settings(), tmp_path)
     assert "nemotron" not in row
+
+
+def test_discovery_without_hardware_keeps_candidates_and_marks_fit_unknown(tmp_path, monkeypatch):
+    from hf_model_watch.recommender.core import DiscoveryRequestSpec
+    monkeypatch.delenv('NEBIUS_API_KEY', raising=False)
+    row = {'model_id': 'org/model-4B', 'revision': 'a'*40,
+           'estimated_params_billion': 4, 'estimated_download_size_gb': 8}
+    monkeypatch.setattr(discovery, 'score_candidate', lambda row, *_: {
+        'model_id': row['model_id'], 'score': .7, 'eligible': True})
+    monkeypatch.setattr(discovery, 'rank_candidates', lambda records, *_args, **_kwargs: [
+        {'model_id': r['model_id'], 'eligible': False,
+         'blocking_reasons': ['gpu_memory_unverified_or_insufficient', 'budget_unverified_or_exceeded'],
+         'estimated_bf16_memory_gb': 10, 'compatible_frameworks': ['vllm']}
+        for r in records])
+    spec = DiscoveryRequestSpec(request='Recommend a model size 4b, prefer speculative decoding')
+    result = discovery.discover_models(spec, load_settings(), tmp_path,
+        scan=lambda *_: [row], lookup=lambda **_: [], search=lambda *a, **k: [])
+    assert result['recommendations']
+    candidate = result['recommendations'][0]
+    assert candidate['task_fit']['gpu_fit'] == 'unknown'
+    assert any('GPU suitability is unknown' in text for text in candidate['limitations'])
+    assert not any('Fits the stated' in text for text in candidate['why_it_fits'])
+    assert 'within the $' not in candidate['reasoning']
+    limited = discovery.discover_models(
+        DiscoveryRequestSpec(request=spec.request, gpu_memory_gb=2), load_settings(), tmp_path / 'limited',
+        scan=lambda *_: [row], lookup=lambda **_: [], search=lambda *a, **k: [])
+    assert not limited['recommendations']
+    assert 'discovery_memory_estimate_exceeds_capacity' in limited['candidate_rejections']['org/model-4B']
+
+
+def test_unknown_discovery_hardware_does_not_weaken_explicit_model_contract():
+    import pytest
+    from pydantic import ValidationError
+    from hf_model_watch.recommender.core import DiscoveryRequestSpec, RequestSpec, rank_candidates
+    spec = DiscoveryRequestSpec(request='Recommend a 4B model')
+    assert spec.gpu_memory_gb is None
+    assert spec.budget_usd_per_hour is None
+    assert not discovery.discovery_inputs(spec.request, {})[1]
+    record = {'model_id': 'org/model', 'revision': 'a'*40, 'license': 'apache-2.0',
+              'estimated_params_billion': 4, 'has_weights': True}
+    ranked = rank_candidates([record], spec, {}, load_settings())
+    assert ranked[0]['available_memory_gb'] is None
+    assert ranked[0]['estimated_hourly_usd'] is None
+    with pytest.raises(ValidationError):
+        RequestSpec(request='Evaluate org/model', license='any', framework_mode='sweep')
+
+
+def test_cli_minimal_discovery_reaches_scanner_without_deployment_questions(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    discover = Mock(return_value={'status': 'recommended', 'recommendations': []})
+    monkeypatch.setattr(discovery, 'discover_models', discover)
+    response = CliRunner().invoke(app, ['recommend', 'Recommend a model size 4b, prefer speculative decoding',
+                                       '--json', '--state-root', str(tmp_path)])
+    assert response.exit_code == 0, response.output
+    data = json.loads(response.stdout)
+    assert data['status'] == 'recommended'
+    spec = discover.call_args.args[0]
+    assert spec.constraints['target_params_billion'] == 4
+    assert spec.speculative_preference == 'prefer'
+    assert spec.gpu_memory_gb is None and spec.gpu_hourly_cost_usd is None
+    assert 'needs_input' not in data or not data['needs_input']

@@ -1,0 +1,580 @@
+--- a/container/agent-runner/src/providers/opencode-config.ts
++++ b/container/agent-runner/src/providers/opencode-config.ts
+@@ -176,18 +176,108 @@
+   };
+ }
+ 
++export interface OpenCodeSessionModel {
++  providerID: string;
++  modelID: string;
++}
++
++/** The native server resumes the last USER model, which may differ from config.model. */
++export function resumedOpenCodeModel(
++  messages: ReadonlyArray<{
++    info: {
++      role: string;
++      summary?: boolean;
++      model?: OpenCodeSessionModel;
++      modelID?: string;
++      providerID?: string;
++    };
++  }>,
++): OpenCodeSessionModel | undefined {
++  const recent = [...messages].reverse();
++  const user = recent.find((message) => message.info.role === 'user' && message.info.model);
++  const assistant = recent.find(
++    (message) =>
++      message.info.role === 'assistant' && !message.info.summary && message.info.modelID && message.info.providerID,
++  );
++  const model =
++    user?.info.model ??
++    (assistant
++      ? {
++          providerID: assistant.info.providerID!,
++          modelID: assistant.info.modelID!,
++        }
++      : undefined);
++  return model?.providerID && model.modelID ? model : undefined;
++}
++
+ export function buildOpenCodeConfig(
+   options: ProviderOptions,
+   configuration?: ResolvedRuntimeConfiguration,
++  resumedModels: readonly OpenCodeSessionModel[] = [],
+ ): Record<string, unknown> {
+   const inference = (configuration?.inference ?? resolveOpenCodeInference(options, process.env)) as Record<
+     string,
+     unknown
+   >;
+-  return {
+-    ...inference,
+-    permission: configuration ? configuration.executionPolicy : resolveOpenCodeExecutionPolicy(),
+-    mcp: configuration ? configuration.mcpServers : mcpServersToOpenCodeConfig(options.mcpServers),
++  const mcp = (configuration ? configuration.mcpServers : mcpServersToOpenCodeConfig(options.mcpServers)) as Record<
++    string,
++    unknown
++  >;
++  const hfModelWatch = Object.hasOwn(mcp, 'hf-model-watch');
++  // This group is a conversational tool client, not a coding agent. Bound its
++  // context and recovery loops without changing other NanoClaw groups.
++  const boundedInference = hfModelWatch ? structuredClone(inference) : inference;
++  if (hfModelWatch) {
++    type Model = {
++      id?: string;
++      name?: string;
++      tool_call?: boolean;
++      limit?: { context?: number; input?: number; output?: number };
++    };
++    const providers = boundedInference.provider as Record<string, { models?: Record<string, Model> }> | undefined;
++    // Register the saved model without changing the default or the session's
++    // chosen model. Never borrow credentials or enable a different provider.
++    for (const model of resumedModels) {
++      const provider =
++        providers && Object.hasOwn(providers, model.providerID) ? providers[model.providerID] : undefined;
++      if (!provider) throw new Error('Saved session model provider is not configured; no prompt was sent');
++      provider.models ??= {};
++      provider.models[model.modelID] ??= { id: model.modelID, name: model.modelID, tool_call: true };
++    }
++    let context = 32768;
++    let output = 4096;
++    if (typeof boundedInference.model === 'string') {
++      const slash = boundedInference.model.indexOf('/');
++      const main =
++        providers?.[boundedInference.model.slice(0, slash)]?.models?.[boundedInference.model.slice(slash + 1)];
++      context = Math.min(main?.limit?.context ?? context, context);
++      output = Math.min(main?.limit?.output ?? output, output);
++    }
++    for (const provider of Object.values(providers ?? {})) {
++      for (const entry of Object.values(provider.models ?? {})) {
++        entry.limit = {
++          ...entry.limit,
++          context: Math.min(entry.limit?.context ?? context, context),
++          input: Math.min(entry.limit?.input ?? context - output, context - output),
++          output: Math.min(entry.limit?.output ?? output, output),
++        };
++      }
++    }
++  }
++  const permission = (configuration ? configuration.executionPolicy : resolveOpenCodeExecutionPolicy()) as Record<
++    string,
++    unknown
++  >;
++  return {
++    ...boundedInference,
++    permission: hfModelWatch ? { ...permission, task: 'deny', bash: 'deny', doom_loop: 'deny' } : permission,
++    mcp,
++    ...(hfModelWatch
++      ? {
++          compaction: { auto: true, prune: true, reserved: 4096 },
++          agent: { build: { steps: 4 }, general: { disable: true }, explore: { disable: true } },
++        }
++      : {}),
+     autoupdate: false,
+     snapshot: false,
+     // Core's human-question tool waits up to five minutes. This request budget
+--- a/container/agent-runner/src/providers/opencode.config.test.ts
++++ b/container/agent-runner/src/providers/opencode.config.test.ts
+@@ -1,6 +1,6 @@
+ import { describe, it, expect, afterEach } from 'bun:test';
+ 
+-import { buildOpenCodeConfig } from './opencode-config.js';
++import { buildOpenCodeConfig, resumedOpenCodeModel } from './opencode-config.js';
+ 
+ const ENV_KEYS = [
+   'OPENCODE_PROVIDER',
+@@ -362,3 +362,100 @@
+     });
+   });
+ });
++
++describe('HF Model Watch bounded chat policy', () => {
++  const mcpServers = { 'hf-model-watch': { command: 'python', args: ['-m', 'hf_model_watch.nanoclaw_mcp'] } };
++  it('caps context, enables pruning and prevents delegation/shell recovery', () => {
++    process.env.OPENCODE_PROVIDER = 'openrouter';
++    process.env.OPENCODE_MODEL = 'openrouter/openai/gpt-5.6-luna';
++    process.env.OPENCODE_MODEL_CONTEXT_LIMIT = '1000000';
++    const config = buildOpenCodeConfig({ mcpServers });
++    expect(config.provider).toMatchObject({
++      openrouter: {
++        models: {
++          'openai/gpt-5.6-luna': { limit: { context: 32768, output: 4096 } },
++        },
++      },
++    });
++    expect(config.permission).toMatchObject({ task: 'deny', bash: 'deny', doom_loop: 'deny' });
++    expect(config.compaction).toEqual({ auto: true, prune: true, reserved: 4096 });
++    expect(config.agent).toMatchObject({ build: { steps: 4 }, general: { disable: true } });
++  });
++  it('preserves smaller configured windows and leaves unrelated groups unchanged', () => {
++    process.env.OPENCODE_PROVIDER = 'openrouter';
++    process.env.OPENCODE_MODEL = 'openrouter/openai/gpt-5.6-luna';
++    process.env.OPENCODE_MODEL_CONTEXT_LIMIT = '16000';
++    process.env.OPENCODE_MODEL_OUTPUT_LIMIT = '2000';
++    expect(buildOpenCodeConfig({ mcpServers }).provider).toMatchObject({
++      openrouter: {
++        models: {
++          'openai/gpt-5.6-luna': { limit: { context: 16000, output: 2000 } },
++        },
++      },
++    });
++    const other = buildOpenCodeConfig({});
++    expect(other.compaction).toBeUndefined();
++    expect(other.agent).toBeUndefined();
++    expect(other.permission).toMatchObject({ task: 'allow', bash: 'allow' });
++  });
++});
++
++describe('HF resumed model context budget', () => {
++  const mcpServers = { 'hf-model-watch': { command: 'python' } };
++  it('caps a saved model absent from the configured defaults without switching models', () => {
++    process.env.OPENCODE_PROVIDER = 'openrouter';
++    process.env.OPENCODE_MODEL = 'openrouter/current';
++    const config = buildOpenCodeConfig({ mcpServers }, undefined, [{ providerID: 'openrouter', modelID: 'older' }]);
++    expect(config.model).toBe('openrouter/current');
++    expect(config.provider).toMatchObject({
++      openrouter: {
++        models: {
++          current: { limit: { context: 32768, output: 4096 } },
++          older: { id: 'older', limit: { context: 32768, output: 4096 } },
++        },
++      },
++    });
++  });
++  it('prefers the saved user model over a compaction assistant model', () => {
++    expect(
++      resumedOpenCodeModel([
++        { info: { role: 'user', model: { providerID: 'openrouter', modelID: 'older' } } },
++        { info: { role: 'assistant', providerID: 'openrouter', modelID: 'current', summary: true } },
++      ]),
++    ).toEqual({ providerID: 'openrouter', modelID: 'older' });
++  });
++  it('does not enable an unconfigured provider or change unrelated groups', () => {
++    process.env.OPENCODE_PROVIDER = 'openrouter';
++    process.env.OPENCODE_MODEL = 'openrouter/current';
++    const model = { providerID: 'different', modelID: 'older' };
++    expect(() => buildOpenCodeConfig({ mcpServers }, undefined, [model])).toThrow('not configured');
++    expect(buildOpenCodeConfig({}, undefined, [model]).compaction).toBeUndefined();
++  });
++});
++
++it('HF budget overrides inherited input limits as well as context limits', () => {
++  const config = buildOpenCodeConfig(
++    {},
++    {
++      executionPolicy: {},
++      mcpServers: { 'hf-model-watch': { enabled: false } },
++      inference: {
++        model: 'openrouter/legacy',
++        provider: {
++          openrouter: {
++            models: {
++              legacy: { id: 'legacy', limit: { context: 1000000, input: 922000, output: 128000 } },
++            },
++          },
++        },
++      },
++    },
++  );
++  expect(config.provider).toMatchObject({
++    openrouter: {
++      models: {
++        legacy: { limit: { context: 32768, input: 28672, output: 4096 } },
++      },
++    },
++  });
++});
+--- a/container/agent-runner/src/providers/opencode.ts
++++ b/container/agent-runner/src/providers/opencode.ts
+@@ -12,7 +12,12 @@
+ 
+ import { registerProvider } from './provider-registry.js';
+ import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+-import { buildOpenCodeConfig, buildOpenCodeServerEnv } from './opencode-config.js';
++import {
++  buildOpenCodeConfig,
++  buildOpenCodeServerEnv,
++  resumedOpenCodeModel,
++  type OpenCodeSessionModel,
++} from './opencode-config.js';
+ import { buildDeliverySentences } from '../compact-instructions.js';
+ import type { ResolvedRuntimeConfiguration } from '../provider-contracts/registry.js';
+ import { getTaskSeriesId } from '../db/session-routing.js';
+@@ -363,6 +368,7 @@
+   sharedRuntimeDeps = deps ?? defaultSharedRuntimeDeps;
+ }
+ 
++const resumedContextModels = new Map<string, OpenCodeSessionModel>();
+ let sharedRuntime: SharedRuntime | null = null;
+ let sharedConfigKey: string | null = null;
+ let sharedInit: Promise<SharedRuntime> | null = null;
+@@ -380,8 +386,9 @@
+   options: ProviderOptions,
+   cwd: string,
+   configuration?: ResolvedRuntimeConfiguration,
++  resumedModels: readonly OpenCodeSessionModel[] = [],
+ ): Promise<SharedRuntime> {
+-  const config = buildOpenCodeConfig(options, configuration);
++  const config = buildOpenCodeConfig(options, configuration, resumedModels);
+   const key = JSON.stringify({ config, cwd });
+   if (sharedRuntime && sharedConfigKey === key) return sharedRuntime;
+ 
+@@ -734,9 +741,36 @@
+       let sessionId = input.continuation;
+       let initialized = false;
+       try {
+-        const runtime = self.runtime
++        const knownModel = sessionId ? resumedContextModels.get(sessionId) : undefined;
++        let runtime = self.runtime
+           ? await self.runtime.getRuntime(self.options, input.cwd)
+-          : await ensureSharedRuntime(self.options, input.cwd, self.configuration);
++          : await ensureSharedRuntime(self.options, input.cwd, self.configuration, knownModel ? [knownModel] : []);
++        const config = buildOpenCodeConfig(self.options, self.configuration);
++        const budgeted = Object.hasOwn(config.mcp as object, 'hf-model-watch');
++        if (sessionId && budgeted && !self.runtime) {
++          // Metadata only: never put the fetched history into the model prompt.
++          // Resolve the native saved model BEFORE a resumed prompt can run with
++          // a catalog default that silently ignores our context budget.
++          const history = await boundedOpenCodeCall(
++            (signal) =>
++              runtime.client.session.messages({
++                path: { id: sessionId! },
++                query: { limit: 12 },
++                signal,
++              }),
++            abort.signal,
++          );
++          if (history.error) throw new Error(`OpenCode session lookup failed: ${JSON.stringify(history.error)}`);
++          const model = resumedOpenCodeModel(history.data ?? []);
++          if (!model && !knownModel && history.data?.length) {
++            throw new Error('Cannot determine saved session model for context budget; no prompt was sent');
++          }
++          if (model && (model.providerID !== knownModel?.providerID || model.modelID !== knownModel?.modelID)) {
++            resumedContextModels.set(sessionId, model);
++            runtime = await ensureSharedRuntime(self.options, input.cwd, self.configuration, [model]);
++            log('Applied context budget to saved session model before prompt');
++          }
++        }
+         const pump = eventPump(runtime);
+         while (!abort.signal.aborted) {
+           while (!pending.length && !ended && !abort.signal.aborted) {
+--- a/container/agent-runner/src/providers/opencode-turn.ts
++++ b/container/agent-runner/src/providers/opencode-turn.ts
+@@ -11,6 +11,9 @@
+     role: string;
+     parentID?: string;
+     summary?: boolean;
++    model?: { providerID: string; modelID: string };
++    modelID?: string;
++    providerID?: string;
+     error?: unknown;
+     time: { created: number; completed?: number };
+   };
+--- a/container/agent-runner/src/providers/opencode.shared-runtime.test.ts
++++ b/container/agent-runner/src/providers/opencode.shared-runtime.test.ts
+@@ -783,3 +783,71 @@
+     expect(first.proc.kill).toHaveBeenCalled();
+   });
+ });
++
++describe('HF resumed session budget preflight', () => {
++  const config = {
++    executionPolicy: { question: 'deny' },
++    inference: {
++      model: 'openrouter/current',
++      provider: {
++        openrouter: {
++          options: { apiKey: 'fixture' },
++          models: { current: { id: 'current' } },
++        },
++      },
++    },
++    mcpServers: { 'hf-model-watch': { type: 'local', command: ['fixture'], enabled: true } },
++  };
++  it('loads saved model metadata and caps it before the first resumed prompt', async () => {
++    const first = fakeServer(() => {
++      throw new Error('Unbounded server must never prompt');
++    });
++    first.client.session.messages = async () => ({
++      data: [
++        {
++          info: {
++            id: 'msg_saved',
++            role: 'user',
++            time: { created: 1 },
++            model: { providerID: 'openrouter', modelID: 'older' },
++          },
++          parts: [],
++        },
++      ],
++    });
++    const second = fakeServer((sid, index) => second.reply(sid, 'bounded-' + index));
++    const { spawnServer } = installDeps([first, second]);
++    const provider = new OpenCodeProvider({}, undefined, config);
++    provider.registerMemorySessionHook(MEMORY_HOOK);
++    expect(resultText(await runOneTurn(provider, 'ses_budgeted_resume'))).toEqual(['bounded-1']);
++    expect(spawnServer).toHaveBeenCalledTimes(2);
++    expect(spawnServer.mock.calls[1][0]).toMatchObject({
++      provider: {
++        openrouter: {
++          models: {
++            older: { limit: { context: 32768, output: 4096 } },
++          },
++        },
++      },
++    });
++    expect(resultText(await runOneTurn(provider, 'ses_budgeted_resume'))).toEqual(['bounded-2']);
++    expect(spawnServer).toHaveBeenCalledTimes(2);
++  });
++  it('fails before prompting if saved model metadata cannot be determined', async () => {
++    const first = fakeServer(() => {
++      throw new Error('Must not send uncapped prompt');
++    });
++    first.client.session.messages = async () => ({
++      data: [
++        {
++          info: { id: 'msg_unknown', role: 'user', time: { created: 1 } },
++          parts: [],
++        },
++      ],
++    });
++    installDeps([first]);
++    const provider = new OpenCodeProvider({}, undefined, config);
++    provider.registerMemorySessionHook(MEMORY_HOOK);
++    await expect(runOneTurn(provider, 'ses_unknown_budget')).rejects.toThrow('no prompt was sent');
++  });
++});
+--- /dev/null
++++ b/container/agent-runner/src/providers/opencode.resumed-budget.native.test.ts
+@@ -0,0 +1,191 @@
++import { it, expect } from 'bun:test';
++import { spawn } from 'node:child_process';
++import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import path from 'node:path';
++import { createOpencodeClient } from '@opencode-ai/sdk';
++import { createOpencodeClient as createQuestionClient } from '@opencode-ai/sdk/v2';
++import { OpenCodeProvider, setSharedRuntimeDepsForTesting, destroySharedRuntime } from './opencode.js';
++import { buildOpenCodeServerEnv } from './opencode-config.js';
++import { initTestSessionDb, closeSessionDb } from '../mailbox/sqlite/connection.js';
++import { registerAgentMailbox, resetAgentMailboxForTesting } from '../mailbox/index.js';
++import { SqliteAgentMailbox } from '../mailbox/sqlite/index.js';
++
++// Uses only a loopback fixture backend: no API credentials or billed model calls.
++it.skipIf(!process.env.OPENCODE_TEST_BINARY)(
++  'compacts a resumed legacy model before its next normal model request',
++  async () => {
++    const root = mkdtempSync(path.join(tmpdir(), 'resumed-budget-'));
++    mkdirSync(path.join(root, 'workspace'));
++    const savedData = process.env.XDG_DATA_HOME;
++    process.env.XDG_DATA_HOME = path.join(root, 'data');
++    const factory = resetAgentMailboxForTesting();
++    initTestSessionDb();
++    registerAgentMailbox(() => new SqliteAgentMailbox());
++    const requests: Array<{ model: string; title: boolean; compact: boolean; body: string }> = [];
++    let normalCalls = 0;
++    const backend = Bun.serve({
++      hostname: '127.0.0.1',
++      port: 0,
++      async fetch(request) {
++        const body = (await request.json()) as any;
++        const title = body.messages.some(
++          (m: any) => m.role === 'system' && String(m.content).startsWith('You are a title generator'),
++        );
++        const compact = !title && !body.tools?.length;
++        requests.push({ model: body.model, title, compact, body: JSON.stringify(body.messages) });
++        const text = title
++          ? 'Fixture title'
++          : compact
++            ? 'COMPACTED_HISTORY_MARKER: keep saved workload and run IDs.'
++            : 'Fixture reply';
++        const usage = !title && !compact && normalCalls++ === 0 ? 220000 : 100;
++        const chunk = (delta: unknown, reason: string | null) => ({
++          id: 'fixture',
++          object: 'chat.completion.chunk',
++          created: 1,
++          model: body.model,
++          choices: [{ index: 0, delta, finish_reason: reason }],
++        });
++        return new Response(
++          [
++            chunk({ role: 'assistant', content: text }, null),
++            chunk({}, 'stop'),
++            {
++              ...chunk({}, null),
++              choices: [],
++              usage: {
++                prompt_tokens: usage,
++                prompt_tokens_details: { cached_tokens: Math.max(0, usage - 10) },
++                completion_tokens: 10,
++                total_tokens: usage + 10,
++              },
++            },
++          ]
++            .map((x) => `data: ${JSON.stringify(x)}\n\n`)
++            .join('') + 'data: [DONE]\n\n',
++          { headers: { 'Content-Type': 'text/event-stream' } },
++        );
++      },
++    });
++    const spawnedConfigs: any[] = [];
++    let lastUrl = '';
++    setSharedRuntimeDepsForTesting({
++      spawnServer: async (config) => {
++        spawnedConfigs.push(config);
++        const reserve = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('') });
++        const port = reserve.port;
++        reserve.stop(true);
++        const proc = spawn(process.env.OPENCODE_TEST_BINARY!, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {
++          cwd: path.join(root, 'workspace'),
++          detached: true,
++          env: buildOpenCodeServerEnv(
++            { ...config, instructions: [] },
++            {
++              PATH: process.env.PATH,
++              HOME: root,
++              XDG_DATA_HOME: process.env.XDG_DATA_HOME,
++              XDG_CONFIG_HOME: path.join(root, 'config'),
++              XDG_CACHE_HOME: path.join(root, 'cache'),
++              XDG_STATE_HOME: path.join(root, 'state'),
++              OPENCODE_DISABLE_MODELS_FETCH: 'true',
++            },
++          ),
++          stdio: ['ignore', 'pipe', 'pipe'],
++        });
++        await new Promise<void>((resolve, reject) => {
++          let log = '';
++          const timer = setTimeout(() => {
++            proc.kill('SIGKILL');
++            reject(new Error('Native startup timed out'));
++          }, 20000);
++          proc.stdout.on('data', (data) => {
++            log += data;
++            if (log.includes('opencode server listening')) {
++              clearTimeout(timer);
++              resolve();
++            }
++          });
++          proc.stderr.on('data', () => {});
++          proc.once('exit', (code) => {
++            clearTimeout(timer);
++            reject(new Error('Native exit ' + code));
++          });
++        });
++        lastUrl = `http://127.0.0.1:${port}`;
++        return { url: lastUrl, proc };
++      },
++      createClient: (url, cwd) => createOpencodeClient({ baseUrl: url, directory: cwd }) as any,
++      createQuestionClient: (url) => createQuestionClient({ baseUrl: url }) as any,
++    });
++    const config = (model: string, hf: boolean) => ({
++      executionPolicy: { '*': 'allow', question: 'deny' },
++      mcpServers: hf ? { 'hf-model-watch': { type: 'local', command: ['/bin/true'], enabled: false } } : {},
++      inference: {
++        model: 'openai/' + model,
++        small_model: 'openai/' + model,
++        enabled_providers: ['openai'],
++        provider: {
++          openai: {
++            npm: '@ai-sdk/openai-compatible',
++            options: { baseURL: `http://127.0.0.1:${backend.port}/v1`, apiKey: 'fixture' },
++            models: {
++              [model]: {
++                id: model,
++                name: model,
++                tool_call: true,
++                limit: { context: 1000000, input: 922000, output: 4096 },
++              },
++            },
++          },
++        },
++      },
++    });
++    async function turn(provider: OpenCodeProvider, prompt: string, continuation?: string) {
++      provider.registerMemorySessionHook({ command: 'true', legacyCommands: [], sources: ['startup', 'compact'] });
++      const query = provider.query({ prompt, continuation, cwd: path.join(root, 'workspace') });
++      query.end();
++      let id = continuation;
++      let text: string | null = null;
++      for await (const event of query.events) {
++        if (event.type === 'init') id = event.continuation;
++        if (event.type === 'result') text = event.text;
++      }
++      return { id, text };
++    }
++    try {
++      const seed = await turn(new OpenCodeProvider({}, undefined, config('legacy', false)), 'RAW_HISTORY_MARKER');
++      expect(seed.id).toBeTruthy();
++      const resumed = await turn(
++        new OpenCodeProvider({}, undefined, config('current', true)),
++        'Report status only.',
++        seed.id,
++      );
++      expect(resumed.id).toBe(seed.id);
++      expect(resumed.text).toContain('Fixture reply');
++      expect(spawnedConfigs.at(-1).provider.openai.models.legacy.limit.context).toBe(32768);
++      expect(spawnedConfigs.at(-1).provider.openai.models.legacy.limit.input).toBe(28672);
++      const catalog = (await (
++        await fetch(lastUrl + '/provider?directory=' + encodeURIComponent(path.join(root, 'workspace')))
++      ).json()) as any;
++      expect(catalog.all.find((p: any) => p.id === 'openai').models.legacy.limit.input).toBe(28672);
++      expect(requests.some((r) => r.compact)).toBe(true);
++      const last = requests.filter((r) => !r.title && !r.compact).at(-1)!;
++      expect(last.model).toBe('legacy');
++      expect(last.body).toContain('COMPACTED_HISTORY_MARKER');
++      expect(last.body).not.toContain('RAW_HISTORY_MARKER');
++      console.log('Native regression: saved model unchanged; compaction precedes resumed normal request.');
++    } finally {
++      destroySharedRuntime();
++      setSharedRuntimeDepsForTesting(undefined);
++      backend.stop(true);
++      resetAgentMailboxForTesting();
++      closeSessionDb();
++      if (factory) registerAgentMailbox(factory);
++      if (savedData === undefined) delete process.env.XDG_DATA_HOME;
++      else process.env.XDG_DATA_HOME = savedData;
++      rmSync(root, { recursive: true, force: true });
++    }
++  },
++  60000,
++);

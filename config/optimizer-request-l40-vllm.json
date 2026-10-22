@@ -22,5 +22,6 @@
   },
   "timeout_minutes": 120,
   "preemptible": true,
+  "follows_spot_price": true,
   "dry_run": false
 }

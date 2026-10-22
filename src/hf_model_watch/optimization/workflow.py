@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import sqlite3
 from pathlib import Path
@@ -39,17 +40,47 @@ class OptimizationWorkflow:
             raise ValueError("Optimization revision differs from selected revision")
 
     def start(self, run_id: str, intent: NewStudyIntent) -> dict:
+        # Serialize submissions across recommendation runs, independently of reconciliation.
+        database = getattr(getattr(self._adapter(), "controller", None), "database", None)
+        lock_path = (Path(str(Path(database).resolve()) + ".submission.lock")
+                     if isinstance(database, (str, Path)) else self.state_root / ".optimization-submit.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._start_locked(run_id, intent)
+
+    def _start_locked(self, run_id: str, intent: NewStudyIntent) -> dict:
         with locked_run(self.state_root, run_id) as (directory, run):
             self._check_selection(run, intent.context)
+            adapter = self._adapter()
             existing = run.get("optimization_reference")
             if existing:
                 ref = OptimizationReference.model_validate(existing)
-                if ref.intent != intent:
-                    raise ValueError(
-                        "Recommendation already references a different optimization intent"
-                    )
-                return self._adapter().status(ref.study_reference)
-            response = self._adapter().submit(intent)
+                current = adapter.status(ref.study_reference)
+                terminal = current.get("state") in {"cancelled", "completed", "failed", "dry_run"}
+                if not terminal:
+                    if ref.intent != intent:
+                        raise ValueError("Recommendation already references a different optimization intent; study is still active")
+                    return {**current, "submission_created": False}
+                if ref.intent.idempotency_key == intent.idempotency_key:
+                    return {**current, "submission_created": False,
+                            "message": "Study is terminal. Prepare a new request and approve it before retrying."}
+            database = getattr(getattr(adapter, 'controller', None), 'database', None)
+            health = None
+            if (isinstance(database, (str, Path))
+                    and Path(str(Path(database).resolve()) + '.controller-managed.json').is_file()):
+                from llm_optimizer.remote.service import ensure_running
+                health = ensure_running(database)
+            if isinstance(database, (str, Path)):
+                with sqlite3.connect(f"file:{Path(database).resolve()}?mode=ro", uri=True) as db:
+                    active = db.execute("SELECT run_id FROM jobs WHERE state NOT IN "
+                                        "('completed','failed','cancelled','dry_run') LIMIT 1").fetchone()
+                if active:
+                    raise ValueError(f"Optimizer study {active[0]} is still active; no new study submitted")
+            response = {**adapter.submit(intent), "submission_created": True}
+            if health and health.get('managed'):
+                response['controller'] = {k: health.get(k) for k in
+                                          ('managed', 'healthy', 'concurrency')}
             ref = OptimizationReference(
                 study_reference=response["run_id"], mode="new", intent=intent
             )
@@ -57,7 +88,7 @@ class OptimizationWorkflow:
             save_run(directory, run)
             return response
 
-    def status(self, run_id: str) -> dict:
+    def status(self, run_id: str, *, include_results: bool = True) -> dict:
         _, run = load_run(self.state_root, run_id)
         raw = run.get("optimization_reference")
         if not raw:
@@ -71,6 +102,15 @@ class OptimizationWorkflow:
             }
         adapter = self._adapter()
         status = adapter.status(ref.study_reference)
+        if not include_results:
+            return {
+                'run_id': run_id,
+                'study_reference': ref.study_reference,
+                'state': status.get('state'),
+                'jobs': [{key: job.get(key) for key in
+                          ('framework', 'state', 'nebius_id', 'progress', 'error')}
+                         for job in status.get('jobs', [])],
+            }
         summary = adapter.results(ref.study_reference, ref.intent.context)
         return {
             **status,
@@ -167,12 +207,20 @@ def connection_status() -> dict:
         execution = json.loads(os.environ.get("HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON", "{}"))
         if not isinstance(execution, dict):
             raise ValueError("Invalid execution defaults")
+        managed = Path(str(path) + '.controller-managed.json').is_file()
+        health = {}
+        if managed:
+            from llm_optimizer.remote.service import controller_health
+            health = controller_health(path)
         return {**result, "connected": True, "status": "connected",
                 "execution_mode": "dry_run" if execution.get("dry_run", True) else "live",
                 "frameworks": sorted(execution.get("images", {})),
                 "timeout_minutes": execution.get("timeout_minutes"),
                 "trials": execution.get("optuna", {}).get("trials"),
-                "controller_reconciliation": "external; not started by this probe",
+                "controller_managed": managed,
+                "controller_healthy": health.get('healthy', False),
+                "controller_reconciliation": ("auto-started before approved submission; not started by this probe"
+                                              if managed else "external; not started by this probe"),
                 "limitation": "Connection verified; selected context, prices, study budget and approval are still required."}
     except (ImportError, OSError, ValueError, sqlite3.Error, TypeError) as exc:
         return {**result, "status": "not_connected", "reason": type(exc).__name__}

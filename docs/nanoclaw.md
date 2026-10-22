@@ -72,8 +72,18 @@ ncl groups restart --id <group-id> --rebuild
 Use NanoClaw's configured local CLI chat surface to describe a workload. The agent should call
 `recommend_models`, ask for any returned clarifications, present the supplied shortlist, require
 explicit selection by model name or unambiguous shortlist number, persist it with `select_model`,
-verify the saved run with `get_run_status`, and offer optional optimization and benchmarking.
-The returned `optimization_handoff` reports saved inputs and remaining integration gaps.
+verify the saved run with `get_run_status`, and inspect `optimization_preparation`.
+Selection automatically prepares optimization. Ask only for `needs_input` fields via
+`prepare_optimization`, then summarize the saved configuration and ask for study approval.
+`update_workload` can remember `gpu_type`, input/output tokens, concurrency, prompt count,
+seed and frameworks alongside GPU costs. Run-specific preparation answers survive reconnects.
+Python downloads the selected revision's card, researches heads with Tavily, asks Nemotron to
+inspect sourced claims, and enables a head only when an official target launch agrees with
+Nemotron's verified target/runtime pair. Concrete serving arguments preserve documented options.
+Files live under `<state-root>/<run-id>/optimization-prepared/`: `intent.json`, `request.json`,
+`research.json` and `selected-model-card.md`. The installed runtime needs llm-optimizer's remote
+contracts to validate requests. Research/configuration failures preserve selection and block
+submission; retry preparation after correcting them.
 An absent optimizer must be reported as not connected. GPU work always requires explicit approval;
 selection does not authorize a study.
 
@@ -99,3 +109,78 @@ The optional controller connection can be supplied through the operator-owned
 `runtime/config/optimizer.json`; see [optimization.md](optimization.md). A verified SQLite
 connection is not a verified worker image, GPU configuration, or live benchmark. Start with
 dry-run defaults and do not start the external reconciliation loop as a connection test.
+
+After selecting a model, inspect `optimization_preparation`: present saved paths and
+summary when `prepared`; ask only for `needs_input` fields otherwise. Supply missing
+infrastructure under `prepare_optimization.execution`. Explain `insufficient_evidence`
+or `preparation_failed` instead of claiming the JSON is ready. Preparation preserves
+the pinned card and cited research in the run directory and never submits work.
+
+Discovery accepts model requirements alone, such as a 4B size and speculative-decoding
+preference. GPU memory, price, budget, license and benchmark workload are optional.
+Missing deployment information is reported as unknown rather than blocking candidates.
+After selection, answer `optimization_preparation.needs_input` with `prepare_optimization`;
+these are deployment questions, not recommendation clarification. Supplied hardware and
+budget limits remain enforced. Infrastructure overrides are `optimizer_bucket`,
+`optimizer_preset`, and `optimizer_images` (a JSON object encoded as a string).
+
+
+vLLM, SGLang and TRT-LLM now have default optimizer worker images using the
+`expanded-v1` tag. Known H100/H200/L40S platform and GPU count combinations
+also have default presets (see optimization.md). Ask for image/preset overrides only
+when needed; configured overrides take precedence over built-in defaults.
+
+Optimization preparation now uses llm-optimizer's full expanded framework search profile.
+Read `search_profile`, `search_regime`, `server_search_dimensions`, and `worker_requirements`
+in the preparation summary. Concurrency 32 uses the batched search domains while the
+client workload stays at 32. Updated worker images are required for config materialization
+and compressed payloads; do not describe image capabilities as verified from their names.
+
+Deployment and previous-build backup for the installed runtime update:
+[nanoclaw-deployment-20261018.md](nanoclaw-deployment-20261018.md).
+
+Optimization preparation accepts typed `dry_run` and `trials` controls. A request such as
+"Prepare live optimization with two trials per framework" maps to
+`prepare_optimization(run_id=..., dry_run=false, trials=2)`. Preparation preserves other
+saved settings and requires separate approval before submission.
+
+### Status and conversation cost
+
+`get_optimization_status` accepts recommendation run IDs and linked optimizer study IDs.
+By default it returns local controller state, provider IDs, errors and progress without S3
+artifact reads. Use `include_results: true` for an explicit benchmark-results request.
+Unexpected tool failures return an error without closing the MCP connection.
+
+The installed OpenCode provider detects the `hf-model-watch` MCP server and applies a
+32,768-token context window (or a smaller configured window), at most 4,096 output tokens,
+automatic compaction with tool-output pruning, and four agent steps per turn. Shell recovery
+and subagent delegation are disabled for this group. Other groups retain their prior policy.
+The first turn after deployment can compact the existing large history; this is not a guarantee
+of a 32K bound on that initial summarization call or a fixed chat response time.
+Workload preferences, recommendation runs, and optimizer studies remain on disk.
+
+The local NanoClaw source change and focused tests are preserved in
+[the provider patch](patches/nanoclaw-hf-chat-cost.patch) for reproducibility. It applies to
+this installed provider version; review it before applying to a newer NanoClaw checkout.
+Deployment and validation details are in [the status/cost update](nanoclaw-status-cost-20261019.md).
+
+### Automatic controller startup
+
+The installed optimizer runs as the `hf-model-watch-optimizer.service` user service, with
+three concurrent framework slots and the existing project `.env`. It starts with the user
+service manager and restarts after failure. A companion `.path` service also starts it on
+demand when an approved NanoClaw submission requests startup through the shared controller
+directory. NanoClaw waits for a fresh heartbeat and database lease before queueing the study.
+If it cannot establish readiness within 20 seconds, submission fails without creating a study.
+Preparation and status checks do not start it. GPU launch still requires study approval.
+
+Only one `serve` or `tick` may own the database: the controller now enforces a file lock
+for the full reconciliation lifetime. Do not run a manual tick alongside the service.
+The controller is a local CPU process; existing GPU worker images need no changes.
+See [managed controller operations](managed-optimizer-controller.md) for status, logs and
+installation/rollback details.
+
+The HF context policy explicitly sets all three model limits: context 32768, input 28672,
+and output 4096 (or smaller configured values). Setting only context is insufficient for
+catalog models with a larger inherited input limit. Resumed sessions receive the same
+limits for their saved model without changing the model selection.

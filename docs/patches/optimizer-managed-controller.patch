@@ -1,0 +1,394 @@
+--- a/src/llm_optimizer/remote/controller.py
++++ b/src/llm_optimizer/remote/controller.py
+@@ -7,13 +7,16 @@
+ import os
+ import re
+ import sqlite3
++import threading
+ import uuid
++from contextlib import contextmanager
+ from datetime import datetime, timezone
+ from pathlib import Path
+ from typing import Any
+ 
+ from .adapters import NebiusAdapter, NebiusCommandError, S3Artifacts
+ from .contracts import OptimizationRequest
++from .service import controller_lease
+ 
+ TERMINAL = {"completed", "failed", "cancelled", "dry_run"}
+ logger = logging.getLogger(__name__)
+@@ -39,6 +42,8 @@
+         self.nebius = nebius or NebiusAdapter()
+         self.s3_factory = s3_factory
+         self.concurrency = concurrency
++        self._thread_lock = threading.RLock()
++        self._owns_lease = False
+         with self._db() as db:
+             db.executescript("""
+                 CREATE TABLE IF NOT EXISTS runs (
+@@ -91,8 +96,13 @@
+         if not line or any(
+             marker in line.lower()
+             for marker in (
+-                "aws_", "hf_token", "wandb_api_key", "--env", "password",
+-                "secret", "://",
++                "aws_",
++                "hf_token",
++                "wandb_api_key",
++                "--env",
++                "password",
++                "secret",
++                "://",
+             )
+         ):
+             return None
+@@ -232,8 +242,25 @@
+             "jobs": jobs,
+         }
+ 
++    @contextmanager
++    def exclusive(self):
++        with self._thread_lock:
++            if self._owns_lease:
++                yield
++            else:
++                with controller_lease(self.database):
++                    self._owns_lease = True
++                    try:
++                        yield
++                    finally:
++                        self._owns_lease = False
++
+     def tick(self) -> None:
+-        """Submit and poll jobs. Only one controller may tick a DB."""
++        """Submit and poll jobs under the same lease used by serve."""
++        with self.exclusive():
++            self._tick()
++
++    def _tick(self) -> None:
+         with self._db() as db:
+             uncertain = db.execute(
+                 "SELECT run_id, framework, state FROM jobs WHERE state IN "
+--- a/src/llm_optimizer/remote/__main__.py
++++ b/src/llm_optimizer/remote/__main__.py
+@@ -7,11 +7,11 @@
+ import logging
+ import os
+ import sys
+-import time
+ from pathlib import Path
+ 
+ from .adapters import NebiusAdapter
+ from .controller import Controller
++from .service import run_forever
+ 
+ 
+ def main() -> None:
+@@ -54,9 +54,7 @@
+         result = {"status": "ok"}
+     else:
+         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+-        while True:
+-            controller.tick()
+-            time.sleep(args.interval)
++        run_forever(controller, args.interval)
+     json.dump(result, sys.stdout, indent=2)
+     sys.stdout.write("\n")
+ 
+--- /dev/null
++++ b/src/llm_optimizer/remote/service.py
+@@ -0,0 +1,172 @@
++"""Single-writer controller lease and optional host-managed startup handshake."""
++
++from __future__ import annotations
++
++import fcntl
++import json
++import logging
++import os
++import tempfile
++import threading
++import time
++from contextlib import contextmanager
++from pathlib import Path
++
++logger = logging.getLogger(__name__)
++
++
++def sidecar(database, suffix):
++    return Path(str(Path(database).resolve()) + suffix)
++
++
++@contextmanager
++def controller_lease(database):
++    """The inode is shared even when host/container mount paths differ."""
++    with sidecar(database, ".controller.lock").open("a") as lock:
++        try:
++            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        except BlockingIOError:
++            raise RuntimeError(
++                "Another controller owns this database; do not run tick alongside serve"
++            ) from None
++        try:
++            yield
++        finally:
++            fcntl.flock(lock, fcntl.LOCK_UN)
++
++
++def _locked(database):
++    try:
++        with sidecar(database, ".controller.lock").open("r") as lock:
++            try:
++                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
++            except BlockingIOError:
++                return True
++            fcntl.flock(lock, fcntl.LOCK_UN)
++            return False
++    except FileNotFoundError:
++        return False
++
++
++def _read(path):
++    try:
++        value = json.loads(path.read_text())
++        return value if isinstance(value, dict) else {}
++    except (FileNotFoundError, ValueError):
++        return {}
++
++
++def controller_health(database, max_age=15):
++    health = _read(sidecar(database, ".controller-health.json"))
++    age = time.time() - health.get("updated_at", 0)
++    ready = (
++        health.get("schema_version") == 1
++        and health.get("state") == "ready"
++        and 0 <= age <= max_age
++        and _locked(database)
++    )
++    return {**health, "healthy": ready}
++
++
++def ensure_running(database):
++    """Request a systemd .path activation; never spawn from the agent container."""
++    registration_path = sidecar(database, ".controller-managed.json")
++    registration = _read(registration_path)
++    if registration_path.exists() and (
++        registration.get("schema_version", 1) != 1
++        or not isinstance(registration.get("managed"), bool)
++    ):
++        raise ValueError(
++            "Invalid managed controller registration; nothing was submitted"
++        )
++    if not registration.get("managed"):
++        return {"managed": False, "healthy": False}
++    timeout = float(registration.get("startup_timeout_seconds", 20))
++    if not 0 < timeout <= 60:
++        raise ValueError("Controller startup timeout must be between 0 and 60 seconds")
++
++    def healthy():
++        health = controller_health(database)
++        return (
++            health
++            if health["healthy"]
++            and health.get("concurrency") == registration.get("concurrency", 3)
++            else None
++        )
++
++    health = healthy()
++    if health:
++        return {**health, "managed": True}
++    sidecar(database, ".controller-start").touch(mode=0o600, exist_ok=True)
++    deadline = time.monotonic() + timeout
++    while time.monotonic() < deadline:
++        health = healthy()
++        if health:
++            return {**health, "managed": True}
++        time.sleep(0.1)
++    raise RuntimeError(
++        "Managed optimizer controller did not become healthy; nothing was submitted. "
++        "Check the hf-model-watch-optimizer user service logs"
++    )
++
++
++def run_forever(controller, interval=15, *, stop=None):
++    """Hold the lease for the entire serve lifetime, including provider waits."""
++    if interval <= 0:
++        raise ValueError("Controller interval must be positive")
++    stop = stop or threading.Event()
++    health_path = sidecar(controller.database, ".controller-health.json")
++    state = {
++        "schema_version": 1,
++        "pid": os.getpid(),
++        "state": "ready",
++        "concurrency": controller.concurrency,
++        "last_tick_completed_at": None,
++    }
++    state_lock = threading.Lock()
++
++    def publish():
++        with state_lock:
++            payload = {**state, "updated_at": time.time()}
++        fd, name = tempfile.mkstemp(
++            prefix=".controller-health-", dir=health_path.parent
++        )
++        try:
++            with os.fdopen(fd, "w") as stream:
++                json.dump(payload, stream)
++            os.replace(name, health_path)
++        finally:
++            Path(name).unlink(missing_ok=True)
++
++    def heartbeat():
++        while not stop.wait(2):
++            publish()
++
++    with controller.exclusive():
++        publish()
++        sidecar(controller.database, ".controller-start").unlink(missing_ok=True)
++        thread = threading.Thread(
++            target=heartbeat, name="optimizer-heartbeat", daemon=True
++        )
++        thread.start()
++        try:
++            while not stop.is_set():
++                try:
++                    controller.tick()
++                except Exception as exc:
++                    # Provider exceptions may contain credentials. Only log type.
++                    logger.warning("Controller tick failed (%s)", type(exc).__name__)
++                    with state_lock:
++                        state["state"] = "degraded"
++                        state["error_type"] = type(exc).__name__
++                else:
++                    with state_lock:
++                        state["state"] = "ready"
++                        state.pop("error_type", None)
++                        state["last_tick_completed_at"] = time.time()
++                publish()
++                stop.wait(interval)
++        finally:
++            stop.set()
++            thread.join(timeout=3)
++            health_path.unlink(missing_ok=True)
+--- /dev/null
++++ b/tests/test_controller_service.py
+@@ -0,0 +1,119 @@
++import json
++import threading
++import time
++
++import pytest
++from llm_optimizer.remote.controller import Controller
++from llm_optimizer.remote.service import (
++    controller_health,
++    ensure_running,
++    run_forever,
++    sidecar,
++)
++
++
++def test_serve_lease_blocks_other_ticks_even_during_provider_wait(tmp_path):
++    path = tmp_path / "controller.sqlite"
++    owner = Controller(path)
++    other = Controller(path)
++    with owner.exclusive():
++        owner.tick()  # nested lease on the owning controller is allowed
++        with pytest.raises(RuntimeError, match="Another controller"):
++            other.tick()
++    other.tick()
++
++
++def test_process_lock_uses_shared_inode_through_alias_paths(tmp_path):
++    path = tmp_path / "controller.sqlite"
++    owner = Controller(path)
++    alias = tmp_path / "alias"
++    alias.symlink_to(tmp_path, target_is_directory=True)
++    with owner.exclusive(), pytest.raises(RuntimeError, match="Another controller"):
++        Controller(alias / "controller.sqlite").tick()
++
++
++def test_managed_startup_waits_for_background_service_and_stays_healthy(tmp_path):
++    path = tmp_path / "controller.sqlite"
++    controller = Controller(path, concurrency=3)
++    sidecar(path, ".controller-managed.json").write_text(
++        json.dumps({"managed": True, "concurrency": 3, "startup_timeout_seconds": 2})
++    )
++    stop = threading.Event()
++
++    def host_service():
++        deadline = time.monotonic() + 2
++        while (
++            not sidecar(path, ".controller-start").exists()
++            and time.monotonic() < deadline
++        ):
++            time.sleep(0.01)
++        run_forever(controller, 0.05, stop=stop)
++
++    thread = threading.Thread(target=host_service)
++    thread.start()
++    try:
++        first = ensure_running(path)
++        assert first["managed"] and first["healthy"]
++        assert ensure_running(path)["pid"] == first["pid"]
++        assert controller_health(path)["healthy"]
++        with pytest.raises(RuntimeError, match="Another controller"):
++            Controller(path).tick()
++    finally:
++        stop.set()
++        thread.join(timeout=3)
++    assert not controller_health(path)["healthy"]
++    assert not sidecar(path, ".controller-health.json").exists()
++
++
++def test_stale_health_without_lease_is_not_healthy_and_timeout_is_explicit(tmp_path):
++    path = tmp_path / "controller.sqlite"
++    Controller(path)
++    sidecar(path, ".controller-managed.json").write_text(
++        json.dumps({"managed": True, "startup_timeout_seconds": 0.05})
++    )
++    sidecar(path, ".controller-health.json").write_text(
++        json.dumps(
++            {
++                "schema_version": 1,
++                "state": "ready",
++                "updated_at": time.time(),
++                "concurrency": 3,
++            }
++        )
++    )
++    assert not controller_health(path)["healthy"]
++    with pytest.raises(RuntimeError, match="nothing was submitted"):
++        ensure_running(path)
++
++
++def test_unmanaged_clients_preserve_existing_behavior(tmp_path):
++    assert ensure_running(tmp_path / "controller.sqlite") == {
++        "managed": False,
++        "healthy": False,
++    }
++
++
++def test_malformed_registration_does_not_silently_allow_unmanaged_submission(tmp_path):
++    path = tmp_path / "controller.sqlite"
++    sidecar(path, ".controller-managed.json").write_text("{invalid")
++    with pytest.raises(ValueError, match="nothing was submitted"):
++        ensure_running(path)
++
++
++def test_second_process_is_rejected_under_serve_lease(tmp_path):
++    import subprocess
++    import sys
++
++    path = tmp_path / "controller.sqlite"
++    owner = Controller(path)
++    code = (
++        "from llm_optimizer.remote.controller import Controller; Controller("
++        + repr(str(path))
++        + ").tick()"
++    )
++    with owner.exclusive():
++        result = subprocess.run(
++            [sys.executable, "-c", code], capture_output=True, text=True, timeout=10
++        )
++    assert result.returncode != 0
++    assert "Another controller owns this database" in result.stderr
