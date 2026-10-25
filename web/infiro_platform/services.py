@@ -227,7 +227,7 @@ def perform_discovery(job):
     )
     rec.report = redact(report)
     rec.status = "recommended" if report.get("recommendations") else "empty"
-    rec.save()
+    rec.save(update_fields=["report", "status", "updated_at"])
     job.result = {"recommendation_id": str(rec.id), "status": rec.status}
     job.state = "completed"
 
@@ -241,7 +241,13 @@ def perform_dataset(job):
         job.state = "completed"
         job.result = {"dataset_id": str(dataset.id), "identity": dataset.identity}
         return
-    manifest = materialize(dataset.config)
+    def progress(message):
+        job.progress["stage"] = message
+        job.save(update_fields=["progress"])
+
+    dataset.status = "validating"
+    dataset.save(update_fields=["status"])
+    manifest = materialize(dataset.config, progress=progress)
     write_artifact(job, "workload.json", manifest)
     dataset.identity = identity(manifest)
     dataset.preview = [
@@ -360,12 +366,13 @@ def perform_prepare(job):
             "repo_id": DEFAULT_DATASET,
             "revision": "main",
             "config": None,
+            "data_file": "ShareGPT_V3_unfiltered_cleaned_split.json",
             "split": "train",
         }
         manifest = (
             random_workload(config)
             if prepared.choices["workload_mode"] == "random"
-            else materialize(config)
+            else materialize(config, progress=stage)
         )
     if redact(manifest) != manifest:
         raise ValueError(
@@ -405,6 +412,14 @@ def perform_prepare(job):
     prepared.summary = result["summary"] | {
         "tracking": dict(settings.INFIRO_WANDB) if not prepared.choices["dry_run"] else {},
         "workload_identity": identity(manifest),
+        "workload_preview": [
+            {
+                "prompt": r["prompt"][:400],
+                "prompt_len": r["prompt_len"],
+                "output_len": r["output_len"],
+            }
+            for r in manifest["requests"][:3]
+        ],
         "connections": {k: c.name for k, c in found.items()},
         "provider_settings": {
             k: c.metadata

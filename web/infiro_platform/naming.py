@@ -28,3 +28,19 @@ def study_name(prepared):
     short_model = model_id(prepared).rstrip("/").rsplit("/", 1)[-1][:110]
     stamp = prepared.created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
     return f"{short_model} · {stamp} · {prepared.id.hex[:8]}"
+
+
+def recommendation_name(rec):
+    if rec.name:
+        return rec.name
+    description = " ".join(rec.requirements.get("request", "Recommendation").split())[:80]
+    description = "".join(c for c in description if not unicodedata.category(c).startswith("C"))
+    stamp = rec.created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return f"{description or 'Recommendation'} · {stamp} · {rec.id.hex[:8]}"
+
+
+def validate_recommendation_name(value):
+    try:
+        return validate_name(value)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("Study", "Recommendation")) from None

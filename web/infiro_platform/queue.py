@@ -12,9 +12,13 @@ from django.conf import settings
 from django.db.models import F
 from django.utils import timezone
 
+from .diagnostics import has_validation_failure
+from .limits import SHAREGPT_DISK_BYTES
 from .models import Connection, Dataset, Job, Prepared, Recommendation
-from .security import private_dir, unseal
+from .security import private_dir, unseal, workload_cache_dir
 from .services import connections
+from .workload_cache import CACHE_FULL, CACHE_INVALID, directory_bytes
+from .workloads import FORMAT_ERROR, MEMORY_ERROR
 
 TIME_LIMIT = 300
 DISK_LIMIT = 256 * 1024 * 1024
@@ -86,13 +90,21 @@ def child_environment(job):
         if "FILE" not in name:
             path.mkdir(mode=0o700, exist_ok=True)
         env[name] = str(path)
+    large_workload = job.kind == "dataset"
+    if job.kind == "prepare":
+        prepared = Prepared.objects.filter(pk=job.target_id, owner=job.owner).first()
+        large_workload = bool(
+            prepared
+            and (prepared.dataset_id or prepared.choices.get("workload_mode") == "sharegpt")
+        )
+    if large_workload:
+        env["INFIRO_LARGE_WORKLOAD"] = "1"
+        env["INFIRO_SHAREGPT_CACHE"] = str(workload_cache_dir(job.owner_id))
     found = connections(job.owner, job.connection_refs)
     if {k: c.version for k, c in found.items()} != job.connection_versions:
         raise ValueError("Connection changed since this operation was queued.")
     for kind, connection in found.items():
         if kind == "nebius_jobs" and job.kind == "prepare":
-            from .models import Prepared
-
             if Prepared.objects.get(pk=job.target_id, owner=job.owner).choices["dry_run"]:
                 continue
         if kind not in REQUIRED_KINDS[job.kind]:
@@ -110,6 +122,25 @@ def child_environment(job):
     return env
 
 
+PERMANENT_INPUT_ERRORS = {
+    FORMAT_ERROR, MEMORY_ERROR, CACHE_FULL, CACHE_INVALID,
+    "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown.",
+    "Tokenizer exceeds the 128 MiB limit, or file sizes are unknown.",
+    "Dataset exceeds the 10,000 row scan limit; choose a smaller split.",
+    "Dataset row exceeds the 256 KiB limit.",
+    "Dataset exceeds the 2,000,000 source token scan limit.",
+    "Frozen workload exceeds the 16 MiB limit.",
+    "Dataset has too few valid prompts; reduce prompt count or choose another split.",
+    "Expected nonempty conversations [{from, value}]",
+    "Invalid ShareGPT role or empty text",
+    "ShareGPT conversation has no human prompt",
+    "Custom HF dataset/tokenizer loading or access failed; check access and dependencies",
+    "Custom HF dataset iteration or tokenization failed",
+    "Selected JSON data file was not found at this dataset revision.",
+    "Download limit exceeded (1 GiB per workload operation).",
+}
+
+
 def fail(job, message):
     job.refresh_from_db()
     print(
@@ -124,12 +155,14 @@ def fail(job, message):
         ),
         flush=True,
     )
+    invalid_configuration = has_validation_failure(job.progress.get("diagnostics", {}))
     if job.kind == "study" and job.controller_run:
         # Never forget a provider-side job after polling errors or credential
         # deletion. Keep it visible as attention_required for operator recovery.
-        state = "attention_required" if job.attempts >= 3 else "queued"
+        state = "attention_required" if invalid_configuration or job.attempts >= 3 else "queued"
     else:
-        state = "failed" if job.attempts >= 3 else "queued"
+        permanent = invalid_configuration or message in PERMANENT_INPUT_ERRORS
+        state = "failed" if job.attempts >= 3 or permanent else "queued"
     Job.objects.filter(pk=job.pk).update(
         state=state,
         error=message,
@@ -200,19 +233,25 @@ def run_once(*, kinds=None):
         )
         started = time.monotonic()
         root = private_dir(job.owner_id, job.id)
+        disk_limit = (
+            SHAREGPT_DISK_BYTES
+            if env.get("INFIRO_LARGE_WORKLOAD") == "1"
+            else DISK_LIMIT
+        )
         while process.poll() is None:
             job.refresh_from_db(fields=["cancel_requested"])
-            size = sum(
-                p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink()
-            )
+            size = directory_bytes(root)
+            if env.get("INFIRO_SHAREGPT_CACHE"):
+                size += directory_bytes(env["INFIRO_SHAREGPT_CACHE"])
             cancelled = job.cancel_requested and job.kind != "study"
-            if cancelled or time.monotonic() - started > TIME_LIMIT or size > DISK_LIMIT:
+            if cancelled or time.monotonic() - started > TIME_LIMIT or size > disk_limit:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
                 if cancelled:
                     mark_cancelled(job)
                     return True
-                raise ValueError("Process exceeded its execution time or 256 MiB disk limit.")
+                limit = "1.25 GiB" if disk_limit == SHAREGPT_DISK_BYTES else "256 MiB"
+                raise ValueError(f"Process exceeded its execution time or {limit} disk limit.")
             time.sleep(0.2)
         job.refresh_from_db()
         if (
@@ -244,7 +283,7 @@ def run_once(*, kinds=None):
         )
         if (
             isinstance(exc, ValueError)
-            and str(exc) == "Process exceeded its execution time or 256 MiB disk limit."
+            and str(exc).startswith("Process exceeded its execution time or ")
         ):
             message = str(exc)
         fail(

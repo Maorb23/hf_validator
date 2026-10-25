@@ -173,6 +173,13 @@ def private_dir(owner_id, job_id):
     return root
 
 
+def workload_cache_dir(owner_id):
+    root = settings.INFIRO_PRIVATE_ROOT / "users" / str(int(owner_id)) / "sharegpt-cache"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
+    return root
+
+
 def install_network_guard(max_bytes=128 * 1024 * 1024):
     """Child-only guard checks the actual socket peer, including every redirect.
 
@@ -209,7 +216,12 @@ def install_network_guard(max_bytes=128 * 1024 * 1024):
             result = method(*args, **kwargs)
             received[0] += len(result) if isinstance(result, bytes) else (result or 0)
             if received[0] > max_bytes:
-                raise ValueError("Download limit exceeded (128 MiB per operation).")
+                label = (
+                    "1 GiB per workload operation"
+                    if max_bytes > 128 * 1024**2
+                    else "128 MiB per operation"
+                )
+                raise ValueError(f"Download limit exceeded ({label}).")
             return result
 
         return read

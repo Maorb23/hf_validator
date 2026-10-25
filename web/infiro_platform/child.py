@@ -21,7 +21,11 @@ def main():
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
     resource.setrlimit(resource.RLIMIT_CPU, (280, 290))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024**2, 128 * 1024**2))
+    from .limits import DEFAULT_NETWORK_BYTES, SHAREGPT_DOWNLOAD_BYTES
+
+    large_workload = os.environ.get("INFIRO_LARGE_WORKLOAD") == "1"
+    file_limit = SHAREGPT_DOWNLOAD_BYTES if large_workload else DEFAULT_NETWORK_BYTES
+    resource.setrlimit(resource.RLIMIT_FSIZE, (file_limit, file_limit))
     resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
     django.setup()
     from django.utils import timezone
@@ -33,7 +37,7 @@ def main():
     job = Job.objects.get(pk=sys.argv[1], state="running")
     job.progress.pop("diagnostics", None)
     job.save(update_fields=["progress"])
-    install_network_guard()
+    install_network_guard(SHAREGPT_DOWNLOAD_BYTES if large_workload else DEFAULT_NETWORK_BYTES)
     try:
         perform(job)
         # Keep a cancellation requested during a study tick for the next tick.
@@ -62,8 +66,12 @@ def main():
         details = failure_details(exc)
         # Provider exception strings can contain secrets, signed URLs or prompts.
         # Only static messages for errors controlled by our boundary are exposed.
+        from .workload_cache import CACHE_FULL, CACHE_INVALID
+        from .workloads import FORMAT_ERROR, MEMORY_ERROR
+
         safe = {
-            "Dataset exceeds the 128 MiB download limit, or file sizes are unknown.",
+            FORMAT_ERROR, MEMORY_ERROR, CACHE_FULL, CACHE_INVALID,
+            "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown.",
             "Tokenizer exceeds the 128 MiB limit, or file sizes are unknown.",
             "Workload settings changed; validate a new dataset sample first.",
             "Dataset tokenizer differs from the selected pinned model. Validate a new sample.",
@@ -77,6 +85,9 @@ def main():
             "Dataset row exceeds the 256 KiB limit.",
             "Dataset exceeds the 2,000,000 source token scan limit.",
             "Frozen workload exceeds the 16 MiB limit.",
+            "Dataset has too few valid prompts; reduce prompt count or choose another split.",
+            "Selected JSON data file was not found at this dataset revision.",
+            "Download limit exceeded (1 GiB per workload operation).",
         }
         message = (
             str(exc)

@@ -37,6 +37,7 @@ class Dataset(Owned):
 
 
 class Recommendation(Owned):
+    name = models.CharField(max_length=160, blank=True, default="")
     requirements = models.JSONField()
     connection_refs = models.JSONField(default=dict)
     status = models.CharField(max_length=24, default="queued")

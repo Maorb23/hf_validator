@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import socket
@@ -15,7 +16,7 @@ from django.utils import timezone
 from .contracts import Choices
 from .demo import FixtureTokenizer, fixture_manifest, seed_prepared
 from .models import Artifact, Connection, Dataset, Job, Prepared, Recommendation
-from .queue import child_environment, claim, recover
+from .queue import child_environment, claim, fail, recover
 from .security import digest, endpoint, public_ip, seal, unseal
 from .services import (
     approve,
@@ -196,6 +197,65 @@ class PlatformTests(TestCase):
         self.assertEqual(resolve.call_args.args[0]["wandb"].metadata, tracking)
         self.assertEqual(p.summary["tracking"], pinned)
         self.assertEqual(p.digest, digest(binding(p)))
+
+    def test_recommendation_names_creation_validation_and_fallback(self):
+        c = self.connection(kind="nebius_inference", endpoint="https://example.com/v1")
+        data = {"requirements": {"request": "A small coding assistant"},
+                "connection_refs": {"nebius_inference": str(c.id)}}
+        for bad in [None, 123, "x" * 161, "a\nb", "a\u202eb"]:
+            self.assertEqual(self.post("recommendations", {**data, "name": bad}).status_code, 400)
+        for name in ["  Coding research  ", "   "]:
+            response = self.post("recommendations", {**data, "name": name, "submission_key": name})
+            self.assertEqual(response.status_code, 202)
+            rec = Recommendation.objects.get(pk=response.json()["recommendation"]["id"])
+            url = "/app/api/recommendations/" + str(rec.id)
+            display = self.client.get(url).json()["name"]
+            if name.strip():
+                self.assertEqual(display, "Coding research")
+            else:
+                self.assertIn("A small coding assistant", display)
+                self.assertIn(rec.id.hex[:8], display)
+                self.assertIn(rec.created_at.strftime("%Y-%m-%d %H:%M"), display)
+                self.assertEqual(rec.name, "")
+            self.assertEqual(display, self.client.get(url).json()["name"])
+            replay = self.post(
+                "recommendations", {**data, "name": "Different", "submission_key": name}
+            )
+            self.assertEqual(replay.json()["recommendation"]["name"], display)
+
+    def test_recommendation_rename_preserves_all_execution_metadata(self):
+        p = self.prepared()
+        rec = p.recommendation
+        job = enqueue(self.alice, "prepare", p, {}, "rename-metadata")
+        artifact = write_artifact(job, "request.json", p.payload)
+        before = Prepared.objects.get(pk=p.pk).__dict__.copy()
+        before.pop("_state")
+        jobs_before = list(Job.objects.values())
+        url = "/app/api/recommendations/" + str(rec.id)
+        def rename(payload):
+            return self.client.patch(url, json.dumps(payload), content_type="application/json")
+        for bad in [None, "x" * 161, "a\nb"]:
+            self.assertEqual(rename({"name": bad}).status_code, 400)
+        self.assertEqual(rename({"name": "Safe", "model_id": "changed"}).status_code, 400)
+        response = rename({"name": "  <script>alert(1)</script>  "})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["name"], "<script>alert(1)</script>")
+        old_version, old_selected = rec.version, rec.selected
+        rec.refresh_from_db()
+        self.assertEqual((rec.version, rec.selected), (old_version, old_selected))
+        after = Prepared.objects.get(pk=p.pk).__dict__.copy()
+        after.pop("_state")
+        self.assertEqual(before, after)
+        self.assertEqual(jobs_before, list(Job.objects.values()))
+        self.assertEqual(artifact.sha256, Artifact.objects.get(pk=artifact.pk).sha256)
+        self.assertEqual(
+            self.client.get("/app/api/prepared/" + str(p.id)).json()["recommendation_name"],
+            rec.name,
+        )
+        self.client.force_login(self.bob)
+        self.assertEqual(rename({"name": "Stolen"}).status_code, 404)
+        self.client.logout()
+        self.assertEqual(rename({"name": "Anonymous"}).status_code, 401)
 
     def test_study_name_creation_and_validation(self):
         p = self.prepared()
@@ -719,6 +779,21 @@ class PlatformTests(TestCase):
         self.assertEqual(j.state, "failed")
         self.assertEqual(Prepared.objects.get(pk=p.id).status, "failed")
 
+        rejected = self.prepared()
+        deterministic = enqueue(self.alice, "prepare", rejected, {}, "oversized-source")
+        deterministic.attempts = 1
+        fail(
+            deterministic,
+            "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown.",
+        )
+        deterministic.refresh_from_db()
+        self.assertEqual(deterministic.state, "failed")
+        self.assertEqual(
+            deterministic.error,
+            "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown.",
+        )
+        self.assertEqual(Prepared.objects.get(pk=rejected.id).status, "failed")
+
     def test_cancel_before_submission_and_active_connection_protection(self):
         p = self.prepared()
         j = approve(self.alice, p.id, p.digest, True)
@@ -827,15 +902,445 @@ class PlatformTests(TestCase):
                     loader=lambda *a, rows=rows, **kw: rows,
                     tokenizer=FixtureTokenizer(),
                 )
+        with self.assertRaisesRegex(ValueError, "reduce prompt count or choose another split"):
+            materialize(config, api=api, loader=lambda *a, **kw: [], tokenizer=FixtureTokenizer())
         api.dataset_info = lambda *a, **kw: SimpleNamespace(
-            sha="a" * 40, siblings=[SimpleNamespace(size=200 * 1024**2, rfilename="data.json")]
+            sha="a" * 40, siblings=[SimpleNamespace(size=2 * 1024**3, rfilename="data.json")]
         )
-        with self.assertRaisesRegex(ValueError, "128 MiB"):
+        with self.assertRaisesRegex(ValueError, "1 GiB"):
             materialize(config, api=api, loader=Mock(), tokenizer=FixtureTokenizer())
         with self.assertRaises(ValueError):
             Choices(num_prompts=1000, input_tokens=16384)
         with self.assertRaises(ValueError):
             Choices(gpu_count=8, gpu_hourly_cost_usd=10, budget_usd_per_hour=5)
+
+    def test_custom_dataset_validation_progress_pinning_and_frozen_reuse(self):
+        from .services import perform_dataset, perform_prepare, read_workload
+        from .workloads import identity
+
+        config, manifest = fixture_manifest()
+        dataset = Dataset.objects.create(owner=self.alice, name="Custom source", config=config)
+        job = enqueue(self.alice, "dataset", dataset, {}, "custom-freeze")
+        stages = []
+        def freeze(config, *, progress):
+            progress("Validating ShareGPT conversations and freezing the first human turns")
+            stages.append(Job.objects.get(pk=job.pk).progress["stage"])
+            return manifest
+        with patch("infiro_platform.workloads.materialize", side_effect=freeze) as sampler:
+            perform_dataset(job)
+            perform_dataset(job)
+        sampler.assert_called_once()
+        self.assertTrue(stages)
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.status, "ready")
+        self.assertEqual(dataset.identity, identity(manifest))
+        self.assertLessEqual(len(dataset.preview), 3)
+        self.assertTrue(all(len(row["prompt"]) <= 400 for row in dataset.preview))
+        self.assertEqual(read_workload(dataset), manifest)
+
+        base = seed_prepared(self.alice)
+        c = self.connection(kind="nebius_inference", endpoint="https://example.com/v1")
+        choices = base.choices | {
+            "workload_mode": "sharegpt", "frameworks": ["vllm", "sglang"], "trials": 7
+        }
+        data = {"recommendation_id": str(base.recommendation_id), "dataset_id": str(dataset.id),
+                "choices": choices, "connection_refs": {"nebius_inference": str(c.id)}}
+        # Ownership and readiness are enforced before queuing any preparation.
+        self.client.force_login(self.bob)
+        self.assertEqual(self.post("prepared", data).status_code, 404)
+        self.client.force_login(self.alice)
+        Dataset.objects.filter(pk=dataset.pk).update(status="validating")
+        self.assertEqual(self.post("prepared", data).status_code, 400)
+        Dataset.objects.filter(pk=dataset.pk).update(status="ready")
+        response = self.post("prepared", data)
+        self.assertEqual(response.status_code, 202)
+        prepared = Prepared.objects.get(pk=response.json()["prepared"]["id"])
+        preparation = Job.objects.get(pk=response.json()["job"]["id"])
+        with (
+            patch("hf_model_watch.optimization.preparation.research",
+                  return_value={"sources": [], "inspection": {"claims": [], "heads": []}}),
+            patch("infiro_platform.workloads.materialize") as sampler,
+            patch("infiro_platform.workloads.random_workload") as random_sampler,
+        ):
+            perform_prepare(preparation)
+        sampler.assert_not_called()
+        random_sampler.assert_not_called()
+        prepared.refresh_from_db()
+        self.assertEqual(prepared.payload["workload_manifest"], manifest)
+        self.assertEqual(prepared.summary["workload_identity"], dataset.identity)
+        self.assertEqual(prepared.payload["frameworks"], ["vllm", "sglang"])
+        self.assertEqual(prepared.payload["optuna"]["trials"], 7)
+        self.assertEqual(prepared.summary["workload_preview"], dataset.preview)
+
+    def test_discovery_completion_cannot_overwrite_a_concurrent_rename(self):
+        from .services import perform_discovery
+        rec = Recommendation.objects.create(
+            owner=self.alice, requirements={"request": "Coding model"}
+        )
+        job = enqueue(self.alice, "discover", rec, {}, "rename-during-discovery")
+        def discover(*args):
+            Recommendation.objects.filter(pk=rec.pk).update(name="Renamed during research")
+            return {"recommendations": []}
+        with patch("hf_model_watch.recommender.discovery.discover_models", side_effect=discover):
+            perform_discovery(job)
+        rec.refresh_from_db()
+        self.assertEqual(rec.name, "Renamed during research")
+        self.assertEqual(rec.status, "empty")
+
+    def test_large_sharegpt_file_is_preflighted_independently_and_pinned(self):
+        config, _ = fixture_manifest()
+        config["data_file"] = "conversations.json"
+        large_file = SimpleNamespace(size=800 * 1024**2, rfilename="conversations.json")
+        unrelated = SimpleNamespace(size=4 * 1024**3, rfilename="archive/old-data.json")
+        api = SimpleNamespace(
+            dataset_info=lambda *a, **k: SimpleNamespace(
+                sha="b" * 40, siblings=[large_file, unrelated]
+            ),
+            model_info=lambda *a, **k: SimpleNamespace(
+                sha="a" * 40, siblings=[SimpleNamespace(size=1024, rfilename="tokenizer.json")]
+            ),
+        )
+        rows = [
+            {"conversations": [{"from": "human", "value": f"Prompt {i}"}]}
+            for i in range(5)
+        ]
+        payload = json.dumps(rows, indent=2).encode()
+        with patch("huggingface_hub.HfFileSystem") as filesystem:
+            filesystem.return_value.open.return_value = io.BytesIO(payload)
+            manifest = materialize(config, api=api, tokenizer=FixtureTokenizer())
+        self.assertEqual(manifest["dataset"]["data_file"], "conversations.json")
+        self.assertEqual(manifest["dataset"]["revision"], "b" * 40)
+        filesystem.return_value.open.assert_called_once_with(
+            f"datasets/{config['repo_id']}@{'b' * 40}/conversations.json",
+            "rb", block_size=1024 * 1024, cache_type="readahead",
+        )
+        expected = materialize(
+            config, api=api, loader=lambda *a, **kw: rows, tokenizer=FixtureTokenizer()
+        )
+        self.assertEqual(manifest, expected)
+
+    def test_incremental_sharegpt_parser_memory_and_frozen_identity(self):
+        import tracemalloc
+
+        from .workloads import MAX_ROW_BYTES, WorkloadLimitError, iter_json_records
+
+        # A virtual source much larger than parser memory; no full test payload allocation.
+        class RepeatedStream:
+            def __init__(self, row, count):
+                self.row, self.count, self.pending = row, count, b"["
+                self.read_sizes = []
+
+            def read(self, size):
+                self.assert_size(size)
+                while len(self.pending) < size and self.count:
+                    self.pending += self.row + (b"," if self.count > 1 else b"]")
+                    self.count -= 1
+                chunk, self.pending = self.pending[:size], self.pending[size:]
+                return chunk
+
+            def assert_size(self, size):
+                if not 0 < size <= 64 * 1024:
+                    raise AssertionError("unbounded source read")
+                self.read_sizes.append(size)
+
+        rows = [{"conversations": [
+            {"from": "system", "value": "system"},
+            {"from": "human", "value": 'First é prompt } [ \" ' + str(i)},
+            {"from": "gpt", "value": "answer"},
+            {"from": "human", "value": "Never sampled"},
+        ]} for i in range(12)]
+        encoded = json.dumps(rows[0], ensure_ascii=False).encode()
+        stream = RepeatedStream(encoded, 20000)
+        tracemalloc.start()
+        try:
+            self.assertEqual(sum(1 for _ in iter_json_records(stream)), 20000)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 2 * 1024**2)
+        self.assertGreater(len(encoded) * 20000, peak * 2)
+
+        config, _ = fixture_manifest()
+        config["data_file"] = "selected.json"
+        api = SimpleNamespace(
+            dataset_info=lambda *a, **kw: SimpleNamespace(
+                sha="b" * 40,
+                siblings=[SimpleNamespace(size=673_000_000, rfilename="selected.json")]
+            ),
+            model_info=lambda *a, **kw: SimpleNamespace(sha="a" * 40, siblings=[]),
+        )
+        expected = materialize(config, api=api, loader=lambda *a, **kw: rows,
+                               tokenizer=FixtureTokenizer())
+        for payload in [json.dumps(rows, indent=2).encode(),
+                        b"\n".join(json.dumps(row).encode() for row in rows)]:
+            with patch("huggingface_hub.HfFileSystem") as fs:
+                fs.return_value.open.return_value = io.BytesIO(payload)
+                actual = materialize(config, api=api, tokenizer=FixtureTokenizer())
+            self.assertEqual(actual, expected)  # first-human prompts, indices, pins and hash
+        for payload in [b'{"data":[' + encoded + b"]}", b"[" + encoded + b",]",
+                        b"[" + encoded, b"[{}] trailing", b"{}{}"]:
+            with self.assertRaises((ValueError, WorkloadLimitError)):
+                materialize(config, api=api,
+                            loader=lambda *a, payload=payload, **kw: iter_json_records(
+                                io.BytesIO(payload)
+                            ),
+                            tokenizer=FixtureTokenizer())
+        oversized = RepeatedStream(b'{"padding":"' + b"x" * MAX_ROW_BYTES + b'"}', 1)
+        with self.assertRaisesRegex(WorkloadLimitError, "256 KiB"):
+            list(iter_json_records(oversized))
+
+    def test_default_sharegpt_filters_invalid_rows_in_a_bounded_frozen_prefix(self):
+        import random
+
+        from .workloads import DEFAULT_DATA_FILE, DEFAULT_DATASET, fingerprint
+
+        config, _ = fixture_manifest()
+        config.update(repo_id=DEFAULT_DATASET, data_file=DEFAULT_DATA_FILE)
+        rows = [
+            {"conversations": [{"from": "human", "value": "first prompt"},
+                               {"from": "human", "value": "later prompt"}]},
+            {"conversations": [{"from": "human", "value": "valid first"},
+                               {"from": "gpt", "value": ""}]},
+            {"conversations": [{"from": "human", "value": "second prompt"}]},
+            {"conversations": [{"from": "tool", "value": "unsupported role"}]},
+            {"conversations": [{"from": "gpt", "value": "no human"}]},
+            {"conversations": [{"from": "human", "value": "third prompt"}]},
+            {"conversations": []},
+        ]
+        api = SimpleNamespace(
+            dataset_info=lambda *a, **kw: SimpleNamespace(
+                sha="b" * 40, siblings=[SimpleNamespace(size=673_000_000,
+                                                      rfilename=DEFAULT_DATA_FILE)]
+            ),
+            model_info=lambda *a, **kw: SimpleNamespace(sha="a" * 40, siblings=[]),
+        )
+        payload = json.dumps(rows).encode()
+        # The cap must stop before requesting the following record, including
+        # invalid rows in the budget. Both pins and file are frozen in identity.
+        def source(*args, **kwargs):
+            yield from rows
+            raise AssertionError("read beyond the source-row cap")
+
+        with patch("infiro_platform.workloads.MAX_ROWS", len(rows)):
+            expected = materialize(config, api=api, loader=source, tokenizer=FixtureTokenizer())
+            with patch("huggingface_hub.HfFileSystem") as fs:
+                fs.return_value.open.return_value = io.BytesIO(payload)
+                actual = materialize(config, api=api, tokenizer=FixtureTokenizer())
+        self.assertEqual(actual, expected)
+        selected = random.Random(config["seed"]).sample([0, 2, 5], config["num_prompts"])
+        self.assertEqual(actual["row_indices"], selected)
+        tokenizer = FixtureTokenizer()
+        for index, request in zip(selected, actual["requests"], strict=True):
+            tokens = tokenizer.encode(rows[index]["conversations"][0]["value"])
+            fixed = (tokens * ((config["input_tokens"] + len(tokens) - 1) // len(tokens)))
+            self.assertEqual(request["prompt"], tokenizer.decode(fixed[:config["input_tokens"]]))
+        self.assertEqual(actual["sampling"], {
+            "policy": "default_sharegpt_valid_prefix_v2", "max_source_rows": len(rows),
+            "source_rows_scanned": len(rows), "schema_rows_skipped": 4,
+            "oversized_rows_skipped": 0,
+        })
+        self.assertEqual(actual["dataset"]["revision"], "b" * 40)
+        self.assertEqual(actual["dataset"]["data_file"], DEFAULT_DATA_FILE)
+        self.assertEqual(actual["sha256"], fingerprint(actual))
+        changed = dict(actual, sampling=dict(actual["sampling"], schema_rows_skipped=0))
+        self.assertNotEqual(actual["sha256"], fingerprint(changed))
+        with self.assertRaisesRegex(ValueError, "too few valid prompts"):
+            materialize(config, api=api, loader=lambda *a, **kw: rows[1:2],
+                        tokenizer=FixtureTokenizer())
+        # Custom repositories retain strict schema validation, even if an earlier
+        # human turn is usable. Never repair or truncate an invalid conversation.
+        config["repo_id"] = "org/custom"
+        with self.assertRaisesRegex(ValueError, "Invalid ShareGPT role or empty text"):
+            materialize(config, api=api, loader=lambda *a, **kw: rows,
+                        tokenizer=FixtureTokenizer())
+
+    def test_default_sharegpt_source_cache_reuses_records_and_preserves_identity(self):
+        from .workloads import DEFAULT_DATA_FILE, DEFAULT_DATASET
+
+        config, _ = fixture_manifest()
+        config.update(repo_id=DEFAULT_DATASET, data_file=DEFAULT_DATA_FILE)
+        rows = [{"conversations": [{"from": "human", "value": f"Prompt {i}"}]}
+                for i in range(8)]
+        rows[1] = {"conversations": [{"from": "human", "value": ""}]}
+        commit = ["b" * 40]
+        api = SimpleNamespace(
+            dataset_info=lambda *a, **kw: SimpleNamespace(
+                sha=commit[0], siblings=[SimpleNamespace(size=1024,
+                                                       rfilename=DEFAULT_DATA_FILE)]
+            ),
+            model_info=lambda *a, **kw: SimpleNamespace(sha="a" * 40, siblings=[]),
+        )
+        expected = materialize(config, api=api, loader=lambda *a, **kw: rows,
+                               tokenizer=FixtureTokenizer())
+        cache = Path(self.root.name) / "source-cache"
+        stages = []
+        with patch.dict(os.environ, {"INFIRO_SHAREGPT_CACHE": str(cache)}):
+            with patch("huggingface_hub.HfFileSystem") as fs:
+                fs.return_value.open.return_value = io.BytesIO(json.dumps(rows).encode())
+                cold = materialize(config, api=api, tokenizer=FixtureTokenizer(),
+                                   progress=stages.append)
+                fs.return_value.open.assert_called_once()
+                fs.assert_called_once_with(token=False)
+            with patch("huggingface_hub.HfFileSystem") as fs:
+                warm = materialize(config, api=api, tokenizer=FixtureTokenizer(),
+                                   progress=stages.append)
+                changed = materialize(config | {"seed": 7, "input_tokens": 8},
+                                      api=api, tokenizer=FixtureTokenizer())
+                fs.assert_not_called()
+            self.assertEqual(cold, expected)
+            self.assertEqual(warm, expected)
+            self.assertEqual(changed["dataset"], expected["dataset"])
+            self.assertNotEqual(changed["sha256"], expected["sha256"])
+            self.assertEqual(cold["sampling"]["schema_rows_skipped"], 1)
+            self.assertTrue(any("Reusing locally cached" in stage for stage in stages))
+            commit[0] = "c" * 40
+            with patch("huggingface_hub.HfFileSystem") as fs:
+                fs.return_value.open.return_value = io.BytesIO(json.dumps(rows).encode())
+                updated = materialize(config, api=api, tokenizer=FixtureTokenizer())
+                fs.return_value.open.assert_called_once()
+            self.assertNotEqual(updated["sha256"], warm["sha256"])
+            self.assertEqual(updated["dataset"]["revision"], commit[0])
+            for path in cache.glob("*.jsonl"):
+                path.write_bytes(b"corrupted")
+            with self.assertRaisesRegex(ValueError, "cache failed its integrity check"):
+                materialize(config, api=api, tokenizer=FixtureTokenizer())
+
+    def test_default_sharegpt_drains_oversized_rows_and_caches_exclusions(self):
+        import random
+        import tracemalloc
+
+        from .workloads import DEFAULT_DATA_FILE, DEFAULT_DATASET, iter_json_records
+
+        config, _ = fixture_manifest()
+        config.update(repo_id=DEFAULT_DATASET, data_file=DEFAULT_DATA_FILE)
+        def human(text):
+            return {"conversations": [{"from": "human", "value": text}]}
+        rows = [human("first prompt"), human('} [ \" \\ ' * 100000),
+                human("second prompt"), human("é" * 60000), human("third prompt")]
+        payload = json.dumps(rows, ensure_ascii=False).encode()
+        # Discarded records can be arbitrarily larger than retained parser memory.
+        stream = io.BytesIO(payload)
+        tracemalloc.start()
+        try:
+            parsed = list(iter_json_records(stream, skip_oversized=True))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 2 * 1024**2)
+        self.assertIsNone(parsed[1])
+        self.assertEqual(parsed[2], rows[2])
+        self.assertEqual(parsed[4], rows[4])
+        api = SimpleNamespace(
+            dataset_info=lambda *a, **kw: SimpleNamespace(
+                sha="b" * 40, siblings=[SimpleNamespace(size=len(payload),
+                                                      rfilename=DEFAULT_DATA_FILE)]
+            ),
+            model_info=lambda *a, **kw: SimpleNamespace(sha="a" * 40, siblings=[]),
+        )
+        cache = Path(self.root.name) / "oversized-cache"
+        with patch.dict(os.environ, {"INFIRO_SHAREGPT_CACHE": str(cache)}), patch(
+            "infiro_platform.workloads.MAX_ROWS", len(rows)
+        ):
+            with patch("huggingface_hub.HfFileSystem") as fs:
+                fs.return_value.open.return_value = io.BytesIO(payload)
+                cold = materialize(config, api=api, tokenizer=FixtureTokenizer())
+            with patch("huggingface_hub.HfFileSystem") as fs:
+                warm = materialize(config, api=api, tokenizer=FixtureTokenizer())
+                fs.assert_not_called()
+        self.assertEqual(cold, warm)
+        self.assertEqual(cold["row_indices"], random.Random(config["seed"]).sample([0, 2, 4], 3))
+        self.assertEqual(cold["sampling"]["source_rows_scanned"], 5)
+        self.assertEqual(cold["sampling"]["oversized_rows_skipped"], 2)
+        self.assertEqual(cold["sampling"]["schema_rows_skipped"], 0)
+        tokenizer = FixtureTokenizer()
+        for index, request in zip(cold["row_indices"], cold["requests"], strict=True):
+            tokens = tokenizer.encode(rows[index]["conversations"][0]["value"])
+            fixed = (tokens * 16)[:config["input_tokens"]]
+            self.assertEqual(request["prompt"], tokenizer.decode(fixed))
+        # Strict sources still fail. Malformed framing cannot silently resync.
+        with self.assertRaisesRegex(ValueError, "256 KiB"):
+            list(iter_json_records(io.BytesIO(payload)))
+        for broken in [payload[:500000], b'[{"x":"' + b"x" * 300000 + b'"]]']:
+            with self.assertRaisesRegex(ValueError, "Unsupported or malformed"):
+                list(iter_json_records(io.BytesIO(broken), skip_oversized=True))
+
+    def test_sharegpt_cache_interruption_and_quota(self):
+        from .workload_cache import cached_prefix
+
+        cache = Path(self.root.name) / "prefix-cache"
+        def interrupted():
+            yield {"conversations": []}
+            raise OSError("download interrupted")
+        with self.assertRaises(OSError):
+            cached_prefix(cache, {"revision": "a"}, interrupted, lambda message: None)
+        self.assertFalse(list(cache.glob("*.json")))
+        data = cached_prefix(cache, {"revision": "a"}, lambda: iter([{"conversations": []}]),
+                             lambda message: None)
+        self.assertEqual(json.loads(data.read_text()), {"record": {"conversations": []}})
+        with patch("infiro_platform.workload_cache.SHAREGPT_DOWNLOAD_BYTES", 4096):
+            with self.assertRaisesRegex(ValueError, "cache exceeds its 1 GiB limit"):
+                cached_prefix(cache, {"revision": "b"}, lambda: iter([{"conversations": []}]),
+                              lambda message: None)
+
+    def test_sharegpt_memory_exhaustion_is_terminal(self):
+        from .workloads import MEMORY_ERROR
+        config, _ = fixture_manifest()
+        def exhausted(*args, **kwargs):
+            yield from ()
+            raise MemoryError("private source")
+        api = SimpleNamespace(
+            dataset_info=lambda *a, **kw: SimpleNamespace(
+                sha="a" * 40, siblings=[SimpleNamespace(size=100, rfilename="data.json")]
+            ),
+            model_info=lambda *a, **kw: SimpleNamespace(sha="a" * 40, siblings=[]),
+        )
+        with self.assertRaisesRegex(ValueError, "Shard ShareGPT") as raised:
+            materialize(config, api=api, loader=exhausted, tokenizer=FixtureTokenizer())
+        self.assertEqual(str(raised.exception), MEMORY_ERROR)
+        dataset = Dataset.objects.create(owner=self.alice, name="Source", config=config)
+        job = enqueue(self.alice, "dataset", dataset, {}, "memory-terminal")
+        fail(job, MEMORY_ERROR)
+        job.refresh_from_db()
+        self.assertEqual(job.state, "failed")
+
+    def test_large_workload_resource_budget_is_scoped_to_sharegpt(self):
+        p = self.prepared()
+        random_job = enqueue(self.alice, "prepare", p, {}, "small-random-budget")
+        self.assertNotIn("INFIRO_LARGE_WORKLOAD", child_environment(random_job))
+        self.assertNotIn("INFIRO_SHAREGPT_CACHE", child_environment(random_job))
+        p.choices["workload_mode"] = "sharegpt"
+        p.save(update_fields=["choices"])
+        sharegpt_job = enqueue(self.alice, "prepare", p, {}, "large-sharegpt-budget")
+        environment = child_environment(sharegpt_job)
+        self.assertEqual(environment["INFIRO_LARGE_WORKLOAD"], "1")
+        from .security import workload_cache_dir
+
+        self.assertEqual(
+            environment["INFIRO_SHAREGPT_CACHE"], str(workload_cache_dir(self.alice.id))
+        )
+        self.assertNotEqual(workload_cache_dir(self.alice.id), workload_cache_dir(self.bob.id))
+
+    def test_worker_counts_persistent_source_cache_in_disk_limit(self):
+        from .queue import run_once
+        from .security import workload_cache_dir
+
+        prepared = self.prepared()
+        prepared.choices["workload_mode"] = "sharegpt"
+        prepared.save(update_fields=["choices"])
+        job = enqueue(self.alice, "prepare", prepared, {}, "cache-disk-limit")
+        (workload_cache_dir(self.alice.id) / "cached-source").write_bytes(b"cached bytes")
+        process = Mock(pid=12345)
+        process.poll.return_value = None
+        with (
+            patch("infiro_platform.queue.subprocess.Popen", return_value=process),
+            patch("infiro_platform.queue.os.killpg") as kill,
+            patch("infiro_platform.queue.SHAREGPT_DISK_BYTES", 1),
+        ):
+            run_once()
+        kill.assert_called_once()
+        process.wait.assert_called_once()
+        job.refresh_from_db()
+        self.assertIn("execution time or 1.25 GiB disk limit", job.error)
 
     def test_native_random_workload_reproducibility(self):
         config = {
@@ -983,6 +1488,94 @@ class PlatformTests(TestCase):
         study = approve(self.alice, p.id, p.digest, True)
         Job.objects.filter(pk=study.pk).update(state="failed")
         self.assertEqual(self.post("jobs/" + str(study.id) + "/retry", {}).status_code, 400)
+
+    def test_selected_sharegpt_file_reaches_real_request_preparation(self):
+        from llm_optimizer.remote.contracts import OptimizationRequest
+
+        from .security import private_dir
+        from .services import perform_prepare
+        from .workloads import DEFAULT_DATA_FILE, DEFAULT_DATASET, fingerprint
+
+        prepared = seed_prepared(self.alice)
+        _, manifest = fixture_manifest()
+        manifest["dataset"].update(repo_id=DEFAULT_DATASET, data_file=DEFAULT_DATA_FILE)
+        manifest["sha256"] = fingerprint(manifest)
+        prepared.dataset = None
+        prepared.choices["workload_mode"] = "sharegpt"
+        prepared.payload, prepared.intent, prepared.summary, prepared.digest = {}, {}, {}, ""
+        prepared.status = "queued"
+        prepared.save()
+        job = enqueue(self.alice, "prepare", prepared, {}, "selected-file-real-prepare")
+        with (
+            patch("infiro_platform.workloads.materialize", return_value=manifest) as sampler,
+            patch("hf_model_watch.optimization.preparation.research", return_value={
+                "sources": [], "inspection": {"claims": [], "heads": []}
+            }) as research,
+        ):
+            perform_prepare(job)  # Real PreparationInputs, adapter and request writer.
+            perform_prepare(job)  # Recovery must reuse the frozen request.
+        sampler.assert_called_once()
+        research.assert_called_once()
+        prepared.refresh_from_db()
+        self.assertEqual(prepared.status, "prepared")
+        self.assertTrue(prepared.digest)
+        directory = private_dir(self.alice.id, job.id)
+        request = json.loads((directory / "request.json").read_text())
+        intent = json.loads((directory / "intent.json").read_text())
+        self.assertEqual(request["workload_manifest"], manifest)
+        self.assertEqual(intent["context"]["workload"]["dataset"]["data_file"], DEFAULT_DATA_FILE)
+        self.assertEqual(request["semantic_context"]["workload"]["dataset"]["data_file"],
+                         DEFAULT_DATA_FILE)
+        self.assertEqual(
+            OptimizationRequest.parse(request).to_dict()["workload_manifest"], manifest
+        )
+        self.assertFalse(Job.objects.filter(kind="study", target_id=prepared.id).exists())
+
+    def test_configuration_validation_is_terminal_and_diagnostics_are_redacted(self):
+        from pydantic import ValidationError
+
+        from hf_model_watch.optimization.preparation import PreparationInputs
+
+        from .diagnostics import failure_details, failure_summary
+
+        try:
+            PreparationInputs.model_validate({"run_id": "run_test", "dataset": {
+                "repo_id": "org/data", "data_file": "https://host/?token=private-secret",
+                "private-prompt": "credential-value",
+            }})
+        except ValidationError as exc:
+            details = failure_details(exc)
+        else:
+            self.fail("Invalid selected-file input was accepted")
+        self.assertEqual(details["exceptions"][0]["validation_fields"], [
+            {"field": "dataset.data_file", "code": "value_error"},
+            {"field": "unrecognized_field", "code": "extra_forbidden"},
+        ])
+        for secret in ("https://", "private-secret", "private-prompt", "credential-value"):
+            self.assertNotIn(secret, json.dumps(details))
+        message = failure_summary(details)
+        self.assertIn("will not be retried", message)
+        prepared = seed_prepared(self.alice)
+        job = enqueue(self.alice, "prepare", prepared, {}, "invalid-configuration-terminal")
+        Job.objects.filter(pk=job.pk).update(state="running", attempts=1,
+                                            progress={"diagnostics": details})
+        fail(job, message)
+        job.refresh_from_db()
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.attempts, 1)
+        self.assertIsNone(claim(kinds=["prepare"]))
+        # Even old diagnostics without field details must stop the same retry loop.
+        transient = enqueue(self.alice, "prepare", prepared, {}, "transient-still-retries")
+        Job.objects.filter(pk=transient.pk).update(state="running", attempts=1)
+        fail(transient, "Provider temporarily unavailable")
+        transient.refresh_from_db()
+        self.assertEqual(transient.state, "queued")
+        Job.objects.filter(pk=transient.pk).update(progress={"diagnostics": {"exceptions": [{
+            "type": "ValidationError", "module": "pydantic_core._pydantic_core", "frames": []
+        }]}})
+        fail(transient, "Operation failed (ValidationError).")
+        transient.refresh_from_db()
+        self.assertEqual(transient.state, "failed")
 
     def test_recovery_never_regenerates_an_already_prepared_request(self):
         from .services import perform_prepare

@@ -19,7 +19,13 @@ from pydantic import ValidationError as InputError
 
 from .contracts import Choices, DatasetConfig, Requirements
 from .models import Artifact, AuthThrottle, Connection, Dataset, Job, Prepared, Recommendation
-from .naming import model_id, study_name, validate_name
+from .naming import (
+    model_id,
+    recommendation_name,
+    study_name,
+    validate_name,
+    validate_recommendation_name,
+)
 from .security import PROVIDERS, digest, private_dir, seal, validate_connection
 from .services import TERMINAL, approve, connections, enqueue, owned
 from .study_status import display_progress, study_outcome, trial_failures
@@ -231,6 +237,7 @@ def recommendation_view(r):
         candidates.append(candidate)
     return {
         "id": str(r.id),
+        "name": recommendation_name(r),
         "requirements": r.requirements,
         "connection_refs": r.connection_refs,
         "status": r.status,
@@ -249,6 +256,7 @@ def prepared_view(p):
         "name": study_name(p),
         "model_id": model_id(p),
         "recommendation_id": str(p.recommendation_id),
+        "recommendation_name": recommendation_name(p.recommendation),
         "dataset_id": str(p.dataset_id) if p.dataset_id else None,
         "choices": p.choices,
         "status": p.status,
@@ -438,6 +446,7 @@ def connection_detail(request, identifier):
 @transaction.atomic
 def create_recommendation(request):
     data = body(request)
+    name = validate_recommendation_name(data.get("name", ""))
     requirements = Requirements.model_validate(data.get("requirements", {})).model_dump()
     refs = data.get("connection_refs", {})
     found = connections(request.user, refs, required=("nebius_inference",))
@@ -461,7 +470,7 @@ def create_recommendation(request):
             status=200,
         )
     rec = Recommendation.objects.create(
-        owner=request.user, requirements=requirements, connection_refs=refs
+        owner=request.user, name=name, requirements=requirements, connection_refs=refs
     )
     job = enqueue(request.user, "discover", rec, refs, key)
     return JsonResponse(
@@ -469,13 +478,19 @@ def create_recommendation(request):
     )
 
 
-@api(["GET", "POST"])
+@api(["GET", "POST", "PATCH"])
 @transaction.atomic
 def recommendation_detail(request, identifier):
     rec = owned(Recommendation, request.user, identifier)
     if request.method == "GET":
         return JsonResponse(recommendation_view(rec))
     data = body(request)
+    if request.method == "PATCH":
+        if set(data) != {"name"}:
+            raise ValueError("Only the recommendation name can be renamed.")
+        rec.name = validate_recommendation_name(data["name"])
+        rec.save(update_fields=["name"])
+        return JsonResponse(recommendation_view(rec))
     selected = next(
         (
             r

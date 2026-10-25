@@ -2,21 +2,136 @@
 
 import json
 import os
+import re
+from itertools import islice
 
-from llm_optimizer.hf_workload import prepare_hf_workload, validate_manifest
+from llm_optimizer.hf_workload import (
+    ShareGPTSchemaError,
+    fingerprint,
+    first_human,
+    prepare_hf_workload,
+    validate_manifest,
+)
 
-MAX_DOWNLOAD = 128 * 1024 * 1024
+from .limits import SHAREGPT_DOWNLOAD_BYTES, TOKENIZER_DOWNLOAD_BYTES
+from .workload_cache import CACHE_FULL, CACHE_INVALID
+
+MAX_DOWNLOAD = SHAREGPT_DOWNLOAD_BYTES
 MAX_ROWS = 10000
 MAX_SOURCE_TOKENS = 2_000_000
 MAX_ROW_BYTES = 256 * 1024
 DEFAULT_DATASET = "anon8231489123/ShareGPT_Vicuna_unfiltered"
+DEFAULT_DATA_FILE = "ShareGPT_V3_unfiltered_cleaned_split.json"
 
 
 class WorkloadLimitError(ValueError):
     """Static, safe-to-display limit rejection from the web boundary."""
 
 
-def materialize(config, *, api=None, loader=None, tokenizer=None):
+FORMAT_ERROR = (
+    "Unsupported or malformed ShareGPT JSON. Convert to a top-level JSON array of "
+    "ShareGPT records or JSONL (one record per line), then shard into files with "
+    "at most 10,000 rows and 256 KiB per row; select one JSON file and validate again."
+)
+MEMORY_ERROR = (
+    "Preparation exceeded the worker memory limit. Shard ShareGPT into smaller JSON "
+    "arrays or JSONL files, select one file, reduce prompt/token counts and validate again."
+)
+
+
+def iter_json_records(stream, *, skip_oversized=False):
+    """Frame one JSON object at a time; never decode the enclosing document.
+
+    Retained input is one 64 KiB chunk and at most one bounded source row.
+    Both pretty-printed arrays and newline-delimited objects are supported.
+    """
+    def characters():
+        while chunk := stream.read(64 * 1024):
+            yield from chunk
+
+    chars = iter(characters())
+
+    def nonspace():
+        return next((c for c in chars if c not in b" \r\n\t"), None)
+
+    first = nonspace()
+    array = first == ord("[")
+    start = nonspace() if array else first
+    if array and start == ord("]"):
+        if nonspace() is not None:
+            raise WorkloadLimitError(FORMAT_ERROR)
+        return
+    while start is not None:
+        if start != ord("{"):
+            raise WorkloadLimitError(FORMAT_ERROR)
+        row = bytearray(b"{")
+        stack, quoted, escaped, oversized = [123], False, False, False
+        for c in chars:
+            if not oversized:
+                row.append(c)
+                if len(row) > MAX_ROW_BYTES:
+                    if not skip_oversized:
+                        raise WorkloadLimitError("Dataset row exceeds the 256 KiB limit.")
+                    oversized = True
+                    row.clear()  # Drain the remainder without retaining its bytes.
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif c == 92:
+                    escaped = True
+                elif c == 34:
+                    quoted = False
+            elif c == 34:
+                quoted = True
+            elif c in (123, 91):
+                stack.append(c)
+                if len(stack) > 256:
+                    raise WorkloadLimitError(FORMAT_ERROR)
+            elif c in (125, 93):
+                expected = 123 if c == 125 else 91
+                if not stack or stack.pop() != expected:
+                    raise WorkloadLimitError(FORMAT_ERROR)
+                if not stack:
+                    break
+        if stack:
+            raise WorkloadLimitError(FORMAT_ERROR)
+        if oversized:
+            yield None  # Internal exclusion placeholder preserves source indices.
+        else:
+            try:
+                record = json.loads(row)
+            except (ValueError, UnicodeError, RecursionError):
+                raise WorkloadLimitError(FORMAT_ERROR) from None
+            yield record
+        if array:
+            separator = nonspace()
+            if separator == ord("]"):
+                if nonspace() is not None:
+                    raise WorkloadLimitError(FORMAT_ERROR)
+                return
+            if separator != ord(","):
+                raise WorkloadLimitError(FORMAT_ERROR)
+            start = nonspace()
+            if start is None:
+                raise WorkloadLimitError(FORMAT_ERROR)
+        else:
+            # JSONL requires a newline between records, not concatenated JSON.
+            newline = False
+            for c in chars:
+                if c not in b" \r\n\t":
+                    break
+                newline |= c == 10
+            else:
+                return
+            if not newline:
+                raise WorkloadLimitError(FORMAT_ERROR)
+            start = c
+    raise WorkloadLimitError(FORMAT_ERROR)
+
+
+def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None):
+    progress = progress or (lambda message: None)
+    progress("Checking dataset access, pinned revisions and download sizes")
     from huggingface_hub import HfApi
 
     api = api or HfApi(token=os.getenv("HF_TOKEN") or False)
@@ -29,15 +144,27 @@ def materialize(config, *, api=None, loader=None, tokenizer=None):
         model = api.model_info(
             config["model"], revision=config.get("model_revision"), files_metadata=True
         )
+    except MemoryError:
+        raise WorkloadLimitError(MEMORY_ERROR) from None
     except Exception:
         raise ValueError(
             "Custom HF dataset/tokenizer loading or access failed; check access and dependencies"
         ) from None
     if not info.sha or not model.sha:
         raise ValueError("Dataset and tokenizer commits must resolve before loading.")
-    sizes = [f.size for f in info.siblings if not f.rfilename.endswith((".md", ".gitattributes"))]
-    if not sizes or any(s is None for s in sizes) or sum(sizes) > MAX_DOWNLOAD:
-        raise ValueError("Dataset exceeds the 128 MiB download limit, or file sizes are unknown.")
+    if config.get("data_file"):
+        selected = [f for f in info.siblings if f.rfilename == config["data_file"]]
+        if len(selected) != 1:
+            raise ValueError("Selected JSON data file was not found at this dataset revision.")
+        sizes = [selected[0].size]
+    else:
+        sizes = [
+            f.size for f in info.siblings if not f.rfilename.endswith((".md", ".gitattributes"))
+        ]
+    if not sizes or any(size is None for size in sizes) or sum(sizes) > MAX_DOWNLOAD:
+        raise ValueError(
+            "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown."
+        )
     tokenizer_files = [
         f
         for f in model.siblings
@@ -46,36 +173,104 @@ def materialize(config, *, api=None, loader=None, tokenizer=None):
     ]
     if (
         any(f.size is None for f in tokenizer_files)
-        or sum(f.size for f in tokenizer_files) > MAX_DOWNLOAD
+        or sum(f.size for f in tokenizer_files) > TOKENIZER_DOWNLOAD_BYTES
     ):
         raise ValueError("Tokenizer exceeds the 128 MiB limit, or file sizes are unknown.")
+    default_source = (
+        config["repo_id"] == DEFAULT_DATASET
+        and config.get("data_file") == DEFAULT_DATA_FILE
+        and not config.get("config")
+        and config.get("split", "train") == "train"
+    )
     if loader is None:
-        from datasets import DownloadConfig, load_dataset
+        from huggingface_hub import HfFileSystem
 
         def loader(repo, **kwargs):
-            return load_dataset(
-                repo,
-                **kwargs,
-                streaming=True,
-                download_config=DownloadConfig(max_retries=0),
-                token=os.getenv("HF_TOKEN") or False,
-            )
+            if not config.get("data_file"):
+                raise WorkloadLimitError(FORMAT_ERROR)
+            def remote_rows():
+                # Prefetch a bounded MiB instead of one HTTP range per parser chunk.
+                fs = HfFileSystem(token=False if default_source else os.getenv("HF_TOKEN") or False)
+                path = f"datasets/{repo}@{info.sha}/{config['data_file']}"
+                with fs.open(path, "rb", block_size=1024 * 1024,
+                             cache_type="readahead") as stream:
+                    for row in iter_json_records(stream, skip_oversized=default_source):
+                        # Escaping Unicode/control characters can also expand a
+                        # bounded raw row beyond the existing canonical-size cap.
+                        if default_source and len(json.dumps(row).encode()) > MAX_ROW_BYTES:
+                            row = None
+                        yield row
+
+            cache_root = os.getenv("INFIRO_SHAREGPT_CACHE")
+            if default_source and cache_root:
+                from .workload_cache import cached_prefix, read_cached_prefix
+
+                path = cached_prefix(
+                    cache_root,
+                    {"repo_id": repo, "revision": info.sha,
+                     "data_file": config["data_file"], "max_rows": MAX_ROWS,
+                     "max_row_bytes": MAX_ROW_BYTES, "format_version": 2},
+                    lambda: islice(remote_rows(), MAX_ROWS),
+                    progress,
+                )
+                yield from read_cached_prefix(path, MAX_ROW_BYTES)
+            else:
+                yield from remote_rows()
 
     original_loader = loader
     rejected = []
+    # The bundled unfiltered source contains malformed conversations. Keep the
+    # same schema predicate, but make eligibility filtering explicit and hashed.
+    source_indices = []
+    sampling = {
+        "policy": "default_sharegpt_valid_prefix_v2",
+        "max_source_rows": MAX_ROWS,
+        "source_rows_scanned": 0,
+        "schema_rows_skipped": 0,
+        "oversized_rows_skipped": 0,
+    }
 
     def reject(message):
         rejected.append(message)
         raise WorkloadLimitError(message)
 
     def bounded_loader(*args, **kwargs):
-        for index, row in enumerate(original_loader(*args, **kwargs)):
-            if index >= MAX_ROWS:
-                reject("Dataset exceeds the 10,000 row scan limit; choose a smaller split.")
-            if len(json.dumps(row).encode()) > MAX_ROW_BYTES:
-                reject("Dataset row exceeds the 256 KiB limit.")
-            yield row
+        try:
+            rows = original_loader(*args, **kwargs)
+            if default_source:
+                rows = islice(rows, MAX_ROWS)
+            for index, row in enumerate(rows):
+                if index >= MAX_ROWS:
+                    reject("Dataset exceeds the 10,000 row scan limit; choose a smaller split.")
+                oversized = (default_source and row is None) or (
+                    len(json.dumps(row).encode()) > MAX_ROW_BYTES
+                )
+                if oversized and not default_source:
+                    reject("Dataset row exceeds the 256 KiB limit.")
+                if (index + 1) % 1000 == 0:
+                    progress(f"Validating and tokenizing ShareGPT source rows: {index + 1}")
+                if default_source:
+                    sampling["source_rows_scanned"] += 1
+                    if oversized:
+                        sampling["oversized_rows_skipped"] += 1
+                        continue
+                    try:
+                        first_human(row)
+                    except ShareGPTSchemaError:
+                        sampling["schema_rows_skipped"] += 1
+                        continue
+                    source_indices.append(index)
+                yield row
+        except WorkloadLimitError as exc:
+            reject(str(exc))
+        except MemoryError:
+            reject(MEMORY_ERROR)
+        except ValueError as exc:
+            if str(exc) in {CACHE_FULL, CACHE_INVALID}:
+                reject(str(exc))
+            raise
 
+    progress("Loading the pinned tokenizer")
     if tokenizer is None:
         from transformers import AutoTokenizer
 
@@ -86,6 +281,8 @@ def materialize(config, *, api=None, loader=None, tokenizer=None):
                 trust_remote_code=False,
                 token=os.getenv("HF_TOKEN") or False,
             )
+        except MemoryError:
+            raise WorkloadLimitError(MEMORY_ERROR) from None
         except Exception:
             raise ValueError(
                 "Custom HF dataset/tokenizer loading or access failed; "
@@ -97,14 +294,20 @@ def materialize(config, *, api=None, loader=None, tokenizer=None):
         total = 0
 
         def encode(self, text):
-            tokens = original_tokenizer.encode(text)
+            try:
+                tokens = original_tokenizer.encode(text)
+            except MemoryError:
+                reject(MEMORY_ERROR)
             self.total += len(tokens)
             if self.total > MAX_SOURCE_TOKENS:
                 reject("Dataset exceeds the 2,000,000 source token scan limit.")
             return tokens
 
         def decode(self, tokens):
-            return original_tokenizer.decode(tokens)
+            try:
+                return original_tokenizer.decode(tokens)
+            except MemoryError:
+                reject(MEMORY_ERROR)
 
     # Pinned revisions prevent a branch moving between preflight and sampling.
     def prepare():
@@ -129,11 +332,27 @@ def materialize(config, *, api=None, loader=None, tokenizer=None):
             tokenizer=BoundedTokenizer(),
         )
 
+    progress("Validating ShareGPT conversations and freezing the first human turns")
     try:
         manifest = prepare()
-    except ValueError:
+        if default_source:
+            manifest["row_indices"] = [source_indices[i] for i in manifest["row_indices"]]
+            manifest["sampling"] = sampling
+            progress(
+                f"Validated {sampling['source_rows_scanned']} source rows; "
+                f"excluded {sampling['schema_rows_skipped']} invalid and "
+                f"{sampling['oversized_rows_skipped']} oversized conversations"
+            )
+        if config.get("data_file"):
+            manifest["dataset"]["data_file"] = config["data_file"]
+            manifest["sha256"] = fingerprint(manifest)
+    except ValueError as exc:
         if rejected:
             raise WorkloadLimitError(rejected[0]) from None
+        if re.fullmatch(r"Insufficient valid dataset rows: need \d+, found \d+", str(exc)):
+            raise ValueError(
+                "Dataset has too few valid prompts; reduce prompt count or choose another split."
+            ) from None
         raise
     if len(json.dumps(manifest).encode()) > 16 * 1024 * 1024:
         raise ValueError("Frozen workload exceeds the 16 MiB limit.")

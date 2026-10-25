@@ -11,7 +11,7 @@ DEFAULT_GPU_HOURLY_COST_USD = 1.0
 
 IMAGE_REGISTRY = 'cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e'
 DEFAULT_IMAGES = {
-    framework: f'{IMAGE_REGISTRY}/llm-optimizer-{framework}:expanded-v1'
+    framework: f'{IMAGE_REGISTRY}/{framework}:sf261025-1'
     for framework in ('vllm', 'sglang', 'trtllm')
 }
 DEFAULT_PRESETS = {

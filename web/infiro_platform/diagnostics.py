@@ -4,6 +4,30 @@ import re
 from pathlib import Path
 
 
+VALIDATION_FIELDS = frozenset({
+    "dataset", "data_file", "repo_id", "revision", "config", "split", "run_id",
+    "input_tokens", "output_tokens", "num_prompts", "seed", "concurrency", "frameworks",
+    "gpu_type", "gpu_count", "gpu_hourly_cost_usd", "budget_usd_per_hour", "dry_run",
+    "execution", "trials", "workload", "model_id", "schema_version", "workload_sha256",
+})
+VALIDATION_CODES = frozenset({
+    "extra_forbidden", "missing", "value_error", "string_type", "int_type", "int_parsing",
+    "float_type", "float_parsing", "bool_type", "bool_parsing", "literal_error",
+    "greater_than", "greater_than_equal", "less_than", "less_than_equal", "finite_number",
+    "string_too_short", "string_too_long", "string_pattern_mismatch", "list_type", "dict_type",
+    "model_type", "too_short", "too_long",
+})
+
+
+def has_validation_failure(details):
+    return any(
+        item.get("type") == "ValidationError"
+        and item.get("module") in {"pydantic_core._pydantic_core", "pydantic_core",
+                                  "pydantic.main", "pydantic.error_wrappers"}
+        for item in details.get("exceptions", [])
+    )
+
+
 def failure_details(error):
     chain = []
     seen = set()
@@ -27,6 +51,24 @@ def failure_details(error):
             "module": type(current).__module__,
             "frames": frames[-8:],
         }
+        from pydantic import ValidationError
+
+        if isinstance(current, ValidationError):
+            fields = []
+            for entry in current.errors(include_input=False, include_context=False,
+                                        include_url=False)[:12]:
+                location = entry["loc"]
+                safe_path = all(
+                    (isinstance(part, int) and 0 <= part <= 10000)
+                    or (isinstance(part, str) and part in VALIDATION_FIELDS)
+                    for part in location
+                )
+                fields.append({
+                    "field": ".".join(map(str, location)) if location and safe_path
+                    else "unrecognized_field",
+                    "code": entry["type"] if entry["type"] in VALIDATION_CODES else "invalid",
+                })
+            item["validation_fields"] = fields
         code = getattr(getattr(getattr(current, "status", None), "code", None), "name", None)
         if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,40}", code):
             item["provider_status"] = code
@@ -103,6 +145,11 @@ def submission_validation_details(error, metadata):
 
 def failure_summary(details):
     names = [item["type"] for item in details["exceptions"]]
+    if has_validation_failure(details):
+        return (
+            "Configuration validation failed. Review the safe field diagnostics and prepare "
+            "a corrected configuration. This error will not be retried automatically."
+        )
     if any(
         "metadata.labels" in error.get("fields", [])
         for item in details["exceptions"]
@@ -158,9 +205,9 @@ def failure_summary(details):
     if any(name in names for name in ("TimeoutError", "ConnectTimeout", "ReadTimeout")):
         return "Provider connection or authentication timed out. Check provider access and network connectivity."
     if "MemoryError" in names or "ArrowMemoryError" in names:
-        return (
-            "Preparation exceeded the worker memory limit. Review the tokenizer and workload size."
-        )
+        from .workloads import MEMORY_ERROR
+
+        return MEMORY_ERROR
     if any(name in names for name in ("ImportError", "ModuleNotFoundError")):
         return "A required worker dependency is missing. See the safe technical diagnostics."
     if any(name in names for name in ("GatedRepoError", "RepositoryNotFoundError")):

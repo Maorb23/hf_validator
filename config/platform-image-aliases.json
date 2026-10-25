@@ -1,5 +1,8 @@
 {
   "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/vllm@sha256:6fee13c1255f849e3e67a732cd4987081e507a65ba4caeb52044c0765da6b9b7": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/vllm:workload1",
   "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/sglang@sha256:f6b1fc8f9d4b6d1422200f0c0affc0d4951df624b4c1ff650f3704902b747001": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/sglang:workload1",
-  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm@sha256:127113a484eb46b7e978b0aa00c2d71942fb8abef0bbb7bebb0d539e4ddcbb85": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm:workload1"
+  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm@sha256:127113a484eb46b7e978b0aa00c2d71942fb8abef0bbb7bebb0d539e4ddcbb85": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm:workload1",
+  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/vllm@sha256:7567b9bc02f4ddae7097423b5eb18796dc369269032aee534269a2b9fc4f4a57": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/vllm:sf261025-1",
+  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/sglang@sha256:77fe0b15b088d5e759449a98d0bed7798662e1ecde6840607a5a3eb7d2f887b1": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/sglang:sf261025-1",
+  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm@sha256:7ec94057da965efa4ccd611c32863998b3b53c15fc9185cc9ef62cb3219f1fa5": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm:sf261025-1"
 }

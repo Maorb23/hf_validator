@@ -525,7 +525,11 @@ def test_authorized_image_and_gpu_preset_defaults(gpu, count, preset):
     assert not missing
     assert config['preset'] == preset
     assert config['images'] == DEFAULT_IMAGES
-    assert all(image.endswith(':expanded-v1') for image in config['images'].values())
+    assert config['images'] == {
+        framework: f'cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/{framework}:sf261025-1'
+        for framework in ('vllm', 'sglang', 'trtllm')
+    }
+    assert all(len(image) <= 64 for image in config['images'].values())
     _, custom, missing = intake({**values, 'optimizer_preset': f'{count}gpu-custom'},
                                 {'bucket': 'bucket', 'images': {'vllm': 'custom:image'}})
     assert not missing

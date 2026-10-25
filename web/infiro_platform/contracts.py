@@ -25,6 +25,7 @@ class DatasetConfig(Input):
     repo_id: str = Field(min_length=1, max_length=180)
     revision: str = Field(default="main", max_length=100)
     config: str | None = Field(default=None, max_length=100)
+    data_file: str | None = Field(default=None, max_length=300)
     split: str = Field(default="train", min_length=1, max_length=100)
     model: str = Field(min_length=1, max_length=180)
     model_revision: str = Field(default="main", max_length=100)
@@ -55,6 +56,17 @@ class DatasetConfig(Input):
         for value in (self.revision, self.model_revision, self.config, self.split):
             if value and (not re.fullmatch(r"[\w./:\[\]%+-]+", value) or ".." in value):
                 raise ValueError("Invalid revision/config/split.")
+        if self.data_file:
+            if (
+                not re.fullmatch(r"[\w./-]+", self.data_file)
+                or self.data_file.startswith("/")
+                or ".." in self.data_file.split("/")
+            ):
+                raise ValueError("Use a relative data file path from the HF dataset repository.")
+            if self.config:
+                raise ValueError("Choose a dataset configuration or one data file, not both.")
+            if not self.data_file.lower().endswith(".json"):
+                raise ValueError("A selected ShareGPT data file must be JSON.")
         return self
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Metric = Literal["mean_e2e_latency_ms", "mean_ttft_ms", "output_throughput"]
 Policy = Literal[
@@ -37,11 +37,28 @@ class HFDataset(Contract):
     revision: str | None = None
     config: str | None = None
     split: str = Field(default="train", min_length=1)
+    data_file: str | None = Field(default=None, min_length=1, max_length=300)
+
+    @field_validator("data_file")
+    @classmethod
+    def relative_data_file(cls, value):
+        import re
+
+        if value is not None and (
+            not re.fullmatch(r"[\w./-]+", value)
+            or value.startswith("/")
+            or ".." in value.split("/")
+            or not value.lower().endswith(".json")
+        ):
+            raise ValueError("Use a relative JSON file path from the HF dataset repository")
+        return value
 
     @model_validator(mode="after")
     def normalize(self):
         from llm_optimizer.hf_workload import dataset_id
         self.repo_id = dataset_id(self.repo_id)
+        if self.data_file and self.config:
+            raise ValueError("Choose a dataset configuration or one data file, not both")
         return self
 
 

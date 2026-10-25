@@ -357,3 +357,39 @@ def test_default_remote_payload_works_with_older_worker_contract():
     request = OptimizationRequest.parse({'model': 'org/model', 'frameworks': ['vllm'],
         'gpu_type': 'gpu-h100-sxm', 'images': {'vllm': 'image'}, 'bucket': 'test'})
     assert 'workload_manifest' not in request.to_dict()
+
+
+def test_selected_file_identity_is_validated_and_reused_without_resampling(monkeypatch):
+    from llm_optimizer import hf_workload
+
+    from hf_model_watch.optimization.preparation import PreparationInputs
+
+    manifest = materialize()
+    manifest["dataset"]["data_file"] = "data/train.json"
+    manifest["sha256"] = hf_workload.fingerprint(manifest)
+    dataset = manifest["dataset"]
+    normalized = PreparationInputs.model_validate({"run_id": "run_selected", "dataset": dataset})
+    assert normalized.dataset.data_file == "data/train.json"
+    intent = NewStudyIntent(context=context(dataset), frameworks=["vllm"], idempotency_key="file")
+    sampler = Mock(side_effect=AssertionError("Frozen data must never be resampled"))
+    monkeypatch.setattr(hf_workload, "prepare_hf_workload", sampler)
+    adapter = OptimizationAdapter(None, {"workload_manifest": manifest})
+    payload = adapter.build_request(intent)
+    assert payload["workload_manifest"] == manifest
+    assert payload == adapter.build_request(intent)
+    assert payload["semantic_context"]["workload"]["dataset"]["data_file"] == "data/train.json"
+    intent.context.workload.dataset.data_file = "data/other.json"
+    with pytest.raises(ValueError, match="differs from intent"):
+        adapter.build_request(intent)
+    with pytest.raises(ValueError, match="requires a frozen workload manifest"):
+        OptimizationAdapter(None, {}).build_request(intent)
+    sampler.assert_not_called()
+
+
+@pytest.mark.parametrize("filename", ["/tmp/data.json", "../data.json", "data/../train.json",
+                                      "https://host/data.json?token=secret", "data.parquet", ""])
+def test_selected_file_contract_rejects_unsafe_or_unsupported_paths(filename):
+    from hf_model_watch.optimization.contracts import HFDataset
+
+    with pytest.raises(ValueError):
+        HFDataset(repo_id="org/data", data_file=filename)

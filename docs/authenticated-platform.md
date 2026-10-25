@@ -248,16 +248,16 @@ ShareGPT repositories are explicitly rejected rather than bypassing limits.
 
 | Limit | Value |
 | --- | --- |
-| Download / tokenizer preflight | 128 MiB; actual process network reads also bounded |
+| Selected ShareGPT file / tokenizer preflight | 1 GiB / 128 MiB; workload network reads bounded to 1 GiB |
 | Scanned rows / source tokens | 10,000 / 2,000,000 |
 | Row size / frozen artifact | 256 KiB / 16 MiB |
 | Prompt count / requested tokens | 1,000 / 2,000,000 |
 | Input / output / concurrency | 16,384 / 8,192 / 256 |
-| Child address space / disk / execution | 6 GiB / 256 MiB / 300 seconds |
+| ShareGPT child memory / disk / execution | 6 GiB / 1.25 GiB / 300 seconds |
 | Study timeout / trials per framework | 60–240 minutes / 1–100 |
 | Active operations per user | 10 |
 
-Download/row/token failures are explicit. Disk usage is checked by the supervisor;
+Download/row/token failures are explicit. ShareGPT dataset and preparation jobs get a 1 GiB network-read budget and a 1.25 GiB disk budget. Other worker operations keep the 128 MiB network-read and 256 MiB disk budgets. Disk usage is checked by the supervisor;
 Linux resource limits also bound file size, address space, CPU time and descriptors.
 Public HTTPS endpoints must resolve entirely to global IPs; the child revalidates
 and pins actual socket destinations, including redirects and DNS changes. Outbound
@@ -418,3 +418,158 @@ It checks desktop 1440×1000 and mobile 390×844 layouts, runtime/console errors
 horizontal overflow, keyboard access and empty browser storage. It verifies
 duplicate approval and cancellation too. It writes 15 screenshots and a
 verification JSON under ignored `web/screenshots/platform-*`.
+
+## Recommendation display names and ShareGPT configuration
+
+Recommendation names are optional, trimmed display metadata (160 characters;
+control characters are rejected). Blank and legacy names resolve without writes
+to a stable request excerpt, creation time in UTC and eight-character ID. Owners
+can rename through `PATCH /app/api/recommendations/<id>` with only `{"name": ...}`.
+Names are returned separately from selected model IDs and study names. Renaming
+never changes selection versions, prepared requests, approval digests, study names
+or execution IDs. Apply migration `0003_recommendation_name` when deploying this
+web change; no execution artifacts need rewriting.
+
+Configure offers Random, default HF ShareGPT, and previously frozen custom
+ShareGPT workloads. Its inline dataset editor reuses the Datasets API and isolated
+validation worker. Enter a repository, revision, optional configuration and split;
+the tokenizer defaults to the selected pinned model. Validate and freeze, then
+select the ready workload on Configure. Only ready datasets owned by the user can
+be prepared. A frozen sample must match the selected tokenizer and requested
+length/count/seed/concurrency settings; validate a new sample to change them.
+
+The default is [`anon8231489123/ShareGPT_Vicuna_unfiltered`](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered), revision `main`, split
+`train`, using the pinned `ShareGPT_V3_unfiltered_cleaned_split.json` file. The
+repository has multiple unrelated files and is about 4.35 GB total; this selected
+conversation file is about 673 MB at the current main revision. The Datasets form
+can select one relative JSON file from any repository. A selected file is pinned
+by resolved commit and included in the frozen workload identity. A selected JSON
+file may be up to 1 GiB; the tokenizer remains capped at 128 MiB. Without a file
+selection, every non-document repository file is counted toward the 1 GiB cap.
+There is no silent fallback to random or another source. Errors include advice on
+schema, access, revision/split, missing file and size limits. Deterministic validation rejections stop immediately rather than entering the transient worker retry loop; an oversized preparation links back to Configure with guidance to choose Random or a smaller source.
+Validation reports access/size preflight, tokenizer loading and conversation
+sampling stages. Private previews contain at most three prompts of 400 characters.
+Dataset commit, configuration, split, tokenizer revision and workload SHA-256
+remain visible in Approval and study details.
+
+The shared sampler accepts `conversations` arrays of `from`/`value` objects with
+`human`, `gpt` or `system` roles, nonempty text and at least one human turn. It
+samples only the first human turn, repeating/truncating its token IDs to the input
+length. Output length is a fixed serving-workload target, not an answer-quality
+score. Preparation stores one manifest for every selected framework and trial;
+workers must consume that manifest rather than resample the source.
+
+Configure downloads are explicitly **Previous configuration files**. They belong
+to the earlier preparation and do not represent unsaved form edits. The new
+Approval page exposes its own files after preparation finishes.
+
+Connection cards now contain expandable setup instructions and static copyable
+command templates. They explain the form fields separately from process
+environment settings. Validation scopes follow the implementation: inference
+`/models`, HF `whoami`, S3 `HeadBucket`, Tavily `/usage`, and Nebius project job
+listing. These establish the corresponding authentication/read connectivity,
+not successful model generation, object writes or GPU-job creation. W&B's help
+covers project/entity, immutable SecretStash versions, payload-read permission,
+`INFIRO_WANDB`, restarting both Django and the preparation worker, and the read-only
+`wandb_check --prepared` command. Secret access checks do not confirm W&B run
+connectivity. Help and clipboard templates never interpolate connection values.
+
+### Image compatibility for this change
+
+The checked-in `config/platform-images.json` digests map to `workload1` aliases
+for vLLM, SGLang and TensorRT-LLM in `config/platform-image-aliases.json`. Those
+images are documented above as including `/opt/infiro-worker` and the optimizer's
+frozen `workload_manifest` path. These UI, metadata and validation-progress changes
+require **no additional image rebuild for that configured set**. An installation
+still using `expanded-v1` needs the existing package overlay described by
+`docker/platform-worker.Dockerfile`; retain the reviewed manifest contract.
+This assessment uses repository configuration and the existing deployment record;
+running remote image contents were not probed. No images were built or published,
+and no GPU studies were submitted to verify runtime behavior.
+
+### Incremental ShareGPT JSON preparation
+
+Selected JSON data files are read at the pinned dataset commit in 64 KiB chunks.
+The web worker frames and decodes one record at a time, supporting top-level
+JSON arrays (including pretty-printed arrays) and JSONL. It does not pass arrays
+to Hugging Face's whole-document JSON loader. The 6 GiB memory ceiling and all
+existing row, token, schema and frozen-workload limits still apply. Sampling
+and workload identity continue to use the shared first-human-turn sampler.
+
+Select an explicit JSON data file. For wrapped objects, compressed files or other
+formats, convert offline to an array of ShareGPT records or one record per line.
+Shard into files with at most 10,000 rows and rows below 256 KiB, upload them to
+Hugging Face, then select one shard and validate again. A large file can pass the
+1 GiB preflight and still be rejected for row or source-token limits. Memory
+exhaustion is terminal and requires a smaller source or workload before retrying.
+
+The built-in unfiltered ShareGPT source uses a deterministic prefix of at most
+10,000 source rows. Every conversation must still pass the shared schema checks;
+invalid conversations (including empty later turns or missing human turns) are
+excluded as whole records. Invalid rows count toward the scan cap. The frozen
+manifest records the prefix policy, scan count, exclusion count, and original
+source row indices, all covered by its hash. This policy applies only to the
+built-in repository, selected file, default configuration and train split.
+Custom sources retain strict schema rejection. Existing frozen workloads are
+reused unchanged; prepare a new configuration to use the corrected default sample.
+
+### Persistent default ShareGPT source cache
+
+The worker retains the first 10,000 source records for the public default
+ShareGPT file under `INFIRO_PRIVATE_ROOT/users/<owner-id>/sharegpt-cache`.
+Cache keys include the repository, resolved commit, selected file, row cap,
+row-byte cap and cache format version. Changing tokenizer, seed or request
+lengths reuses the source records while generating a new frozen workload.
+The cache stores invalid records too, preserving original row indices and
+schema exclusion counts. Private and custom sources keep job-local loading.
+No tokenizer or credential cache is shared across jobs.
+
+On first use, the source is read with bounded 1 MiB network prefetch and parsed
+incrementally into a bounded JSONL prefix. Later preparations verify its checksum
+and read it locally. A partial download never becomes a cache hit; a lock and
+atomic completion marker protect publication. Progress distinguishes initial
+source caching, local reuse and tokenization, with counts every 1,000 rows.
+
+The cache is limited to 1 GiB, and its bytes are included in the existing
+1.25 GiB combined source-cache/job disk budget. Memory, network, row and token
+limits remain unchanged. No automatic deletion occurs: if old revisions fill
+the cache or an integrity check fails, preparation stops with guidance for the
+operator to remove unused revisions (or the account's cache) before retrying.
+Restart the preparation worker to enable caching for newly queued preparations;
+existing frozen artifacts remain unchanged. The first preparation still pays
+the download cost; tokenizer loading, tokenization and runtime research still
+run as required.
+
+The default ShareGPT prefix policy is now `default_sharegpt_valid_prefix_v2`.
+Records exceeding 256 KiB are excluded as whole conversations, without raising
+the limit. The incremental parser discards buffered bytes once the cap is reached
+and drains that record using bounded nesting/string state. Unsafe or incomplete
+framing still fails. Records whose escaped JSON representation exceeds the same
+cap are also excluded. Custom datasets retain strict row-size rejection.
+
+Oversized records count toward the 10,000 source-row cap and remain represented
+by exclusion placeholders in source-cache format version 2. The cache stores
+bounded envelopes around ordinary rows or placeholders; it never stores oversized
+record contents. Frozen manifests include `oversized_rows_skipped`, original
+source indices and the updated policy in their hash. Old cache entries and frozen
+workloads remain unchanged; new preparations use the new cache key and policy.
+
+### Selected-file preparation contracts and validation failures
+
+The optimizer's `HFDataset` semantic contract accepts an optional relative JSON
+`data_file`, preserving the pinned selected file through input normalization,
+intent generation and `request.json`. Preparation compares the complete dataset
+identity against the frozen manifest, including this field. A selected file
+requires a frozen manifest at the optimizer boundary; it cannot silently fall
+back to repository-level resampling. Older manifests without a selected file
+retain their existing identity comparison.
+
+Pydantic configuration validation failures are terminal on the first attempt,
+including failures recognized from older saved diagnostics. Provider/transient
+errors retain their retry policy. Diagnostics expose only allowlisted field
+paths and validation codes, omitting input values, arbitrary field names,
+validator messages and contexts. An already submitted study retains its
+controller reference and becomes `attention_required` on validation failure.
+Restart the worker to use these changes. Failed preparations require a new
+preparation from Review configuration; existing frozen requests remain unchanged.

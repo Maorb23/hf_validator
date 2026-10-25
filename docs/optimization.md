@@ -186,9 +186,13 @@ submission or GPU work.
 
 
 Default worker images use registry `cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e`,
-repositories `llm-optimizer-vllm`, `llm-optimizer-sglang`, and `llm-optimizer-trtllm`,
-with tag `expanded-v1`. Selecting those frameworks requires no image JSON.
-Explicit `--optimizer-images` or operator configuration overrides these defaults.
+repositories `vllm`, `sglang`, and `trtllm`, with tag `sf261025-1`.
+These short image references fit Nebius's 64-character limit. Selecting those
+frameworks requires no image JSON. Explicit `--optimizer-images` or operator
+configuration overrides these defaults. Infiro's image digests and aliases remain
+configured separately in `config/platform-images.json` and
+`config/platform-image-aliases.json`; its explicit images take precedence over
+these CLI defaults. Existing saved requests retain their original images.
 
 | Platform | 1 GPU default | 8 GPU default |
 |---|---|---|

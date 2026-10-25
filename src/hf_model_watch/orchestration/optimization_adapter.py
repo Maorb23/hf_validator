@@ -68,6 +68,9 @@ class OptimizationAdapter:
             from llm_optimizer.hf_workload import prepare_hf_workload, validate_manifest
             w = c.workload
             dataset = w.dataset.model_dump(exclude={'schema_version'})
+            if w.dataset.data_file is None:
+                # Older manifests have no selected-file field in their identity.
+                dataset.pop('data_file')
             cached = self.execution.get('workload_manifest')
             if cached is not None:
                 manifest = validate_manifest(cached)
@@ -78,6 +81,8 @@ class OptimizationAdapter:
                                for r in manifest['requests'])):
                     raise ValueError('Prepared custom workload differs from intent')
             else:
+                if w.dataset.data_file is not None:
+                    raise ValueError('Selected dataset data_file requires a frozen workload manifest')
                 manifest = prepare_hf_workload(dataset, c.model_id, c.revision,
                     w.input_tokens, w.output_tokens, w.num_prompts, w.seed)
             if w.workload_sha256 and w.workload_sha256 != manifest['sha256']:
