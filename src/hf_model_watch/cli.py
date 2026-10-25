@@ -207,8 +207,9 @@ def recommend(
         request = typer.prompt("Describe what model you want")
     if request is not None and len(request) > MAX_REQUEST_CHARS:
         raise typer.BadParameter(f"Request exceeds {MAX_REQUEST_CHARS} characters")
-    remembered_path = state_root / "conversation.json"
-    remembered = json.loads(remembered_path.read_text()).get("workload", {}) if remembered_path.exists() else {}
+    # Conversation defaults belong to the NanoClaw group adapter. Standalone
+    # invocations reuse settings only when an existing run is explicitly resumed.
+    remembered = {}
     supplied_inputs = {
         "gpu_count": gpu_count,
         "gpu_memory_gb": gpu_memory_gb,
@@ -472,7 +473,7 @@ def recommend(
             "status": "selected",
         }
         save_run(state_directory, state)
-        _prepare_selected_optimization(state_root, active_run_id)
+        _prepare_selected_optimization(state_root, active_run_id, interactive=True)
     if json_mode:
         typer.echo(
             json.dumps(
@@ -569,19 +570,41 @@ def recommend(
                     "status": "selected",
                 }
                 save_run(state_directory, state)
-                _prepare_selected_optimization(state_root, active_run_id)
+                _prepare_selected_optimization(state_root, active_run_id, interactive=True)
         typer.echo(f"Saved: {destination / 'recommendation.json'}")
 
 
 def _prepare_selected_optimization(state_root: Path, run_id: str, *, display: bool = True,
-                                   choices: dict | None = None) -> dict:
+                                   choices: dict | None = None, interactive: bool = False) -> dict:
     from hf_model_watch.conversation import ConversationAdapter
     from hf_model_watch.nanoclaw_mcp import load_optimizer_config
 
     try:
         load_optimizer_config(Path.cwd())
         result = ConversationAdapter(state_root=state_root).prepare_optimization(
-            {**(choices or {}), "run_id": run_id})
+            {**(choices or {}), "run_id": run_id}, remember_workload=False)
+        while interactive and result.get("status") == "needs_input":
+            missing = result.get("needs_input", [])
+            if not missing:
+                break
+            if result.get("reason"):
+                typer.echo(result["reason"])
+            # Retry after each answer so inferred presets and serving images can
+            # resolve subsequent fields without unnecessary questions.
+            fields = missing if result.get("reason") else missing[:1]
+            answers = [_prompt_optimization_choice(field, run_id) for field in fields]
+            if any(answer is None for answer in answers):
+                break
+            answer = {key: value for item in answers for key, value in item.items()}
+            if "images" in answer.get("execution", {}):
+                from hf_model_watch.recommender.run_state import load_run
+                _, saved = load_run(state_root, run_id)
+                answer["execution"]["images"] = {
+                    **saved.get("optimization_execution", {}).get("images", {}),
+                    **answer["execution"]["images"],
+                }
+            result = ConversationAdapter(state_root=state_root).prepare_optimization(
+                {**answer, "run_id": run_id}, remember_workload=False)
     except (ValueError, OSError) as exc:
         from hf_model_watch.recommender.run_state import locked_run, save_run
         result = {"status": "preparation_failed", "reason": str(exc),
@@ -603,6 +626,49 @@ def _prepare_selected_optimization(state_root: Path, run_id: str, *, display: bo
         if result.get("next_command"):
             typer.echo("Next (requires explicit approval): " + result["next_command"])
     return result
+
+
+def _prompt_optimization_choice(field: str, run_id: str) -> dict | None:
+    from hf_model_watch.optimization.intake import QUESTIONS
+    from hf_model_watch.optimization.preparation import PreparationInputs
+
+    labels = {
+        "budget_usd_per_hour": "Maximum total GPU budget in USD per hour",
+        "gpu_hourly_cost_usd": "GPU hourly cost in USD per GPU",
+        "execution.bucket": QUESTIONS["optimizer_bucket"],
+        "execution.preset": QUESTIONS["optimizer_preset"],
+    }
+    if field.startswith("execution.images."):
+        label = "Serving image for " + field.removeprefix("execution.images.")
+    elif field in PreparationInputs.model_fields or field in labels:
+        label = labels.get(field, QUESTIONS.get(field, field.replace("_", " ")))
+    else:
+        return None
+    if field == "selected_revision":
+        return None
+    while True:
+        numeric_type = (int if field in {"input_tokens", "output_tokens", "concurrency", "gpu_count"}
+                        else float if field in {"gpu_hourly_cost_usd", "budget_usd_per_hour"} else str)
+        value = typer.prompt(label, type=numeric_type)
+        try:
+            if isinstance(value, str):
+                value = value.strip()
+                if not value:
+                    raise ValueError("Enter a nonempty value")
+            if field.startswith("execution."):
+                parts = field.split(".")
+                execution = {parts[1]: {parts[2]: value}} if len(parts) == 3 else {parts[1]: value}
+                return {"execution": execution}
+            if field == "frameworks":
+                value = [item.strip() for item in value.split(",") if item.strip()]
+                if not value or len(value) != len(set(value)):
+                    raise ValueError("Enter unique framework names separated by commas")
+                if set(value) - {"vllm", "sglang", "trtllm"}:
+                    raise ValueError("Supported optimization frameworks: vllm, sglang, trtllm")
+            PreparationInputs.model_validate({"run_id": run_id, field: value})
+            return {field: value}
+        except ValueError as exc:
+            typer.echo(f"Invalid setting: {exc}")
 
 
 @app.command("select")
@@ -654,7 +720,8 @@ def select_recommendation(
             typer.echo(json.dumps({"status": "error", "error": str(exc)}))
             raise typer.Exit(code=1) from None
         raise typer.BadParameter(str(exc)) from exc
-    preparation = _prepare_selected_optimization(state_root, run_id, display=not json_mode)
+    preparation = _prepare_selected_optimization(state_root, run_id, display=not json_mode,
+                                                interactive=not json_mode)
     selection["optimization_preparation"] = preparation
     typer.echo(
         json.dumps(selection, sort_keys=True) if json_mode else f"Selected model: {model_id}"

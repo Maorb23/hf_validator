@@ -61,6 +61,30 @@ class OptimizationAdapter:
     def build_request(self, intent: NewStudyIntent) -> dict[str, Any]:
         """Build without submitting; shared by preparation and execution."""
         c = intent.context
+        manifest = None
+        if c.workload.dataset is None and self.execution.get('workload_manifest') is not None:
+            raise ValueError('Custom workload manifest requires a dataset identity')
+        if c.workload.dataset is not None:
+            from llm_optimizer.hf_workload import prepare_hf_workload, validate_manifest
+            w = c.workload
+            dataset = w.dataset.model_dump(exclude={'schema_version'})
+            cached = self.execution.get('workload_manifest')
+            if cached is not None:
+                manifest = validate_manifest(cached)
+                if (manifest['dataset'] != dataset or manifest['tokenizer'] != c.model_id
+                        or manifest['tokenizer_revision'] != c.revision or manifest['seed'] != w.seed
+                        or len(manifest['requests']) != w.num_prompts
+                        or any(r['prompt_len'] != w.input_tokens or r['output_len'] != w.output_tokens
+                               for r in manifest['requests'])):
+                    raise ValueError('Prepared custom workload differs from intent')
+            else:
+                manifest = prepare_hf_workload(dataset, c.model_id, c.revision,
+                    w.input_tokens, w.output_tokens, w.num_prompts, w.seed)
+            if w.workload_sha256 and w.workload_sha256 != manifest['sha256']:
+                raise ValueError('Custom workload changed since preparation')
+            w.dataset.revision = manifest['dataset']['revision']
+            w.workload_sha256 = manifest['sha256']
+            self.execution['workload_manifest'] = manifest
         from hf_model_watch.optimization.intake import execution_defaults
         execution = execution_defaults(c.model_dump(), self.execution, intent.frameworks)
         # Explicit semantic fields override execution defaults so workloads cannot drift.
@@ -77,6 +101,8 @@ class OptimizationAdapter:
             "optuna": {**self.execution.get("optuna", {}), "objectives": c.objectives},
             "semantic_context": c.model_dump(mode="json"),
         }
+        if manifest is not None:
+            payload['workload_manifest'] = manifest
         from llm_optimizer.search_profiles import expanded_server_args, merge_server_args
         # The optimizer owns parameter domains and framework-native rendering.
         payload["optuna"] = {"trials": 30, "sampler": "TPESampler", **payload["optuna"]}
@@ -136,6 +162,8 @@ class OptimizationAdapter:
                     or manifest.get("gpu_type") != measured.gpu_type
                     or manifest.get("gpu_count") != measured.gpu_count
                     or sorted(manifest.get("workload", [])) != sorted(_client_args(measured))
+                    or (measured.workload.dataset is not None
+                        and manifest.get('workload_sha256') != measured.workload.workload_sha256)
                     or manifest.get("objectives") != measured.objectives
                     or manifest.get("constraints") != _constraint_text(measured)
                 ):
@@ -157,6 +185,7 @@ class OptimizationAdapter:
             )
             stats = manifest.get("study_summary", {})
             summary.trial_state_counts[framework] = stats.get("trial_state_counts", {})
+            summary.failed_trials[framework] = stats.get("failed_trials", [])
             summary.gpu_seconds[framework] = stats.get("gpu_seconds", 0)
             # Full measurements, including successful trials from failed frameworks.
             for row in manifest.get("test_results", []):

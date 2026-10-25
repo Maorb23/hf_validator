@@ -242,6 +242,9 @@ def test_controller_results_keep_successful_trials_from_failed_framework():
             ],
             "study_summary": {
                 "trial_states": {"3": "FAIL"},
+                "failed_trials": [{"number": 3, "reason": "Incomplete benchmark",
+                                   "request_errors": [{"request_index": 17,
+                                                       "error": "empty stream"}]}],
                 "importance_per_objective": {
                     "output_throughput": {"status": "available", "values": {"batch": 1}}
                 }
@@ -257,6 +260,7 @@ def test_controller_results_keep_successful_trials_from_failed_framework():
     summary = adapter.results("remote", context())
     assert len(summary.candidates) == 2
     assert summary.framework_errors == {"sglang": "exit 1"}
+    assert summary.failed_trials["vllm"][0]["request_errors"][0]["request_index"] == 17
     assert summary.importance_per_objective["vllm"]["output_throughput"]["values"] == {"batch": 1}
     manifests["sglang"]["resolved_revision"] = "different"
     summary = adapter.results("remote", context())

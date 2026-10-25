@@ -37,6 +37,93 @@ def selected():
             'request_spec': {'gpu_count': 1}, 'recommendations': [{'model_id': MODEL}]}
 
 
+def test_cli_preparation_does_not_reuse_or_update_conversation(tmp_path, monkeypatch):
+    from hf_model_watch.cli import _prepare_selected_optimization
+
+    monkeypatch.delenv('HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON', raising=False)
+    monkeypatch.setattr('hf_model_watch.nanoclaw_mcp.load_optimizer_config', lambda _: None)
+    run = selected()
+    save_run(tmp_path / run['run_id'], run)
+    context = {'workload': {**inputs(), 'frameworks': ['vllm'],
+                            'optimizer_bucket': 'other-group-bucket'},
+               'active_run_id': 'run_other'}
+    path = tmp_path / 'conversation.json'
+    path.write_text(json.dumps(context))
+    original = path.read_bytes()
+
+    result = _prepare_selected_optimization(tmp_path, run['run_id'], display=False)
+
+    assert result['status'] == 'needs_input'
+    assert 'gpu_type' in result['needs_input']
+    assert path.read_bytes() == original
+    _, saved = load_run(tmp_path, run['run_id'])
+    assert 'gpu_type' not in saved['optimization_choices']
+
+
+def test_cli_recommendation_ignores_conversation_defaults(tmp_path):
+    from typer.testing import CliRunner
+    from hf_model_watch.cli import app
+
+    path = tmp_path / 'conversation.json'
+    # Even malformed group memory must not affect standalone CLI discovery.
+    path.write_text('invalid JSON belonging to a different interface')
+    result = CliRunner().invoke(app, ['recommend', '--model-id', MODEL,
+                                    '--json', '--state-root', str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)['status'] == 'needs_input'
+
+
+def test_interactive_cli_collects_run_choices_without_changing_group_memory(tmp_path, monkeypatch):
+    from hf_model_watch.cli import _prepare_selected_optimization
+
+    monkeypatch.delenv('HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON', raising=False)
+    monkeypatch.setattr('hf_model_watch.nanoclaw_mcp.load_optimizer_config', lambda _: None)
+    monkeypatch.setattr('hf_model_watch.optimization.preparation.research', lambda *a: report(VLLM))
+    run = selected()
+    save_run(tmp_path / run['run_id'], run)
+    memory = tmp_path / 'conversation.json'
+    memory.write_text('{"workload": {"gpu_type": "gpu-other"}}')
+    original = memory.read_bytes()
+    prompts = []
+    # An invalid platform is retried locally. The H100 preset and default image
+    # should resolve automatically after hardware and frameworks are supplied.
+    answers = iter(['invalid', 'gpu-h100-sxm', 128, 32, 4, 5.0, 'vllm', 'my-bucket'])
+    def prompt(label, **kwargs):
+        prompts.append(label)
+        return next(answers)
+    monkeypatch.setattr('hf_model_watch.cli.typer.prompt', prompt)
+
+    result = _prepare_selected_optimization(tmp_path, run['run_id'], interactive=True)
+
+    assert result['status'] == 'prepared'
+    assert result['summary']['bucket'] == 'my-bucket'
+    assert result['summary']['preset'] == '1gpu-16vcpu-200gb'
+    assert len(prompts) == 8
+    assert memory.read_bytes() == original
+    _, saved = load_run(tmp_path, run['run_id'])
+    assert saved['optimization_choices']['input_tokens'] == 128
+    assert saved['optimization_execution']['bucket'] == 'my-bucket'
+    assert not saved.get('optimization_reference')
+
+
+def test_interactive_cli_budget_retry_collects_both_cost_answers(tmp_path, monkeypatch):
+    from hf_model_watch.cli import _prepare_selected_optimization
+
+    monkeypatch.setenv('HF_MODEL_WATCH_OPTIMIZER_EXECUTION_JSON', json.dumps(execution()))
+    monkeypatch.setattr('hf_model_watch.nanoclaw_mcp.load_optimizer_config', lambda _: None)
+    monkeypatch.setattr('hf_model_watch.optimization.preparation.research', lambda *a: report(VLLM))
+    run = selected()
+    run['optimization_choices'] = {**inputs(), 'budget_usd_per_hour': 1}
+    save_run(tmp_path / run['run_id'], run)
+    answers = iter([2.0, 4.0])
+    monkeypatch.setattr('hf_model_watch.cli.typer.prompt', lambda *a, **kw: next(answers))
+
+    result = _prepare_selected_optimization(tmp_path, run['run_id'], interactive=True)
+
+    assert result['status'] == 'prepared'
+    assert load_run(tmp_path, run['run_id'])[1]['optimization_choices']['budget_usd_per_hour'] == 4
+
+
 VLLM = "vllm serve org/target --speculative-config '{\"model\":\"org/draft\",\"method\":\"eagle3\",\"num_speculative_tokens\":5}'"
 SGLANG = 'python -m sglang.launch_server --model-path org/target --speculative-algorithm EAGLE3 --speculative-draft-model-path org/draft --speculative-num-steps 5 --speculative-eagle-topk 1'
 
@@ -200,7 +287,10 @@ def test_nemotron_inspects_pinned_card_and_cites_only_supplied_urls(tmp_path, mo
     monkeypatch.setattr(openai, 'OpenAI', lambda **kw: client)
     result = research(MODEL, REV, tmp_path, core.Path('config/recommender.yaml'), {'vllm': 'pinned:image'})
     download.assert_called_once_with(MODEL, 'README.md', revision=REV)
-    payload = json.loads(create.call_args.kwargs['messages'][1]['content'])
+    messages = create.call_args.kwargs['messages']
+    payload = json.loads(next(m['content'] for m in messages if m['role'] == 'user'))
+    assert any('do not propose max_model_len' in m['content']
+               for m in messages if m['role'] == 'system')
     assert payload['revision'] == REV
     assert payload['serving_images'] == {'vllm': 'pinned:image'}
     assert result['inspection']['claims'] == [claim]
@@ -282,6 +372,64 @@ def test_nemotron_serving_settings_require_documented_values(tmp_path):
     assert not any(a.startswith('max_model_len=') for a in payload['server_args']['vllm'])
 
 
+@pytest.mark.parametrize('runtime', ['vllm', 'sglang', 'trtllm'])
+def test_research_never_injects_context_length(tmp_path, runtime):
+    data = report('serve org/target --max-model-len 262144 --gpu-memory-utilization 0.8')
+    data['inspection']['serving_settings'] = [{
+        'runtime': runtime, 'target_revision': REV, 'serving_image': 'pinned:image',
+        'status': 'verified', 'source_urls': [URL],
+        'arguments': {'max_model_len': 262144, 'gpu_memory_utilization': 0.8}}]
+    config = execution()
+    config['images'] = {runtime: 'pinned:image'}
+    result = prepare(selected(), {**inputs(), 'frameworks': [runtime]}, config,
+                     tmp_path, tmp_path, lambda *a: data)
+    args = json.loads((tmp_path / 'request.json').read_text())['server_args'][runtime]
+    assert not any(a.startswith('max_model_len=') for a in args)
+    if runtime != 'vllm':
+        assert not any(a.startswith('gpu_memory_utilization=') for a in args)
+        assert result['summary']['serving_settings'] == []
+
+
+@pytest.mark.parametrize('proposed', [['bfloat16', 'bfloat16'], ['bfloat16', 'float16']])
+def test_research_deduplicates_settings_and_omits_conflicts(tmp_path, proposed):
+    data = report('vllm serve org/target --dtype bfloat16\nvllm serve org/target --dtype float16')
+    data['inspection']['serving_settings'] = [{
+        'runtime': 'vllm', 'target_revision': REV, 'serving_image': 'pinned:image',
+        'status': 'verified', 'source_urls': [URL], 'arguments': {'dtype': dtype},
+    } for dtype in proposed]
+    result = prepare(selected(), inputs(), execution(), tmp_path, tmp_path, lambda *a: data)
+    args = json.loads((tmp_path / 'request.json').read_text())['server_args']['vllm']
+    assert [a for a in args if a.startswith('dtype=')] == (
+        ["dtype=['bfloat16']"] if len(set(proposed)) == 1 else [])
+    if len(set(proposed)) > 1:
+        assert result['summary']['serving_settings'] == []
+
+
+@pytest.mark.parametrize('scope', ['server_args', 'optuna', 'optuna_by_framework'])
+def test_explicit_settings_take_precedence_over_research(tmp_path, scope):
+    data = report('vllm serve org/target --dtype bfloat16 --max-model-len 262144')
+    data['inspection']['serving_settings'] = [{
+        'runtime': 'vllm', 'target_revision': REV, 'serving_image': 'pinned:image',
+        'status': 'verified', 'source_urls': [URL],
+        'arguments': {'dtype': 'bfloat16', 'max_model_len': 262144}}]
+    config = execution()
+    args = ["dtype=['float16']", 'max_model_len=[8192]']
+    if scope == 'server_args':
+        config[scope] = {'vllm': args}
+    elif scope == 'optuna':
+        config[scope]['server_args'] = args
+    else:
+        config[scope] = {'vllm': {'server_args': args}}
+    result = prepare(selected(), inputs(), config, tmp_path, tmp_path, lambda *a: data)
+    payload = json.loads((tmp_path / 'request.json').read_text())
+    effective = [*payload['server_args']['vllm'],
+                 *payload['optuna'].get('server_args', []),
+                 *payload['optuna_by_framework'].get('vllm', {}).get('server_args', [])]
+    assert [a for a in effective if a.startswith('dtype=')] == ["dtype=['float16']"]
+    assert [a for a in effective if a.startswith('max_model_len=')] == ['max_model_len=[8192]']
+    assert result['summary']['serving_settings'] == []
+
+
 def test_research_failure_preserves_selection_and_reports_incomplete(tmp_path, monkeypatch):
     import hf_model_watch.optimization.preparation as preparation
     run = selected()
@@ -312,12 +460,13 @@ def test_interactive_discovery_defers_optimization_choices_until_selection(tmp_p
     args = ['recommend', 'coding model', '--gpu-memory-gb', '80', '--gpu-count', '1',
             '--budget-usd-per-hour', '4', '--gpu-hourly-cost-usd', '2', '--license', 'any',
             '--framework-mode', 'sweep', '--speculative-decoding', 'off', '--state-root', str(tmp_path)]
-    result = CliRunner().invoke(app, args, input='1\n')
+    result = CliRunner().invoke(app, args, input='1\ngpu-h100-sxm\n128\n32\n4\nvllm\nmy-bucket\n')
     assert result.exit_code == 0, result.output
     assert 'RESEARCH STARTED' in result.output
-    assert 'Optimization preparation: needs_input' in result.output
-    assert 'gpu_type' in result.output
-    assert not list(tmp_path.glob('run_*/optimization-prepared/request.json'))
+    assert 'Optimization preparation: prepared' in result.output
+    assert result.output.index('Selected model:') < result.output.index('Nebius GPU platform')
+    assert list(tmp_path.glob('run_*/optimization-prepared/request.json'))
+    assert not (tmp_path / 'conversation.json').exists()
 
 
 def test_nanoclaw_discovers_without_optimizer_intake(tmp_path, monkeypatch):
@@ -643,6 +792,18 @@ def test_interactive_numeric_answers_are_saved_as_numbers(tmp_path, monkeypatch)
     assert isinstance(state['request_spec']['budget_usd_per_hour'], float)
     assert state['request_spec']['gpu_hourly_cost_usd'] == 1.0
     assert state['optimization_preparation']['summary']['maximum_hourly_gpu_cost_usd'] == 3
+    request = json.loads(Path(state['optimization_preparation']['request_file']).read_text())
+    args = request['server_args']['sglang']
+    names = [a.partition('=')[0].partition(':')[0] for a in args]
+    assert len(names) == len(set(names))
+    space = {a.partition('=')[0].partition(':')[0]: ast.literal_eval(a.partition('=')[2])
+             for a in args}
+    assert space['cuda_graph_backend_decode'] == ['disabled', 'full']
+    assert space['cuda_graph_backend_prefill'] == ['disabled', 'breakable']
+    assert space['attention_backend'] == ['triton', 'fa3', 'flashinfer']
+    assert space['disable_radix_cache*schedule_policy'] == [
+        [False, 'fcfs'], [False, 'lpm'], [True, 'fcfs'], [True, 'lpm']]
+    assert not any(n in names for n in ('disable_radix_cache', 'schedule_policy'))
 
 
 def test_preparation_reuses_full_optimizer_expanded_spaces_and_keeps_workload_fixed(tmp_path):

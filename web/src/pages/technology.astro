@@ -4,8 +4,141 @@ import PageIntro from '../components/PageIntro.astro';
 import { Capability } from '../components/Foundation.jsx';
 import Callout from '../components/Callout.astro';
 ---
-<Site title="Technology"><PageIntro title="The context behind every configuration." text="Model research, remote execution, and inference optimization connected through existing, traceable workflows."/>
-<section class="section technical-stack"><article id="research"><div class="chapter-number">01 / Research</div><div><h2>Evidence before execution.</h2><p>Nemotron assists model research and assessment using Hugging Face metadata and sourced Tavily research. Claims retain source URLs and verified, inferred, or unknown status.</p><p>Selection pins an immutable model revision. A research assessment does not establish that a model runs in a particular engine or image.</p><div class="artifact-example"><code>requirements → sources → assessment → selected revision</code><span>Research and runtime validation remain distinct.</span></div></div></article><article id="execution"><div class="chapter-number">02 / Execute</div><div><h2>Remote work, explicit ownership.</h2><p>The validation workflow submits worker payloads to Nebius Serverless AI Jobs. Workers produce inference measurements and artifacts for ingestion and reporting.</p><p>Optimization takes a separate path: Infiro prepares the request; the existing LLM Optimizer controller owns optimization GPU jobs, checkpoints, and result collection.</p><a class="text-button" href="/architecture">Explore the execution branches →</a></div></article><article><div class="chapter-number">03 / Optimize</div><div><h2>Search serving settings.<br/>Keep the workload fixed.</h2><p>The optimizer explores framework-specific configuration dimensions. Input/output lengths, prompt count, request concurrency, and seed stay attached to each comparison.</p><p>Default objectives are mean E2E latency and mean TTFT at concurrency one; at higher concurrency, output-token throughput and mean E2E latency. Supported scalar studies can use pruning under the existing restrictions.</p></div></article></section>
+<Site title="Technology"><PageIntro title="The context behind every configuration." text="Model research, request preparation, and inference optimization connected through existing, traceable workflows."/>
+<section class="section technology-workflow" aria-label="Research, prepare and optimize">
+  <nav class="workflow-nav" aria-label="Technology workflow">
+    <a href="#research"><span class="workflow-nav-number">01</span><span><strong>Research</strong><small>Assess model candidates</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg></a>
+    <a href="#execution"><span class="workflow-nav-number">02</span><span><strong>Prepare</strong><small>Define the request</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg></a>
+    <a href="#optimize"><span class="workflow-nav-number">03</span><span><strong>Optimize</strong><small>Run or reuse a study</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg></a>
+  </nav>
+  <div class="workflow-surface">
+    <article class="workflow-stage" id="research" tabindex="-1" data-reveal>
+      <div class="workflow-stage-heading"><span class="workflow-stage-number" aria-label="Step 1">01</span><h2>Evidence before execution.</h2></div>
+      <div class="workflow-stage-content">
+        <p>Nemotron assists model research and assessment using Hugging Face metadata and sourced Tavily research. Claims retain source URLs and verified, inferred, or unknown status.</p>
+        <p>Selection pins an immutable model revision.</p>
+        <div class="workflow-output"><span>Research record</span><code>requirements → sources → assessment → selected revision</code><p>Research and runtime validation remain distinct.</p></div>
+      </div>
+    </article>
+    <article class="workflow-stage" id="execution" tabindex="-1" data-reveal>
+      <div class="workflow-stage-heading"><span class="workflow-stage-number" aria-label="Step 2">02</span><h2>Select a model. Prepare the request.</h2></div>
+      <div class="workflow-stage-content">
+        <p>Research suggests model candidates; you choose which one to explore. Infiro prepares a JSON request containing the selected model, workload, serving settings, and optimization objectives.</p>
+        <p>Choose a new run on Nebius Serverless AI Jobs, or reuse compatible existing results for that model when they are available. Preparing the request keeps those choices explicit.</p>
+        <div class="workflow-output"><span>Prepared artifacts</span><div class="workflow-files"><code>intent.json</code><span aria-hidden="true">+</span><code>request.json</code></div><p>New remote run or compatible prior-study data.</p></div>
+        <a class="workflow-link" href="/architecture">Explore the connected workflow <span aria-hidden="true">→</span></a>
+      </div>
+    </article>
+    <article class="workflow-stage" id="optimize" tabindex="-1" data-reveal>
+      <div class="workflow-stage-heading"><span class="workflow-stage-number" aria-label="Step 3">03</span><h2>Search serving settings. Keep the workload fixed.</h2></div>
+      <div class="workflow-stage-content">
+        <div class="workflow-modes">
+          <div><h3>New remote run</h3><p>For a new run, LLM Optimizer executes the prepared study through Nebius Serverless AI Jobs. It manages trial scheduling, remote GPU jobs, checkpoints, and result collection.</p></div>
+          <div><h3>Reuse prior results</h3><p>For offline exploration, reuse a compatible previous study for the selected model. Analyze stored inference measurements and compare configurations without launching another GPU job.</p></div>
+        </div>
+        <p>The optimizer explores framework-specific configuration dimensions. Input/output lengths, prompt count, request concurrency, and seed stay attached to each comparison. Throughput, E2E latency, and TTFT objectives retain their measurement definitions.</p>
+      </div>
+    </article>
+  </div>
+</section>
 <Capability client:visible />
 <section class="section content-section"><h2>Strategies are tools, not promises.</h2><div class="capability-grid inner-grid"><article><h3>TPE</h3><p>A model-based sampler that uses observed outcomes to guide future proposals. Its behavior depends on budget and configuration.</p></article><article><h3>Gaussian process</h3><p>A surrogate-based approach useful for exploring smooth objectives. Availability depends on the optimizer’s optional dependencies.</p></article><article><h3>Random and grid</h3><p>Useful baselines and systematic exploration strategies. They are not Bayesian optimization.</p></article></div><p class="muted small">The public lab uses actual seeded Optuna samplers offline. It does not emulate engine execution or establish which sampler wins on inference workloads.</p><a class="text-button" href="/demo/search">Compare the search traces →</a></section>
-<section class="section content-section"><h2>Compatibility is specific.</h2><div class="table-scroll"><table><thead><tr><th>Technology</th><th>Existing role</th><th>Qualification</th></tr></thead><tbody><tr><td>vLLM · SGLang · TensorRT-LLM</td><td>Optimization preparation profiles</td><td>Verify the selected model, engine version, and worker image.</td></tr><tr><td>Nemotron</td><td>Research and assessment</td><td>Evidence confidence is separate from runtime support.</td></tr><tr><td>Nebius Serverless AI</td><td>Remote validation and optimization execution</td><td>Credentials, resources, and correct images are required by existing workflows.</td></tr><tr><td>Dynamo</td><td>Inference ecosystem reference</td><td>No Dynamo execution adapter is claimed in this repository.</td></tr></tbody></table></div></section><Callout /></Site>
+<section class="section technology-roles" aria-labelledby="technology-roles-title">
+  <h2 id="technology-roles-title">Technologies and their roles.</h2>
+  <dl class="technology-role-list">
+    <div class="technology-role-row"><dt class="technology-brands">
+      <span class="technology-brand"><img src="/logos/vllm.svg" alt="" width="26" height="26" loading="lazy"/><span>vLLM</span></span>
+      <span class="technology-brand"><img src="/logos/sglang.png" alt="" width="26" height="26" loading="lazy"/><span>SGLang</span></span>
+      <span class="technology-brand"><img src="/logos/nvidia.svg" alt="" width="26" height="26" loading="lazy"/><span>TensorRT-LLM</span></span>
+    </dt><dd>Optimized inference</dd></div>
+    <div class="technology-role-row"><dt class="technology-brands"><span class="technology-brand"><img src="/logos/nvidia.svg" alt="" width="26" height="26" loading="lazy"/><span>Nemotron</span></span></dt><dd>Research and assessment</dd></div>
+    <div class="technology-role-row"><dt class="technology-brands"><span class="technology-brand"><img class="technology-nebius-mark" src="/logos/nebius-dark.svg" alt="" width="72" height="26" loading="lazy"/><span>Nebius Serverless AI</span></span></dt><dd>Remote validation and optimization execution</dd></div>
+    <div class="technology-role-row"><dt class="technology-brands"><span class="technology-brand"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3v17h17M7 15l5-6 4 3 5-7"/></svg><span>LLM Optimizer</span></span></dt><dd>Bayesian parameter search</dd></div>
+    <div class="technology-role-row"><dt class="technology-brands"><span class="technology-brand"><img src="/logos/nvidia.svg" alt="" width="26" height="26" loading="lazy"/><span>Dynamo AI Configurator</span></span></dt><dd>Inference ecosystem reference — offline multi-GPU decisions if necessary</dd></div>
+  </dl>
+</section>
+<Callout /></Site>
+
+<style>
+  .technology-workflow { padding-bottom:36px; }
+  .workflow-nav { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0; margin-bottom:24px; border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden; }
+  .workflow-nav a { display:flex; align-items:center; gap:15px; padding:22px 24px; min-width:0; transition:background 180ms ease; }
+  .workflow-nav a + a { border-left:1px solid var(--line); }
+  .workflow-nav a:hover { background:#a7f3cf08; }
+  .workflow-nav a:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+  .workflow-nav-number,.workflow-stage-number { font-family:'Inter',sans-serif; font-variant-numeric:tabular-nums; }
+  .workflow-nav-number { font-size:13px; font-weight:600; line-height:1.5; letter-spacing:-.3px; color:var(--accent); }
+  .workflow-nav strong { display:block; font-size:15px; font-weight:500; color:var(--fg); }
+  .workflow-nav small { display:block; margin-top:6px; font-size:11px; color:var(--muted); }
+  .workflow-nav svg { flex:none; width:18px; height:18px; fill:none; stroke:var(--muted); stroke-width:1.3; margin-left:auto; transition:transform 180ms ease; }
+  .workflow-nav a:hover svg { transform:translateX(3px); stroke:var(--accent); }
+  .workflow-surface { border:1px solid var(--line); border-radius:12px; background:linear-gradient(120deg,#a7f3cf03,transparent 40%); overflow:hidden; }
+  .workflow-stage { display:grid; grid-template-columns:minmax(0,.85fr) minmax(0,1.25fr); gap:48px; padding:38px 36px; scroll-margin-top:112px; position:relative; outline:none; }
+  .workflow-stage + .workflow-stage { border-top:1px solid var(--line); }
+  .workflow-stage:target { box-shadow:inset 3px 0 0 var(--accent); background:#a7f3cf03; }
+  .workflow-stage:focus-visible { box-shadow:inset 0 0 0 2px var(--accent); }
+  .workflow-stage-heading { display:grid; grid-template-columns:36px minmax(0,1fr); gap:18px; align-items:start; }
+  .workflow-stage-number { display:block; color:var(--accent); font-size:28px; font-weight:500; line-height:1.15; letter-spacing:-1px; margin-top:2px; }
+  .workflow-stage h2 { font-size:clamp(25px,2.2vw,31px); line-height:1.25; letter-spacing:-1px; margin:0; max-width:340px; }
+  .workflow-stage-content { min-width:0; }
+  .workflow-stage-content > p,.workflow-modes p { font-size:14px; line-height:1.9; color:var(--body); margin:0 0 14px; }
+  .workflow-stage-content > p:last-child { margin-bottom:0; }
+  .workflow-output { display:grid; grid-template-columns:110px minmax(0,1fr); align-items:baseline; gap:8px 18px; border-top:1px solid var(--line); padding-top:18px; margin-top:22px; }
+  .workflow-output > span { font-size:10px; line-height:1.8; color:var(--muted); }
+  .workflow-output code { font:10px/1.9 var(--mono); color:var(--accent); overflow-wrap:anywhere; }
+  .workflow-output > p { grid-column:2; margin:0; color:var(--muted); font-size:10px; line-height:1.8; }
+  .workflow-files { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+  .workflow-files code { border:1px solid var(--line); border-radius:4px; padding:3px 8px; background:var(--surface); }
+  .workflow-files > span { color:var(--muted); font:10px var(--mono); }
+  .workflow-link { display:inline-flex; align-items:center; gap:14px; color:var(--accent); font-size:12px; margin-top:20px; }
+  .workflow-modes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; margin-bottom:22px; }
+  .workflow-modes > div { padding-left:16px; border-left:1px solid #a7f3cf40; }
+  .workflow-modes h3 { margin:0 0 10px; font:500 13px/1.5 'Inter',sans-serif; color:var(--fg); }
+  .workflow-modes p { font-size:12px; line-height:1.9; margin:0; }
+  .technology-roles { padding-top:64px; padding-bottom:72px; }
+  .technology-roles > h2 { font-size:clamp(28px,3vw,38px); letter-spacing:-1.2px; margin:0 0 30px; line-height:1.25; }
+  .technology-role-list { margin:0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .technology-role-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:center; gap:36px; padding:28px 12px; min-height:92px; }
+  .technology-role-row + .technology-role-row { border-top:1px solid var(--line); }
+  .technology-brands { display:flex; align-items:center; flex-wrap:wrap; gap:16px 24px; margin:0; }
+  .technology-brand { display:inline-flex; align-items:center; gap:10px; min-width:0; font-size:14px; line-height:1.5; font-weight:500; color:var(--fg); }
+  .technology-brand img { object-fit:contain; flex:none; width:26px; height:26px; }
+  .technology-brand svg { width:26px; height:26px; flex:none; color:var(--accent); }
+  .technology-brand .technology-nebius-mark { width:72px; height:26px; }
+  .technology-role-row dd { font-size:14px; line-height:1.8; margin:0; color:var(--body); max-width:510px; }
+  @media(max-width:1000px) {
+    .workflow-stage { grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:28px; padding:30px 24px; }
+    .workflow-stage-heading { gap:12px; grid-template-columns:30px minmax(0,1fr); }
+    .workflow-stage-number { font-size:24px; }
+    .workflow-stage h2 { font-size:26px; }
+    .workflow-nav a { padding:20px 16px; gap:10px; }
+    .workflow-modes { grid-template-columns:minmax(0,1fr); gap:18px; }
+    .workflow-output { grid-template-columns:minmax(0,1fr); gap:6px; }
+    .workflow-output > p { grid-column:auto; }
+    .technology-role-row { gap:28px; }
+  }
+  @media(max-width:700px) {
+    .technology-workflow { padding-bottom:20px; }
+    .workflow-nav { margin-bottom:18px; }
+    .workflow-nav a { padding:17px 12px; gap:9px; align-items:flex-start; }
+    .workflow-nav-number { font-size:11px; padding-top:1px; }
+    .workflow-nav strong { font-size:12px; }
+    .workflow-nav small,.workflow-nav svg { display:none; }
+    .workflow-stage { grid-template-columns:minmax(0,1fr); gap:22px; padding:28px 22px; scroll-margin-top:94px; }
+    .workflow-stage-heading { align-items:center; grid-template-columns:32px minmax(0,1fr); gap:14px; }
+    .workflow-stage h2 { max-width:390px; font-size:26px; }
+    .workflow-stage-number { margin-top:0; }
+    .workflow-stage-content > p { font-size:13px; }
+    .workflow-output { margin-top:18px; padding-top:16px; }
+    .workflow-output code { font-size:10px; }
+    .workflow-modes { gap:20px; }
+    .workflow-modes p { font-size:13px; }
+    .technology-roles { padding-top:42px; padding-bottom:48px; }
+    .technology-roles > h2 { margin-bottom:22px; }
+    .technology-role-row { grid-template-columns:minmax(0,1fr); gap:14px; padding:24px 0; }
+    .technology-brands { gap:14px 18px; }
+    .technology-brand { font-size:13px; }
+    .technology-role-row dd { font-size:13px; line-height:1.8; }
+  }
+  @media(prefers-reduced-motion:reduce) { .workflow-nav a,.workflow-nav svg { transition:none; } }
+</style>

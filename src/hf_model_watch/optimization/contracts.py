@@ -32,11 +32,26 @@ class Contract(BaseModel):
     schema_version: Literal[1] = 1
 
 
+class HFDataset(Contract):
+    repo_id: str = Field(min_length=1)
+    revision: str | None = None
+    config: str | None = None
+    split: str = Field(default="train", min_length=1)
+
+    @model_validator(mode="after")
+    def normalize(self):
+        from llm_optimizer.hf_workload import dataset_id
+        self.repo_id = dataset_id(self.repo_id)
+        return self
+
+
 class Workload(Contract):
     input_tokens: int = Field(gt=0)
     output_tokens: int = Field(gt=0)
     num_prompts: int = Field(default=100, gt=0)
     seed: int = 1
+    dataset: HFDataset | None = None
+    workload_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class Bound(Contract):
@@ -117,6 +132,7 @@ class StudySummary(Contract):
     state: str
     trial_state_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
     gpu_seconds: dict[str, float] = Field(default_factory=dict)
+    failed_trials: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     candidates: list[Candidate] = Field(default_factory=list)
     framework_errors: dict[str, str] = Field(default_factory=dict)
     importance_per_objective: dict[str, dict[str, Any]] = Field(default_factory=dict)

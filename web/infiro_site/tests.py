@@ -57,7 +57,7 @@ class FrontendServingTests(SimpleTestCase):
                 self.assertEqual(self.body(response), (self.root / file).read_bytes())
 
     def test_custom_404_and_missing_asset_never_return_homepage(self):
-        for route in ["/unknown", "/_astro/missing.js", "/data/missing.json", "/app"]:
+        for route in ["/unknown", "/_astro/missing.js", "/data/missing.json"]:
             response = self.client.get(route)
             self.assertEqual(response.status_code, 404)
             self.assertEqual(self.body(response), (self.root / "404.html").read_bytes())
@@ -125,6 +125,8 @@ class ExistingBuildParityTests(SimpleTestCase):
         from django.conf import settings
 
         for file in settings.FRONTEND_DIST.rglob("index.html"):
+            if file.parent.name == "app":
+                continue  # The private app shell now requires a session.
             route = "/" + file.parent.relative_to(settings.FRONTEND_DIST).as_posix().strip(".")
             response = self.client.get(route)
             self.assertEqual(response.status_code, 200, route)
@@ -155,7 +157,11 @@ class ProductionSettingsTests(SimpleTestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("explicit DJANGO_ALLOWED_HOSTS", result.stderr)
 
-    def test_production_defaults_to_https_without_a_database(self):
+    def test_production_defaults_to_https_with_private_database(self):
         result = self.load_settings(DJANGO_SECRET_KEY="test-only-" * 8, DJANGO_ALLOWED_HOSTS="example.invalid")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"debug": False, "ssl": True, "hsts": 31536000, "databases": {}})
+        result = json.loads(result.stdout)
+        self.assertFalse(result["debug"])
+        self.assertTrue(result["ssl"])
+        self.assertEqual(result["hsts"], 31536000)
+        self.assertEqual(result["databases"]["default"]["ENGINE"], "django.db.backends.sqlite3")

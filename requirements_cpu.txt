@@ -14,3 +14,6 @@ rapidfuzz>=3.0
 # Notebook kernel and UI.
 ipykernel>=6.29
 jupyterlab>=4.2
+
+# Optional custom optimization dataset preparation (CPU only).
+# Install separately when needed: pip install "llm-optimizer[dataset]"

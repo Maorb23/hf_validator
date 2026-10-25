@@ -1,0 +1,5 @@
+{
+  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/vllm@sha256:6fee13c1255f849e3e67a732cd4987081e507a65ba4caeb52044c0765da6b9b7": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/vllm:workload1",
+  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/sglang@sha256:f6b1fc8f9d4b6d1422200f0c0affc0d4951df624b4c1ff650f3704902b747001": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/sglang:workload1",
+  "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm@sha256:127113a484eb46b7e978b0aa00c2d71942fb8abef0bbb7bebb0d539e4ddcbb85": "cr.eu-north1.nebius.cloud/e00p24e8mwqab11v1e/trtllm:workload1"
+}

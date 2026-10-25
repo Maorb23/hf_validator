@@ -1,0 +1,11 @@
+# Install alongside requirements_cpu.txt; no serving runtimes or GPU torch.
+-r requirements-django.txt
+cryptography>=46,<51
+datasets>=3,<6
+transformers>=4.45,<6
+boto3>=1.35,<2
+numpy>=1.26,<3
+pytest>=8,<10
+nebius==0.6.27
+httpx>=0.27,<1
+ruff>=0.5,<1

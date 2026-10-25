@@ -259,6 +259,23 @@ grids remain unchanged:
 - Expanded choices include scheduling, attention, caching, KV dtype and graph settings
   for the relevant framework. Synthetic graph knobs are rendered as native settings.
 
+New SGLang requests from CLI and web preparation share decode graph choices
+`["disabled", "full"]` and scheduling policies `["fcfs", "lpm"]`. Prefill graph
+choices remain `["disabled", "breakable"]`, and attention backends remain
+`["triton", "fa3", "flashinfer"]`. Existing saved requests and studies retain
+their reviewed arguments. Restart long-lived web/preparation processes after
+deploying the updated optimizer package. Worker images include a copy of the
+profile, but execute the request's saved arguments without regenerating its
+search space; this choices-only update requires no worker image publication or
+GPU runtime rebuild.
+
+Nemotron research does not set context-length overrides such as `max_model_len`;
+runtime defaults apply unless the user explicitly configures a value. Research
+settings are restricted to framework-specific argument names, repeated proposals
+are deduplicated, and conflicting proposals are omitted. Explicit global and
+per-framework settings take precedence over research. These rules apply to new
+preparations; saved requests and existing approvals are not rewritten.
+
 The benchmark's actual concurrency, input/output lengths, prompt count and seed remain
 fixed in `client_args`. The selected objectives are unchanged. Default Optuna settings
 are 30 trials with `TPESampler`; configured global/per-framework settings take precedence.

@@ -23,6 +23,7 @@ from pydantic import Field
 from hf_model_watch.openclaw_adapter import (
     OpenClawToolAdapter, RecommendationInputs, ClarificationInputs, SelectionInputs, StrictModel, _default_cli_runner,
 )
+from hf_model_watch.optimization.contracts import HFDataset
 from hf_model_watch.recommender.run_state import load_run, locked_run, save_run
 from hf_model_watch.recommender.utilities import extract_constraints, speculative_preference
 
@@ -38,6 +39,7 @@ class WorkloadInputs(RecommendationInputs):
     output_tokens: int | None = Field(default=None, gt=0)
     concurrency: int | None = Field(default=None, gt=0)
     num_prompts: int | None = Field(default=None, gt=0)
+    dataset: HFDataset | None = None
     seed: int | None = None
     frameworks: list[str] | None = None
 
@@ -174,11 +176,13 @@ class ConversationAdapter(OpenClawToolAdapter):
         result["optimization_preparation"] = self.prepare_optimization({"run_id": inputs.run_id})
         return result
 
-    def prepare_optimization(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+    def prepare_optimization(self, raw: Mapping[str, Any], *, remember_workload: bool = True) -> dict[str, Any]:
         from hf_model_watch.optimization.preparation import PreparationInputs, prepare
         inputs = PreparationInputs.model_validate(raw)
-        with self._locked():
-            preferences = self._context().get("workload", {})
+        preferences = {}
+        if remember_workload:
+            with self._locked():
+                preferences = self._context().get("workload", {})
         with locked_run(self.state_root, inputs.run_id) as (directory, run):
             saved = {**preferences, **{k: v for k, v in run.get("request_spec", {}).items() if v is not None}}
             for key, value in saved.items():
@@ -220,7 +224,8 @@ class ConversationAdapter(OpenClawToolAdapter):
                           "requires_explicit_approval": True, "retry_tool": "prepare_optimization"}
             run["optimization_preparation"] = result
             save_run(directory, run)
-        self._activate_run(inputs.run_id)
+        if remember_workload:
+            self._activate_run(inputs.run_id)
         return result
 
     def validate_optimization_approval(self, approved: Any) -> None:

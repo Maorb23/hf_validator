@@ -1,4 +1,16 @@
-# Infiro public website
+# Infiro website and private platform
+
+The authenticated product is a separate `/app` area with its own React app shell,
+session authentication, encrypted connections, private datasets, recommendations,
+configuration review and explicit approval, plus a durable worker/controller
+integration. Public pages and bundled demonstrations remain intact.
+
+For the private product, use **[local startup, dry-run demonstration, provider
+requirements and tests](../docs/authenticated-platform.md)**. Its database,
+migrations, CPU dependencies and separate worker are required for `/app`; the
+public-only serving instructions below remain available for public previews.
+See the [verification report](../docs/platform-verification.md) for tested behavior,
+screenshots and the unchanged sibling optimizer test failure.
 
 Astro pages and React visualization islands built from the approved dark design, served by a lightweight Django layer. The built HTML and frontend URLs are preserved. The existing Python inference workflows and the `design-prototypes/` comparison remain separate.
 
@@ -90,9 +102,14 @@ For deployment, use Gunicorn with `infiro_site.wsgi:application`, not Django's d
 
 The name Infiro is provisional. Contact details have not been supplied, so the real conversion is an ungated evaluation-guide download; no fake contact form or booking action is shown.
 
-## Boundaries
+## Public/private boundary
 
-Only a Django page/static-file serving layer is added. No operational API, authentication, database, live jobs, controller activation, billing, or `/app` is implemented. Future operational work should reuse existing Python contracts and controllers. Public pages and bundled demonstrations remain independently buildable.
+Public pages and bundled demonstrations remain independently buildable. Private
+data is never exported to public JSON or static builds. Live submission is disabled
+by default and requires verified immutable worker images and matching Nebius
+SecretStash credential references; local testing launches no GPU jobs. See the
+[platform guide](../docs/authenticated-platform.md) for the precise behavior and
+remaining deployment requirements. Billing is not implemented.
 
 ### Import recorded optimizer runs
 

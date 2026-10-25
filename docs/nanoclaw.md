@@ -21,6 +21,24 @@ explicit, allowlisted mount decisions below.
 
 ## WSL setup
 
+Conversation memory belongs to one NanoClaw cluster and group. Give every
+cluster/group its own host state directory and mount only that directory into its
+agent container. Never share this mount with another group, cluster, or the
+standalone CLI's artifact directory. The examples below provision one group;
+choose a different host state path for each additional group.
+
+Standalone CLI recommendations do not load conversation defaults, and CLI
+optimization preparation does not read or update conversation memory. Explicitly
+resuming a run preserves that run's settings. NanoClaw passes its group defaults
+to the CLI explicitly and keeps its conversation memory within the group mount.
+
+After interactive CLI model selection, the terminal asks for missing optimization
+settings and saves each answer to that run before retrying preparation. Known
+settings are reused within the run; supported instance presets and serving images
+use the existing defaults. JSON commands return `needs_input` without prompting,
+as before. Preparation displays the resulting configuration and explicit approval
+command; it does not submit an optimization job.
+
 A Docker daemon reachable from the WSL distribution is required before a live NanoClaw session can
 run. Verify it from WSL:
 

@@ -140,3 +140,5 @@ flows, with saved workload preferences and explicit submission approval. Setup:
 PYTHONPATH=src python -m hf_model_watch --help
 PYTHONPATH=src python -m hf_model_watch optimization --help
 ```
+
+Custom optimization workloads: [HF ShareGPT dataset preparation and worker rollout](docs/optimization-hf-datasets.md).

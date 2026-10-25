@@ -1,10 +1,12 @@
 #!/usr/bin/env python
-"""Manage the database-free Django serving layer for the built public website."""
+"""Manage the public website and private Django platform."""
 import os
 import sys
+from pathlib import Path
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "infiro_site.settings")
     from django.core.management import execute_from_command_line
 
