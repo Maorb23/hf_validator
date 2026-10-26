@@ -8,7 +8,7 @@ import '@fontsource/jetbrains-mono/latin-400.css';
 
 export function Icon({ name = 'arrow', size = 20, ...props }) {
   const paths = {
-    arrow: <><path d="M5 12h14M13 6l6 6-6 6" /></>,
+    arrow: null,
     diagonal: <><path d="M6 18 18 6M6 6h12v12" /></>,
     research: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9M8 5.3l8 4.5" /></>,
     optimize: <><path d="M5 4v16h15M8 15l4-5 4 3 4-7" /><circle cx="12" cy="10" r="1" /><circle cx="16" cy="13" r="1" /></>,
@@ -68,7 +68,7 @@ export function HeroGraphic() {
     <div className="graphic-tabs" aria-label="Visualization"><button aria-pressed={!landscape} onClick={() => setLandscape(false)}>Pareto frontier</button><button aria-pressed={landscape} onClick={() => setLandscape(true)}>Search landscape</button></div>
     <TradeoffPlot choice={choice} landscape={landscape} />
     <div className="plot-controls"><span>{landscape ? 'Explore the search space' : 'What matters to your workload?'}</span><div className="segmented" aria-label="Objective preference">{['latency', 'balanced', 'throughput'].map(value => <button key={value} aria-pressed={choice === value} onClick={() => {setChoice(value); setLandscape(false);}}>{value}</button>)}</div></div>
-    <div className="graphic-foot"><span className="legend-dot" />Illustrative data · no measured performance<span className="corner-mark">↗</span></div>
+    <div className="graphic-foot"><span className="legend-dot" />Illustrative data · no measured performance<span className="corner-mark">→</span></div>
   </div>;
 }
 
@@ -112,7 +112,7 @@ const engineSettings = {
 export function Capability() {
   const [engine, setEngine] = useState('vllm');
   return <section className="capability section" id="optimization"><div className="capability-copy"><h2>A better configuration<br />starts with <em>your workload.</em></h2><p>Keep the benchmark fixed. Explore serving parameters. Compare throughput and latency with the context that makes the measurements meaningful.</p><ul className="benefit-list"><li><Icon name="check" /> Fixed input lengths, concurrency, and seed</li><li><Icon name="check" /> Framework-specific parameter search</li><li><Icon name="check" /> Explicit objectives and Pareto analysis</li></ul><a href="/architecture" className="text-button">See where optimization fits <Icon /></a><p className="compatibility-note">Preparation profiles cover vLLM, SGLang, and TensorRT-LLM. Model and runtime compatibility must be checked.</p></div>
-    <div className="config-card"><div className="config-header"><span><Icon name="optimize" size={17} />Serving configuration</span></div><div className="engine-tabs" aria-label="Inference engine">{[['vllm','vLLM'],['sglang','SGLang'],['trtllm','TensorRT-LLM']].map(([value,label]) => <button key={value} onClick={() => setEngine(value)} aria-pressed={engine === value}>{label}<span aria-hidden="true">↗</span></button>)}</div><div className="configuration-body"><div className="fixed-workload"><span className="fixed-icon"><Icon name="pin" size={16}/></span><div><strong>Workload stays fixed</strong><span>Model revision · request concurrency · tokens</span></div><span className="fixed-tag">FIXED</span></div><div className="parameter-table"><div className="parameter-table-head"><span>SEARCH DIMENSION</span><span>WHAT IT CONTROLS</span></div>{engineSettings[engine].map(([name,label], i) => <div className="parameter-row" key={name}><code><span className="parameter-number">0{i + 1}</span>{name}</code><span>{label}</span></div>)}</div><div className="config-objectives"><span>MEASURE</span><span>Throughput <Icon name="diagonal" size={13}/></span><span>Latency <span aria-hidden="true">↘</span></span></div></div><div className="config-footer"><span className="legend-dot" />Parameter names are illustrative; domains come from the prepared request.</div></div>
+    <div className="config-card"><div className="config-header"><span><Icon name="optimize" size={17} />Serving configuration</span></div><div className="engine-tabs" aria-label="Inference engine">{[['vllm','vLLM'],['sglang','SGLang'],['trtllm','TensorRT-LLM']].map(([value,label]) => <button key={value} onClick={() => setEngine(value)} aria-pressed={engine === value}>{label}<span aria-hidden="true">→</span></button>)}</div><div className="configuration-body"><div className="fixed-workload"><span className="fixed-icon"><Icon name="pin" size={16}/></span><div><strong>Workload stays fixed</strong><span>Model revision · request concurrency · tokens</span></div><span className="fixed-tag">FIXED</span></div><div className="parameter-table"><div className="parameter-table-head"><span>SEARCH DIMENSION</span><span>WHAT IT CONTROLS</span></div>{engineSettings[engine].map(([name,label], i) => <div className="parameter-row" key={name}><code><span className="parameter-number">0{i + 1}</span>{name}</code><span>{label}</span></div>)}</div><div className="config-objectives"><span>MEASURE</span><span>Throughput <Icon name="diagonal" size={13}/></span><span>Latency <span aria-hidden="true">↘</span></span></div></div><div className="config-footer"><span className="legend-dot" />Parameter names are illustrative; domains come from the prepared request.</div></div>
   </section>;
 }
 

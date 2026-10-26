@@ -26,7 +26,7 @@ import Callout from '../components/Callout.astro';
         <p>Research suggests model candidates; you choose which one to explore. Infiro prepares a JSON request containing the selected model, workload, serving settings, and optimization objectives.</p>
         <p>Choose a new run on Nebius Serverless AI Jobs, or reuse compatible existing results for that model when they are available. Preparing the request keeps those choices explicit.</p>
         <div class="workflow-output"><span>Prepared artifacts</span><div class="workflow-files"><code>intent.json</code><span aria-hidden="true">+</span><code>request.json</code></div><p>New remote run or compatible prior-study data.</p></div>
-        <a class="workflow-link" href="/architecture">Explore the connected workflow <span aria-hidden="true">→</span></a>
+        <a class="workflow-link" href="/architecture">Explore the connected workflow <span aria-hidden="true"></span></a>
       </div>
     </article>
     <article class="workflow-stage" id="optimize" tabindex="-1" data-reveal>
@@ -42,7 +42,7 @@ import Callout from '../components/Callout.astro';
   </div>
 </section>
 <Capability client:visible />
-<section class="section content-section"><h2>Strategies are tools, not promises.</h2><div class="capability-grid inner-grid"><article><h3>TPE</h3><p>A model-based sampler that uses observed outcomes to guide future proposals. Its behavior depends on budget and configuration.</p></article><article><h3>Gaussian process</h3><p>A surrogate-based approach useful for exploring smooth objectives. Availability depends on the optimizer’s optional dependencies.</p></article><article><h3>Random and grid</h3><p>Useful baselines and systematic exploration strategies. They are not Bayesian optimization.</p></article></div><p class="muted small">The public lab uses actual seeded Optuna samplers offline. It does not emulate engine execution or establish which sampler wins on inference workloads.</p><a class="text-button" href="/demo/search">Compare the search traces →</a></section>
+<section class="section content-section"><h2>Strategies are tools, not promises.</h2><div class="capability-grid inner-grid"><article><h3>TPE</h3><p>A model-based sampler that uses observed outcomes to guide future proposals. Its behavior depends on budget and configuration.</p></article><article><h3>Gaussian process</h3><p>A surrogate-based approach useful for exploring smooth objectives. Availability depends on the optimizer’s optional dependencies.</p></article><article><h3>Random and grid</h3><p>Useful baselines and systematic exploration strategies. They are not Bayesian optimization.</p></article></div><p class="muted small">The public lab uses actual seeded Optuna samplers offline. It does not emulate engine execution or establish which sampler wins on inference workloads.</p><a class="text-button" href="/demo/search">Compare the search traces </a></section>
 <section class="section technology-roles" aria-labelledby="technology-roles-title">
   <h2 id="technology-roles-title">Technologies and their roles.</h2>
   <dl class="technology-role-list">
