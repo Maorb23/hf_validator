@@ -4,6 +4,8 @@ The private product lives at `/app`. It shares Django and the Astro/React build
 with the public website, but has its own app shell and routes. Existing public
 pages, recorded demonstrations, CLI commands and NanoClaw integrations are preserved.
 
+For a hosted installation, see [Railway deployment, migration and recovery](web/railway.md).
+
 ## Local startup
 
 Run from the `hf_validator` repository root. Python 3.11+ and Node compatible with
@@ -13,6 +15,7 @@ updated `llm_optimizer.hf_workload` and remote controller contracts.
 ```bash
 python3 -m venv /tmp/infiro-platform-env
 /tmp/infiro-platform-env/bin/pip install -r requirements_cpu.txt -r web/requirements-platform.txt
+/tmp/infiro-platform-env/bin/pip install --no-deps -e ../bento_extend/llm-optimizer
 export PYTHONPATH="$PWD/src:$PWD/../bento_extend/llm-optimizer/src"
 
 # Create once. Do not regenerate keys when restarting the server or worker.
@@ -598,3 +601,53 @@ Migration `0004_job_deleted_at_job_deleted_trials_and_more` adds the persistent
 history fields. After updating another installation, run `web/manage.py migrate`,
 rebuild `web/` and restart Django and the worker. No GPU jobs are needed to apply
 or test this feature.
+
+
+## Dataset file selection and image verification
+
+Custom ShareGPT sources require a Hugging Face repository ID or repository URL,
+a revision, and one relative `.json` file. The selected file defines the records;
+there is no separate repository configuration or split filtering. The API rejects
+missing files and non-default split/configuration requests before queueing work.
+The internal `train` split value is retained for manifest compatibility and does
+not select or filter a split of the chosen file. Existing frozen artifacts retain
+their identities.
+
+Install the configured optimizer package in the Python environment used by both
+Django and the worker. An editable CPU-only installation is shown in local startup
+above; it avoids relying solely on a terminal's extra `PYTHONPATH`. Missing optimizer
+imports produce a static 503 response instead of an unhandled API exception.
+
+Every GPU worker bootstrap now exercises the optimizer installed inside its actual
+image before invoking inference. It verifies the rendered `workload_path`, reloads
+the approved manifest, and checks that the native request sampler returns identical
+prompts and token budgets. Unsupported images and random-data fallback fail closed.
+A successful probe logs only its framework, hash and request count, never prompts.
+The existing storage integrity and run ownership checks remain in place.
+
+The CPU probe can be tested locally without GPUs. A successful local probe does
+not establish that a deployed image passed; its live job log must include
+`frozen_workload_verification` with the approved hash. No live GPU job was launched
+for this change because the local environment has no working Docker integration.
+
+Dataset preparation supports an explicit `format`: `sharegpt` (the default for
+existing clients), `alpaca`, or `messages`. Select one relative `.json` file in
+an HF dataset repository; JSON arrays and newline-delimited objects are accepted.
+Alpaca requires a nonempty string `instruction`; optional string `input` is
+appended with two newlines when nonblank. Messages requires a nonempty `messages`
+list of text-only `system`, `user`, or `assistant` role/content objects and uses
+the first user message. All messages are validated; multimodal content is rejected.
+Responses are not used. Malformed custom rows fail validation with a row number.
+
+Adapters run before the existing seeded sampler, token limits, and fixed-length
+prompt normalization. New formats record `dataset.source_format` and
+`dataset.adapter_version` (currently 1) in the hashed frozen manifest. ShareGPT
+manifest structure and hashes remain unchanged. GPU workers consume the frozen
+requests through the same workload path; no dataset fetching or adaptation is
+performed during a study. Arbitrary URLs, remote dataset code, CSV and Parquet
+remain unsupported.
+
+The dataset form opens with empty repository and JSON file fields. **Add HF
+dataset** starts a fresh form; validation creates a separate frozen workload
+and preserves existing datasets and studies. Tokenizer and sampling defaults
+remain prefilled.

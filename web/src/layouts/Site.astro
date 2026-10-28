@@ -6,7 +6,7 @@ import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-600.css';
 import '@fontsource/jetbrains-mono/latin-400.css';
-const { title = 'Inference, with evidence', description = 'Infiro connects model research, remote execution, and inference optimization. Explore the architecture and reproducible optimization demonstrations.' } = Astro.props;
+const { title = 'Inference, with evidence', description = 'Confiron connects model research, remote execution, and inference optimization. Explore the architecture and reproducible optimization demonstrations.' } = Astro.props;
 const path = Astro.url.pathname.replace(/\/$/, '') || '/';
 const links = [['/technology','Technology'],['/architecture','Architecture'],['/benchmarks','Benchmarks'],['/demo','Demos']];
 ---
@@ -15,16 +15,16 @@ const links = [['/technology','Technology'],['/architecture','Architecture'],['/
   <head>
     <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} /><meta name="theme-color" content="#101316" />
-    <meta property="og:title" content={`${title} — Infiro`} /><meta property="og:description" content={description} /><meta property="og:type" content="website" />
+    <meta property="og:title" content={`${title} — Confiron`} /><meta property="og:description" content={description} /><meta property="og:type" content="website" />
     <meta property="og:image" content={Astro.site ? new URL('/social.png',Astro.site) : '/social.png'} /><meta name="twitter:card" content="summary_large_image" />
-    <link rel="icon" href="/favicon.svg" /><title>{title} — Infiro</title>
+    <link rel="icon" href="/favicon.svg" /><title>{title} — Confiron</title>
     {Astro.site && <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />}
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
-    <header class="public-header"><div class="header-inner"><a class="wordmark" href="/" aria-label="Infiro home"><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><path d="M4 25V7h6v12h6V7h6v12h6v6H4Z" fill="currentColor"/><path d="M22 3h6v6h-6z" fill="var(--accent)"/></svg><span>infiro<span class="wordmark-dot">.</span></span></a><nav class="public-nav" aria-label="Main navigation">{links.map(([href,label]) => <a href={href} aria-current={path===href || (href==='/demo' && path.startsWith('/demo/')) ? 'page' : undefined}>{label}</a>)}</nav><a class="header-demo" href="/demo/search">Explore the lab <span aria-hidden="true"></span></a><button id="menu-toggle" class="menu-toggle" aria-expanded="false" aria-controls="public-mobile" aria-label="Open navigation"><span></span><span></span></button></div><nav id="public-mobile" class="public-mobile" aria-label="Mobile navigation" hidden>{links.map(([href,label]) => <a href={href}>{label}<span aria-hidden="true"></span></a>)}<a href="/methodology">Methodology <span aria-hidden="true"></span></a></nav></header>
+    <header class="public-header"><div class="header-inner"><a class="wordmark" href="/" aria-label="Confiron home"><img src="/logos/confiron-icon.svg" width="32" height="32" alt=""/><span>confiron<span class="wordmark-dot">.</span></span></a><nav class="public-nav" aria-label="Main navigation">{links.map(([href,label]) => <a href={href} aria-current={path===href || (href==='/demo' && path.startsWith('/demo/')) ? 'page' : undefined}>{label}</a>)}</nav><a class="header-demo" href="/demo/search">Explore the lab <span aria-hidden="true"></span></a><button id="menu-toggle" class="menu-toggle" aria-expanded="false" aria-controls="public-mobile" aria-label="Open navigation"><span></span><span></span></button></div><nav id="public-mobile" class="public-mobile" aria-label="Mobile navigation" hidden>{links.map(([href,label]) => <a href={href}>{label}<span aria-hidden="true"></span></a>)}<a href="/methodology">Methodology <span aria-hidden="true"></span></a></nav></header>
     <main id="main"><noscript><div class="section no-script">Interactive controls require JavaScript. Technical explanations, methodology, and <a href="/evaluation-guide">the evaluation guide</a> remain available.</div></noscript><slot /></main>
-    <footer class="public-footer section"><div class="footer-brand"><a class="wordmark" href="/">Infiro.</a><p>Inference, with evidence.<br/>Efficient, robust.</p></div><div><a href="/technology">Technology</a><a href="/architecture">Architecture</a><a href="/benchmarks">Benchmarks</a></div><div><a href="/demo">Interactive lab</a><a href="/methodology">Measurement methodology</a><a href="/evaluation-guide">Evaluation guide</a></div><div class="footer-bottom"><span>© Infiro 2026</span><span>Research → execution → evidence</span></div></footer>
+    <footer class="public-footer section"><div class="footer-brand"><a class="wordmark" href="/">Confiron.</a><p>Inference, with evidence.<br/>Efficient, robust.</p></div><div><a href="/technology">Technology</a><a href="/architecture">Architecture</a><a href="/benchmarks">Benchmarks</a></div><div><a href="/demo">Interactive lab</a><a href="/methodology">Measurement methodology</a><a href="/evaluation-guide">Evaluation guide</a></div><div class="footer-bottom"><span>© Confiron 2026</span><span>Research → execution → evidence</span></div></footer>
     <script>
       const button = document.querySelector<HTMLButtonElement>('#menu-toggle');
       const menu = document.querySelector<HTMLElement>('#public-mobile');

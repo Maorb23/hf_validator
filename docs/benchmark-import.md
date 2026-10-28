@@ -1,5 +1,7 @@
 # Benchmark import verification
 
+## Initial import
+
 The Benchmarks explorer and study replay now include all seven selected exports,
 with no study-duration cutoff. The source exports were read without modification;
 backup files were not selected. See [machine-readable audit](benchmark-import-audit.json)
@@ -104,3 +106,33 @@ The focused import suite passed all 14 model/variant/viewport combinations, plus
 all four short/empty studies, with keyboard selection, source links, expanded
 metadata and no page overflow or browser errors. Browser evidence is saved under
 ignored `web/screenshots/`. Long conflict strings wrap within the mobile inspector.
+
+
+## MiniCPM refresh from `cpm_2_c128.json`
+
+The current publication incorporates the updated export: **13 MiniCPM studies,
+213 trials, 172 valid measurements and 41 diagnostics**. Eight studies and 118
+trial numbers overlap the initial import; their measurements are unchanged.
+Five studies and 95 trials were added, including 88 valid measurements.
+The publication now contains **190 studies and 3,292 trials: 2,482 valid
+measurements and 810 diagnostics**. All original trial IDs and measurements are
+preserved, and unrelated models' study and trial records are unchanged.
+
+Source SHA-256, exact metric checks, and preservation checks are recorded in
+[the MiniCPM refresh audit](minicpm-refresh-audit.json). The importer resolves
+stale copied model labels from native model/snapshot evidence and retains the
+conflicts in the inspector. Both finished and crashed runs remain visible.
+The earlier source entry is retained for provenance; the refreshed studies
+reference the updated export. Landing and benchmark uplift panels read this
+same publication and compare matching workloads against the existing measured
+baseline snapshot.
+
+
+Refresh command (run from the repository root):
+
+```bash
+python scripts/import_public_optimizer_runs.py \
+  --input ../bento_extend/llm-optimizer/results/sorted_results/cpm_2_c128.json \
+  --merge web/public/data/publication.json \
+  --output web/public/data/publication.json
+```

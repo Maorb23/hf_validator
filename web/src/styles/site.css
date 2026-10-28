@@ -1,4 +1,4 @@
-/* Infiro public site: extends the approved dark prototype's shared tokens. */
+/* Confiron public site: extends the approved dark prototype's shared tokens. */
 :root { color-scheme: dark; }
 body { overflow-x: clip; }
 main { min-height: 60vh; }
@@ -511,3 +511,22 @@ button:disabled { opacity: .4; cursor: not-allowed; }
  .benchmark-preview .benchmark-readout { max-width:240px; align-items:center; justify-content:end; padding:8px 24px 8px 12px; font-size:12px; }
  .benchmark-preview .benchmark-playback { padding-top:10px; padding-bottom:10px; }
 }
+
+/* Confiron brand and recorded configuration uplift. */
+.wordmark>img,.app-brand>img{flex-shrink:0;display:block}
+.hero-copy h1{font-size:clamp(38px,4vw,62px);line-height:1.08;letter-spacing:-2px}
+.user-experience>h2{margin:0 0 30px;font-size:clamp(30px,4vw,46px);letter-spacing:-1px}
+.user-experience>.capability-grid{padding-bottom:0}
+.user-experience{margin-bottom:70px}
+.uplift-summary{margin:18px 0 24px;padding:20px;border:1px solid var(--line);border-radius:10px;min-width:0;background:var(--surface)}
+.uplift-summary h3{font-size:19px;line-height:1.4;letter-spacing:-.3px;margin:0 0 16px}
+.uplift-group{display:grid;gap:7px;min-width:0;margin-bottom:16px;font-size:12px;color:var(--body)}
+.uplift-group select{width:100%;min-width:0;max-width:100%;padding:9px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:5px;font:inherit}
+.uplift-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.uplift-metric{display:flex;flex-direction:column;gap:7px;min-width:0;overflow-wrap:anywhere;font-size:12px;color:var(--body)}
+.uplift-metric>strong{font:500 clamp(21px,2.3vw,32px) var(--mono);color:var(--accent)}
+.uplift-metric small,.uplift-note{font-size:11px;line-height:1.65;color:var(--muted)}
+.uplift-note{margin:16px 0 0}
+.uplift-metric button{text-align:left;font-size:11px;min-height:32px}
+.interactive-benchmark>.uplift-summary{margin:12px 24px}
+@media(max-width:600px){.hero-copy h1{font-size:40px;letter-spacing:-1.5px}.uplift-summary{padding:14px}.uplift-metrics{gap:12px}.uplift-metric>strong{font-size:20px}.uplift-metric{font-size:11px}.interactive-benchmark>.uplift-summary{margin:12px}.uplift-summary:not(.compact) .uplift-metrics{grid-template-columns:1fr}.uplift-summary:not(.compact) .uplift-metric{padding:12px 0;border-bottom:1px solid var(--line)}}

@@ -684,7 +684,8 @@ class PlatformTests(TestCase):
             self.post(
                 "datasets",
                 {
-                    "config": {"repo_id": "org/data", "model": "org/model"},
+                    "config": {"repo_id": "org/data", "model": "org/model",
+                               "data_file": "data.json"},
                     "connection_refs": {"huggingface": str(c.id)},
                 },
             ).status_code,
@@ -1489,7 +1490,13 @@ class PlatformTests(TestCase):
         Job.objects.filter(pk=study.pk).update(state="failed")
         self.assertEqual(self.post("jobs/" + str(study.id) + "/retry", {}).status_code, 400)
 
-    def test_selected_sharegpt_file_reaches_real_request_preparation(self):
+    def test_alpaca_manifest_reaches_real_request_preparation(self):
+        self.test_selected_sharegpt_file_reaches_real_request_preparation("alpaca")
+
+    def test_messages_manifest_reaches_real_request_preparation(self):
+        self.test_selected_sharegpt_file_reaches_real_request_preparation("messages")
+
+    def test_selected_sharegpt_file_reaches_real_request_preparation(self, source_format=None):
         from llm_optimizer.remote.contracts import OptimizationRequest
 
         from .security import private_dir
@@ -1499,6 +1506,8 @@ class PlatformTests(TestCase):
         prepared = seed_prepared(self.alice)
         _, manifest = fixture_manifest()
         manifest["dataset"].update(repo_id=DEFAULT_DATASET, data_file=DEFAULT_DATA_FILE)
+        if source_format:
+            manifest["dataset"].update(source_format=source_format, adapter_version=1)
         manifest["sha256"] = fingerprint(manifest)
         prepared.dataset = None
         prepared.choices["workload_mode"] = "sharegpt"

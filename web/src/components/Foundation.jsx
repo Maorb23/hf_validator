@@ -25,7 +25,7 @@ export function Icon({ name = 'arrow', size = 20, ...props }) {
 }
 
 export function Wordmark() {
-  return <a className="wordmark" href="/" aria-label="Infiro home"><svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M4 25V7h6v12h6V7h6v12h6v6H4Z" fill="currentColor" /><path d="M22 3h6v6h-6z" fill="var(--accent)" /></svg><span>infiro<span className="wordmark-dot">.</span></span></a>;
+  return <a className="wordmark" href="/" aria-label="Confiron home"><img src="/logos/confiron-icon.svg" width="32" height="32" alt=""/><span>confiron<span className="wordmark-dot">.</span></span></a>;
 }
 
 const frontier = [[94, 263], [132, 222], [181, 188], [231, 165], [288, 146], [350, 134], [412, 126], [482, 120]];

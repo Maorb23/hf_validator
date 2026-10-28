@@ -225,6 +225,7 @@ def run_once(*, kinds=None):
     if job.cancel_requested and job.kind != "study":
         mark_cancelled(job)
         return True
+    process = None
     try:
         env = child_environment(job)
         previous_provider_diagnostics = job.progress.get("provider_diagnostics")
@@ -253,6 +254,7 @@ def run_once(*, kinds=None):
             if cancelled or time.monotonic() - started > TIME_LIMIT or size > disk_limit:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
+                process = None
                 if cancelled:
                     mark_cancelled(job)
                     return True
@@ -296,4 +298,12 @@ def run_once(*, kinds=None):
             job,
             message,
         )
+    finally:
+        # Children use a separate session; stop them before releasing the worker lease.
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
     return True

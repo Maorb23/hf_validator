@@ -1,4 +1,5 @@
 import fcntl
+import signal
 import time
 from pathlib import Path
 
@@ -36,9 +37,18 @@ class Command(BaseCommand):
             )
             if options["prepare_only"]:
                 self.stdout.write("Preparation only: approved GPU studies will not be processed.")
-            while True:
-                busy = run_once(kinds={"prepare"}) if options["prepare_only"] else run_once()
-                if options["once"]:
-                    return
-                if not busy:
-                    time.sleep(1)
+            def terminate(signum, frame):
+                raise SystemExit(0)
+
+            previous = {sig: signal.signal(sig, terminate)
+                        for sig in (signal.SIGTERM, signal.SIGINT)}
+            try:
+                while True:
+                    busy = run_once(kinds={"prepare"}) if options["prepare_only"] else run_once()
+                    if options["once"]:
+                        return
+                    if not busy:
+                        time.sleep(1)
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)

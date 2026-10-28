@@ -1,5 +1,5 @@
 {
-  "name": "infiro-public-website",
+  "name": "confiron-public-website",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "NODE_ENV=production ASTRO_TELEMETRY_DISABLED=1 astro build",
     "preview": "NODE_ENV=production ASTRO_TELEMETRY_DISABLED=1 astro preview --host 127.0.0.1 --port 4321 --ignore-lock",
     "check:browser": "node tests/browser.mjs",
-    "test": "node --test tests/data.test.mjs",
+    "test": "node --test tests/data.test.mjs tests/uplift.test.mjs",
     "test:platform-state": "node tests/platform-state-browser.mjs"
   },
   "dependencies": {

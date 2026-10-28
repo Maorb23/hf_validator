@@ -6,6 +6,7 @@ import json
 import shlex
 
 from .security import install_network_guard
+from .workload_runtime import verify_frozen_workload
 
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 REFERENCE_ENV = "INFIRO_WORKER_PAYLOAD_REF"
@@ -144,6 +145,9 @@ def load_and_run():
         or request.get("prefix", "").strip("/") != prefix
     ):
         raise ValueError("Downloaded payload belongs to a different study.")
+    verification = verify_frozen_workload(payload)
+    if verification is not None:
+        print(json.dumps({"frozen_workload_verification": verification}), flush=True)
     from llm_optimizer.remote.worker import run_worker
 
     result = run_worker(payload)
@@ -159,6 +163,8 @@ def bootstrap_source():
         + "\n"
         + inspect.getsource(install_network_guard)
         + "\n"
+        + inspect.getsource(verify_frozen_workload)
+        + "\n"
         + inspect.getsource(load_and_run)
         + '\nif __name__ == "__main__":\n'
         + "    import sys\n    try:\n        code = load_and_run()\n"
@@ -171,6 +177,11 @@ def bootstrap_source():
         + '                              for f in frames[-8:]]}\n'
         + '        print("Worker payload bootstrap failed; no benchmark started.",\n'
         + '              file=sys.stderr)\n'
+        + '        if isinstance(error, ValueError) and str(error) == (\n'
+        + '            "Worker image cannot consume the approved frozen workload. "\n'
+        + '            "Rebuild the image with the configured optimizer before retrying."\n'
+        + '        ):\n'
+        + '            print(str(error), file=sys.stderr)\n'
         + '        print(json.dumps({"bootstrap_diagnostics": details}), file=sys.stderr)\n'
         + '        code = 2\n'
         + "    sys.exit(code)\n"

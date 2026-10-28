@@ -1,6 +1,6 @@
 # Plan an inference evaluation
 
-Infiro is a working brand. This guide describes evaluation methodology, not a service commitment.
+Confiron is a working brand. This guide describes evaluation methodology, not a service commitment.
 
 ## Workload template
 

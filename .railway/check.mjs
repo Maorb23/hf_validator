@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { createRailwayContext } from 'railway/iac';
+import definition from './railway.ts';
+const result = await definition(createRailwayContext({environment: 'production'}));
+const services = result.resources.filter(r => r.type === "service");
+assert.equal(services.length, 1);
+const web = services[0];
+assert.equal(web.build.dockerfilePath, 'docker/web.Dockerfile');
+assert.equal(web.deploy.healthcheckPath, '/healthz');
+assert.deepEqual(Object.keys(web.deploy.multiRegionConfig), ['europe-west4-drams3a']);
+assert.equal(web.deploy.multiRegionConfig['europe-west4-drams3a'].numReplicas, 1);
+assert.ok(Object.values(web.volumeAttachments).some(v => v.mountPath === '/data'));
+assert.equal(result.resources.filter(r => r.type === 'volume').length, 1);
+assert.equal(web.deploy.preDeployCommand, undefined);
+console.log('Railway graph: one service, one replica, /data volume, /healthz.');

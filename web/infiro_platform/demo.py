@@ -25,6 +25,7 @@ class FixtureTokenizer:
 
 
 def fixture_manifest(**overrides):
+    overrides.setdefault("data_file", "data.json")
     config = DatasetConfig(
         repo_id="infiro/local-sharegpt-fixture",
         model=MODEL,

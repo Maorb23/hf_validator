@@ -428,7 +428,11 @@ def perform_prepare(job):
         for k, v in prepared.choices.items()
         if k not in {"spending_limit_usd", "timeout_minutes", "workload_mode"}
     }
-    values["dataset"] = manifest["dataset"]
+    # Adapter provenance belongs to the immutable manifest, not HFDataset intake.
+    values["dataset"] = {
+        k: v for k, v in manifest["dataset"].items()
+        if k not in {"source_format", "adapter_version"}
+    }
     directory = private_dir(job.owner_id, job.id)
     storage = found.get("storage")
     execution = {

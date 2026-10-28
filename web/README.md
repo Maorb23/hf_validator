@@ -94,9 +94,16 @@ PYTHONPATH=src python scripts/export_public_inference_results.py --input /path/t
 
 Review the snapshot before publication. The current public site deliberately has no measured-study replay because no audited data qualifies. Do not silently replace `publication.json` with unreviewed exports: measured cohort selection and replay presentation require a reviewed publication change.
 
-## Future publishing
+## Railway deployment
 
-No public deployment is configured or authorized. `dist/` is a static artifact. Set `SITE_URL` to the approved canonical origin at build time to populate canonical links and the sitemap. Without a domain the sitemap is valid but empty; no guessed production hostname is embedded.
+Use the [Railway deployment and operations guide](../docs/web/railway.md) for the
+public website and authenticated app in one CPU service with a persistent volume.
+The dedicated image is `docker/web.Dockerfile`; the root model-worker Dockerfile
+remains separate. No external deployment has been performed.
+
+## Public preview publishing
+
+`dist/` is a static artifact. Set `SITE_URL` to the approved canonical origin at build time to populate canonical links and the sitemap. Without a domain the sitemap is valid but empty; no guessed production hostname is embedded.
 
 For deployment, use Gunicorn with `infiro_site.wsgi:application`, not Django's dev server. See [Django deployment and rollback](../docs/web/deployment.md). `/healthz` reports whether the frontend artifact is present.
 
@@ -155,3 +162,28 @@ repeated `--input` arguments and `--merge web/public/data/publication.json` to p
 existing runs. Backups are rejected. Baseline/DSpark variants have an explicit filter;
 study and trial inspectors expose sanitized execution evidence and metadata conflicts.
 No minimum-duration threshold applies.
+
+
+Public uplift panels on `/` and `/benchmarks/` compare each model's independent
+best throughput, p95 E2E latency and p95 TTFT across frameworks against measured
+baselines from `baseline_runs_c128.json`. They do not use trial means or medians.
+The benchmark panel uses all recorded rows for the selected model, independent
+of framework filters, replay position and Pareto filtering. The landing panel
+provides a model selector for all five models.
+
+Refresh the sanitized public baseline snapshot with:
+
+```bash
+python scripts/export-uplift-baselines.py /path/to/baseline_runs_c128.json
+```
+
+The export retains run URLs and a source SHA-256 without local result paths.
+Candidates must match the baseline's recorded dataset, seed, prompt count,
+lengths, concurrency, request rate and length ratio. Known revision or GPU-count
+mismatches are excluded; unreported metadata is disclosed in the UI. Each
+metric independently selects its extremum: maximum throughput, minimum latency.
+Throughput uplift is `(best - baseline) / baseline * 100`; latency reduction is
+`(baseline - best) / baseline * 100`. Negative values indicate regressions.
+Missing or ambiguous baselines produce “Unavailable”, never a trial-average
+fallback. Run `npm test` and `node tests/confiron-browser.mjs` (against a preview
+server at `INFIRO_URL`, default port 8432) to check calculations and both pages.

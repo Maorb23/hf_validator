@@ -41,9 +41,9 @@ test('inference examples are simulated, finite, and isolated by workload', async
 });
 test('imported measurements retain every run and disclose incomplete metadata', async () => {
   const p=await load('publication.json');
-  assert.equal(p.kind,'measurement');assert.equal(p.studies.length,185);assert.equal(p.rows.length,3197);
-  assert.equal(p.studies.filter(s=>s.state==='crashed').length,10);
-  assert.equal(p.rows.filter(r=>r.plotEligible).length,2394);
+  assert.equal(p.kind,'measurement');assert.equal(p.studies.length,190);assert.equal(p.rows.length,3292);
+  assert.equal(p.studies.filter(s=>s.state==='crashed').length,11);
+  assert.equal(p.rows.filter(r=>r.plotEligible).length,2482);
   assert.ok(p.studies.some(s=>s.missingMetadata.includes('revision')));
   assert.deepEqual([...new Set(p.studies.map(s=>s.context.model))].sort(),['Qwen/Qwen3-4B','Qwen/Qwen3-8B','Qwen/Qwen3.5-4B','google/gemma-4-12B-it','openbmb/MiniCPM5-2B']);
   for(const row of p.rows) {
@@ -97,12 +97,12 @@ test('new variants expose all trials, preserve concurrency and exclude diagnosti
   const p=await load('publication.json');
   assert.equal(new Set(p.rows.map(r=>r.id)).size,p.rows.length);
   assert.equal(new Set(p.rows.map(r=>`${r.runId}:${r.number}`)).size,p.rows.length);
-  assert.equal(p.sources.length,8);
+  assert.equal(p.sources.length,9);
   const studies=p.studies.filter(s=>s.search);
-  assert.equal(studies.length,89);
+  assert.equal(studies.length,94);
   assert.equal(studies.filter(s=>s.durationSeconds<300).length,4);
   assert.ok(studies.every(s=>s.context.workload.max_concurrency===128));
-  assert.equal(studies.filter(s=>s.metadataConflicts.some(c=>c.field==='model')).length,32);
+  assert.equal(studies.filter(s=>s.metadataConflicts.some(c=>c.field==='model')).length,34);
   assert.equal(studies.filter(s=>s.metadataConflicts.some(c=>c.field==='speculativeMethod')).length,16);
   assert.ok(studies.every(s=>s.terminationReason===null));
   for(const [model,variants] of [['openbmb/MiniCPM5-2B',['Baseline']],['google/gemma-4-12B-it',['Baseline','DSpark']],['Qwen/Qwen3-4B',['Baseline','DSpark']],['Qwen/Qwen3-8B',['Baseline','DSpark']]]) {

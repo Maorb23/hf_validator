@@ -86,6 +86,9 @@ WHITENOISE_MAX_AGE = 0
 WHITENOISE_IMMUTABLE_FILE_TEST = r"^/_astro/"
 WHITENOISE_MIMETYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".md": "text/markdown", ".xml": "application/xml", ".woff2": "font/woff2"}
 
+# Railway probes the container over HTTP; all user routes still require HTTPS.
+SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
+
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"

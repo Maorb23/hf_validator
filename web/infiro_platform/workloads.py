@@ -29,8 +29,8 @@ class WorkloadLimitError(ValueError):
 
 
 FORMAT_ERROR = (
-    "Unsupported or malformed ShareGPT JSON. Convert to a top-level JSON array of "
-    "ShareGPT records or JSONL (one record per line), then shard into files with "
+    "Unsupported or malformed dataset JSON. Convert to a top-level JSON array of "
+    "objects or JSONL (one record per line), then shard into files with "
     "at most 10,000 rows and 256 KiB per row; select one JSON file and validate again."
 )
 MEMORY_ERROR = (
@@ -129,7 +129,52 @@ def iter_json_records(stream, *, skip_oversized=False):
     raise WorkloadLimitError(FORMAT_ERROR)
 
 
+ADAPTER_VERSION = 1
+
+
+def adapt_record(row, source_format, index):
+    """Normalize supported text-only schemas before the shared sampler runs."""
+    def invalid(detail):
+        raise WorkloadLimitError(
+            f"Malformed {source_format} record at row {index + 1}: {detail}"
+        )
+
+    if source_format == "sharegpt":
+        return row
+    if not isinstance(row, dict):
+        invalid("expected an object.")
+    if source_format == "alpaca":
+        instruction = row.get("instruction")
+        extra = row.get("input", "")
+        if not isinstance(instruction, str) or not instruction.strip():
+            invalid("instruction must be nonempty text.")
+        if not isinstance(extra, str):
+            invalid("input must be text when present.")
+        prompt = instruction + ("\n\n" + extra if extra.strip() else "")
+    elif source_format == "messages":
+        messages = row.get("messages")
+        if not isinstance(messages, list) or not messages:
+            invalid("messages must be a nonempty list.")
+        prompt = None
+        for message in messages:
+            if (not isinstance(message, dict)
+                    or message.get("role") not in ("system", "user", "assistant")
+                    or not isinstance(message.get("content"), str)
+                    or not message["content"].strip()):
+                invalid("each message needs a system/user/assistant role and nonempty text content.")
+            if prompt is None and message["role"] == "user":
+                prompt = message["content"]
+        if prompt is None:
+            invalid("messages must include a user message.")
+    else:
+        raise WorkloadLimitError("Unsupported dataset format; choose sharegpt, alpaca or messages.")
+    return {"conversations": [{"from": "human", "value": prompt}]}
+
+
 def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None):
+    source_format = config.get("format", "sharegpt")
+    if source_format not in ("sharegpt", "alpaca", "messages"):
+        raise WorkloadLimitError("Unsupported dataset format; choose sharegpt, alpaca or messages.")
     progress = progress or (lambda message: None)
     progress("Checking dataset access, pinned revisions and download sizes")
     from huggingface_hub import HfApi
@@ -177,12 +222,18 @@ def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None)
     ):
         raise ValueError("Tokenizer exceeds the 128 MiB limit, or file sizes are unknown.")
     default_source = (
-        config["repo_id"] == DEFAULT_DATASET
+        source_format == "sharegpt"
+        and config["repo_id"] == DEFAULT_DATASET
         and config.get("data_file") == DEFAULT_DATA_FILE
         and not config.get("config")
         and config.get("split", "train") == "train"
     )
     if loader is None:
+        if (not config.get("data_file") or config.get("config")
+                or config.get("split", "train") != "train"):
+            raise WorkloadLimitError(
+                "Select one JSON file; split/configuration filtering is unavailable."
+            )
         from huggingface_hub import HfFileSystem
 
         def loader(repo, **kwargs):
@@ -248,7 +299,7 @@ def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None)
                 if oversized and not default_source:
                     reject("Dataset row exceeds the 256 KiB limit.")
                 if (index + 1) % 1000 == 0:
-                    progress(f"Validating and tokenizing ShareGPT source rows: {index + 1}")
+                    progress(f"Validating and tokenizing dataset source rows: {index + 1}")
                 if default_source:
                     sampling["source_rows_scanned"] += 1
                     if oversized:
@@ -260,7 +311,7 @@ def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None)
                         sampling["schema_rows_skipped"] += 1
                         continue
                     source_indices.append(index)
-                yield row
+                yield adapt_record(row, source_format, index)
         except WorkloadLimitError as exc:
             reject(str(exc))
         except MemoryError:
@@ -332,7 +383,7 @@ def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None)
             tokenizer=BoundedTokenizer(),
         )
 
-    progress("Validating ShareGPT conversations and freezing the first human turns")
+    progress(f"Validating {source_format} records and freezing prompts")
     try:
         manifest = prepare()
         if default_source:
@@ -343,6 +394,10 @@ def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None)
                 f"excluded {sampling['schema_rows_skipped']} invalid and "
                 f"{sampling['oversized_rows_skipped']} oversized conversations"
             )
+        if source_format != "sharegpt":
+            manifest["dataset"]["source_format"] = source_format
+            manifest["dataset"]["adapter_version"] = ADAPTER_VERSION
+            manifest["sha256"] = fingerprint(manifest)
         if config.get("data_file"):
             manifest["dataset"]["data_file"] = config["data_file"]
             manifest["sha256"] = fingerprint(manifest)

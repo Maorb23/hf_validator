@@ -1,0 +1,121 @@
+{
+  "source": "baseline_runs_c128.json",
+  "sourceSha256": "4f30e246e730af665806af2c51085db0f92b6ba30fa783009a214350f7058778",
+  "rows": [
+    {
+      "model": "Qwen/Qwen3-4B",
+      "runId": "5l57tuaj",
+      "url": "https://wandb.ai/maorblumberg-tel-aviv-university/inference-optimization/runs/5l57tuaj",
+      "framework": "vllm",
+      "workload": {
+        "seed": 2026,
+        "num_prompts": 1000,
+        "dataset_name": "random",
+        "request_rate": "inf",
+        "max_concurrency": 128,
+        "random_input_len": 512,
+        "random_output_len": 128,
+        "random_range_ratio": 1,
+        "apply_chat_template": true
+      },
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "gpuCount": 1,
+      "revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+      "throughput": 4493.517829723814,
+      "latency": 3593.82054004991,
+      "ttft": 2849.730480300377
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "runId": "87b4oar1",
+      "url": "https://wandb.ai/maorblumberg-tel-aviv-university/inference-optimization/runs/87b4oar1",
+      "framework": "vllm",
+      "workload": {
+        "seed": 2026,
+        "num_prompts": 1000,
+        "dataset_name": "random",
+        "request_rate": "inf",
+        "max_concurrency": 128,
+        "random_input_len": 512,
+        "random_output_len": 128,
+        "random_range_ratio": 1,
+        "apply_chat_template": true
+      },
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "gpuCount": 1,
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "throughput": 5688.14512517497,
+      "latency": 3303.9125234501626,
+      "ttft": 1177.408185299896
+    },
+    {
+      "model": "Qwen/Qwen3.5-4B",
+      "runId": "7rhfz762",
+      "url": "https://wandb.ai/maorblumberg-tel-aviv-university/inference-optimization/runs/7rhfz762",
+      "framework": "vllm",
+      "workload": {
+        "seed": 2026,
+        "num_prompts": 1000,
+        "dataset_name": "random",
+        "request_rate": "inf",
+        "max_concurrency": 128,
+        "random_input_len": 512,
+        "random_output_len": 128,
+        "random_range_ratio": 1,
+        "apply_chat_template": true
+      },
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "gpuCount": 1,
+      "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+      "throughput": 7277.888958764172,
+      "latency": 2574.2685645499932,
+      "ttft": 874.2683883998325
+    },
+    {
+      "model": "google/gemma-4-12B-it",
+      "runId": "7d32mfiz",
+      "url": "https://wandb.ai/maorblumberg-tel-aviv-university/inference-optimization/runs/7d32mfiz",
+      "framework": "vllm",
+      "workload": {
+        "seed": 2026,
+        "num_prompts": 1000,
+        "dataset_name": "random",
+        "request_rate": "inf",
+        "max_concurrency": 128,
+        "random_input_len": 512,
+        "random_output_len": 128,
+        "random_range_ratio": 1,
+        "apply_chat_template": true
+      },
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "gpuCount": 1,
+      "revision": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
+      "throughput": 2920.773513555585,
+      "latency": 9474.500410450264,
+      "ttft": 5667.048027749956
+    },
+    {
+      "model": "openbmb/MiniCPM5-2B",
+      "runId": "6q8zo485",
+      "url": "https://wandb.ai/maorblumberg-tel-aviv-university/inference-optimization/runs/6q8zo485",
+      "framework": "vllm",
+      "workload": {
+        "seed": 2026,
+        "num_prompts": 1000,
+        "dataset_name": "random",
+        "request_rate": "inf",
+        "max_concurrency": 128,
+        "random_input_len": 512,
+        "random_output_len": 128,
+        "random_range_ratio": 1,
+        "apply_chat_template": true
+      },
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "gpuCount": 1,
+      "revision": "f97400052a43d642bbc6e9975e2397e3ae6a6b52",
+      "throughput": 14301.43690438273,
+      "latency": 1385.0613982500363,
+      "ttft": 525.0576852999757
+    }
+  ]
+}

@@ -77,7 +77,10 @@ class OptimizationAdapter:
             cached = self.execution.get('workload_manifest')
             if cached is not None:
                 manifest = validate_manifest(cached)
-                if (manifest['dataset'] != dataset or manifest['tokenizer'] != c.model_id
+                # Source adapters add hashed provenance, not source-selection fields.
+                source_selection = {k: v for k, v in manifest['dataset'].items()
+                                    if k not in {'source_format', 'adapter_version'}}
+                if (source_selection != dataset or manifest['tokenizer'] != c.model_id
                         or manifest['tokenizer_revision'] != c.revision
                         or manifest['seed'] != w.seed
                         or len(manifest['requests']) != w.num_prompts

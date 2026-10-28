@@ -2,10 +2,10 @@
 import publication from '../../public/data/publication.json';
 import BenchmarkPlot from './BenchmarkPlot.jsx';
 const { animated = false } = Astro.props;
-const rows = publication.rows.filter(r => r.plotEligible && r.context.model === 'Qwen/Qwen3.5-4B' && r.context.workload.num_prompts === 896).map(({id,engine,cohort,throughput,latency,ttft})=>({id,engine,cohort,throughput,latency,ttft}));
+const rows = publication.rows.filter(r => r.plotEligible && r.context.model === 'Qwen/Qwen3.5-4B' && r.context.workload.num_prompts === 1000 && r.context.workload.random_input_len === 512 && r.context.workload.random_output_len === 128 && r.context.workload.max_concurrency === 128).map(({id,engine,cohort,throughput,latency,ttft,context})=>({id,engine,cohort,throughput,latency,ttft,context}));
 ---
 <div class="hero-graphic benchmark-preview">
-  <div class="benchmark-heading"><h2>{animated ? 'See the tradeoffs unfold.' : 'Three frameworks.'} {!animated && 'One workload.'}</h2><p>Qwen3.5-4B · 512 input / 128 output tokens<br/>896 prompts · concurrency 128 · seed 2026</p></div>
-  <BenchmarkPlot rows={rows} animated={animated} client:only="react"><p slot="fallback" class="benchmark-note">Loading recorded benchmark metrics…</p></BenchmarkPlot>
+  <div class="benchmark-heading"><h2>{animated ? 'See the tradeoffs unfold.' : 'Automatic optimization.'} {!animated && 'Your objective.'}</h2><p>Qwen3.5-4B · 512 input / 128 output tokens<br/>1,000 prompts · concurrency 128 · seed 2026</p></div>
+  <BenchmarkPlot rows={rows} upliftRows={publication.rows} animated={animated} client:only="react"><p slot="fallback" class="benchmark-note">Loading recorded benchmark metrics…</p></BenchmarkPlot>
   <div class="benchmark-caption"><details class="card-data-notes"><summary>Recorded trials · data context</summary><p>Hardware, revision, and runtime metadata are incomplete. Inspect context before comparing.</p></details><a class="primary-button" href="/benchmarks">Explore benchmarks <span aria-hidden="true"></span></a></div>
 </div>

@@ -53,6 +53,15 @@ def api(methods):
                 return JsonResponse({"error": "Sign in to your private workspace."}, status=401)
             try:
                 return fn(request, *args, **kwargs)
+            except ModuleNotFoundError as exc:
+                if exc.name != "llm_optimizer" and not (exc.name or "").startswith(
+                    "llm_optimizer."
+                ):
+                    raise
+                return JsonResponse({"error": (
+                    "Optimization dependencies are unavailable. Install the configured "
+                    "llm-optimizer package in both the web and worker environments, then retry."
+                )}, status=503)
             except InputError as exc:
                 return JsonResponse(
                     {
@@ -335,14 +344,17 @@ def bootstrap(request):
             ],
             "recommendations": [
                 recommendation_view(r)
-                for r in Recommendation.objects.filter(owner=user, deleted_at__isnull=True).order_by("-created_at")[:50]
+                for r in Recommendation.objects.filter(owner=user, deleted_at__isnull=True)
+                .order_by("-created_at")[:50]
             ],
             "prepared": [
                 prepared_view(p)
-                for p in Prepared.objects.filter(owner=user, deleted_at__isnull=True).order_by("-created_at")[:100]
+                for p in Prepared.objects.filter(owner=user, deleted_at__isnull=True)
+                .order_by("-created_at")[:100]
             ],
             "jobs": [
-                job_view(j) for j in Job.objects.filter(owner=user, deleted_at__isnull=True).order_by("-created_at")[:100]
+                job_view(j) for j in Job.objects.filter(owner=user, deleted_at__isnull=True)
+                .order_by("-created_at")[:100]
             ],
             "live_enabled": bool(settings.INFIRO_LIVE_ENABLED and settings.INFIRO_PROVIDER_FACTORY),
             "tracking_configuration": {
@@ -537,6 +549,9 @@ def recommendation_detail(request, identifier):
 def create_dataset(request):
     data = body(request)
     config = DatasetConfig.model_validate(data.get("config", {})).model_dump()
+    from .dataset_source import require_optimizer
+
+    require_optimizer()
     refs = data.get("connection_refs", {})
     found = connections(request.user, refs)
     name = str(data.get("name") or config["repo_id"])[:100]

@@ -1,7 +1,8 @@
+import UpliftSummary from './UpliftSummary.jsx';
 import React, {useEffect, useMemo, useState} from 'react';
 const engines=[['vLLM','#a7f3cf'],['SGLang','#81b9ff'],['TensorRT-LLM','#d5adf6']];
 const fmt=n=>Number(n).toLocaleString('en',{maximumFractionDigits:0});
-export default function BenchmarkPlot({rows,animated=false}) {
+export default function BenchmarkPlot({rows,upliftRows=rows,animated=false}) {
  const [engine,setEngine]=useState('all'),[metric,setMetric]=useState('latency'),[pareto,setPareto]=useState(false),[selected,setSelected]=useState(null),[count,setCount]=useState(rows.length),[playing,setPlaying]=useState(false);
  useEffect(()=>{if(animated&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){setCount(0);setPlaying(true);}},[animated]);
  useEffect(()=>{if(!playing)return; const timer=setInterval(()=>setCount(n=>{if(n>=rows.length){setPlaying(false);return rows.length;}return Math.min(rows.length,n+12);}),80);return()=>clearInterval(timer);},[playing,rows.length]);
@@ -11,6 +12,7 @@ export default function BenchmarkPlot({rows,animated=false}) {
  const active=visible.find(r=>r.id===selected),x=r=>76+r[metric]/maxX*458,y=r=>205-r.throughput/maxY*167;
  return <div className="interactive-benchmark">
  <div className="benchmark-controls"><label>Latency metric<select value={metric} onChange={e=>{setMetric(e.target.value);setSelected(null);}}><option value="latency">p95 E2E latency</option><option value="ttft">p95 time to first token</option></select></label><button className="benchmark-toggle" aria-pressed={pareto} onClick={()=>setPareto(!pareto)}>Pareto frontiers</button></div>
+ <UpliftSummary rows={upliftRows} compact/>
  <svg viewBox="0 0 560 265" role="group" aria-label="Interactive recorded throughput and latency trials">
  {[0,.25,.5,.75,1].map(t=><g key={t}><line x1="76" y1={205-t*167} x2="534" y2={205-t*167} className="plot-grid"/><text x="65" y={209-t*167} textAnchor="end" className="chart-tick">{fmt(t*maxY)}</text><text x={76+t*458} y="226" textAnchor="middle" className="chart-tick">{fmt(t*maxX)}</text></g>)}
  <path d="M76 38V205H534" className="plot-axis" fill="none"/>

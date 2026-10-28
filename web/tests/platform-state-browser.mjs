@@ -79,7 +79,7 @@ try{
   }
   if(path.endsWith('/datasets')&&route.request().method()==='POST'){
    datasetSubmission=route.request().postDataJSON();
-   data.datasets.push({id:'frozen',name:'Custom coding source',config:datasetSubmission.config,status:'ready',identity:{dataset:{repo_id:datasetSubmission.config.repo_id,revision:'b'.repeat(40),config:'chat',split:'test'},sha256:'f'.repeat(64),tokenizer_revision:'a'.repeat(40),sample_count:100,seed:1},preview:[{prompt:'<script>window.promptExecuted=true</script>',prompt_len:512,output_len:128}]});
+   data.datasets.push({id:'frozen',name:'Custom coding source',config:datasetSubmission.config,status:'ready',identity:{dataset:{repo_id:datasetSubmission.config.repo_id,revision:'b'.repeat(40),config:null,split:'train',data_file:datasetSubmission.config.data_file},sha256:'f'.repeat(64),tokenizer_revision:'a'.repeat(40),sample_count:100,seed:1},preview:[{prompt:'<script>window.promptExecuted=true</script>',prompt_len:512,output_len:128}]});
    return route.fulfill({status:202,json:{dataset:data.datasets.at(-1)}});
   }
   if(path.endsWith('/prepared')&&route.request().method()==='POST'){
@@ -155,24 +155,45 @@ try{
  await page.getByRole('button',{name:recommendationName,exact:true}).waitFor();
  await page.goto(origin+'/app/configure/rec');
  await page.getByRole('heading',{name:'Previous configuration files',exact:true}).waitFor();
- await page.getByRole('button',{name:'Validate a custom ShareGPT repository, revision, configuration and split',exact:true}).click();
+ await page.getByRole('button',{name:'Validate a custom dataset repository and JSON file',exact:true}).click();
+ assert.equal(await page.getByLabel('Hugging Face repository ID or URL').inputValue(),'');
+ assert.equal(await page.getByLabel('JSON data file',{exact:true}).inputValue(),'');
  await page.getByLabel('Hugging Face repository ID or URL').fill('org/small-conversations');
  await page.getByLabel('Revision',{exact:true}).fill('reviewed-branch');
- await page.getByLabel('Configuration (optional)',{exact:true}).fill('chat');
- await page.getByLabel('Split',{exact:true}).fill('test');
- await page.getByLabel('JSON data file (optional)',{exact:true}).fill('conversations.json');
- await page.getByLabel('Configuration (optional)',{exact:true}).fill('');
+ assert.equal(await page.getByLabel('Configuration (optional)',{exact:true}).count(),0);
+ assert.equal(await page.getByLabel('Split',{exact:true}).count(),0);
+ assert.equal(await page.getByLabel('Dataset format',{exact:true}).inputValue(),'sharegpt');
+ await page.getByLabel('Dataset format',{exact:true}).selectOption('alpaca');
+ await page.getByLabel('Dataset format',{exact:true}).selectOption('messages');
+ await page.getByLabel('JSON data file',{exact:true}).fill('conversations.json');
  await page.getByRole('button',{name:'Validate & freeze workload',exact:true}).click();
  await page.getByText('Bounded preview',{exact:true}).waitFor();
+ assert.equal(datasetSubmission.config.format,'messages');
  assert.equal(datasetSubmission.config.model,'org/model');
  assert.equal(datasetSubmission.config.model_revision,'a'.repeat(40));
  assert.equal(datasetSubmission.config.revision,'reviewed-branch');
  assert.equal(datasetSubmission.config.data_file,'conversations.json');
  assert.equal(datasetSubmission.config.config,undefined);
- assert.equal(datasetSubmission.config.split,'test');
+ assert.equal(datasetSubmission.config.split,undefined);
  assert.equal(await page.evaluate(()=>window.promptExecuted),undefined);
  // Closing inline validation keeps Configure's workload controls unambiguous.
- await page.getByRole('button',{name:'Validate a custom ShareGPT repository, revision, configuration and split',exact:true}).click();
+ await page.getByRole('button',{name:'Validate a custom dataset repository and JSON file',exact:true}).click();
+ await page.goto(origin+'/app/datasets');
+ await page.getByRole('button',{name:'Add HF dataset',exact:true}).click();
+ assert.equal(await page.getByLabel('Hugging Face repository ID or URL').inputValue(),'');
+ assert.equal(await page.getByLabel('JSON data file',{exact:true}).inputValue(),'');
+ await page.getByLabel('Dataset name',{exact:true}).fill('Draft');
+ await page.getByLabel('Hugging Face repository ID or URL').fill('org/draft');
+ await page.getByLabel('JSON data file',{exact:true}).fill('draft.json');
+ await page.getByLabel('Dataset format',{exact:true}).selectOption('alpaca');
+ await page.getByRole('button',{name:'Add HF dataset',exact:true}).click();
+ assert.equal(await page.getByLabel('Dataset name',{exact:true}).inputValue(),'');
+ assert.equal(await page.getByLabel('Hugging Face repository ID or URL').inputValue(),'');
+ assert.equal(await page.getByLabel('JSON data file',{exact:true}).inputValue(),'');
+ assert.equal(await page.getByLabel('Dataset format',{exact:true}).inputValue(),'sharegpt');
+ assert.equal(data.datasets.length,1);
+ await page.getByRole('heading',{name:'Custom coding source',exact:true}).waitFor();
+ await page.goto(origin+'/app/configure/rec');
  const source=page.getByLabel('Dataset source',{exact:true});
  await source.selectOption('sharegpt');
  await source.selectOption('random');

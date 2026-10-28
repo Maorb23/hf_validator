@@ -1,0 +1,14 @@
+{
+  "source": "cpm_2_c128.json",
+  "sourceSha256": "d8392f43d3dbfd8b4ee898793984bb4a9b44151bda5f9f30a34c23ebd62b6799",
+  "sourceStudies": 13,
+  "sourceTrials": 213,
+  "sourceValidMeasurements": 172,
+  "addedStudies": 5,
+  "addedTrials": 95,
+  "originalMeasurementsPreserved": true,
+  "unrelatedModelsUnchanged": true,
+  "totalStudies": 190,
+  "totalTrials": 3292,
+  "validMeasurements": 2482
+}

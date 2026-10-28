@@ -42,6 +42,7 @@ class Requirements(Input):
 
 
 class DatasetConfig(Input):
+    format: Literal["sharegpt", "alpaca", "messages"] = "sharegpt"
     repo_id: str = Field(min_length=1, max_length=180)
     revision: str = Field(default="main", max_length=100)
     config: str | None = Field(default=None, max_length=100)
@@ -58,7 +59,7 @@ class DatasetConfig(Input):
     @field_validator("repo_id")
     @classmethod
     def repository(cls, value):
-        from llm_optimizer.hf_workload import dataset_id
+        from .dataset_source import dataset_id
 
         return dataset_id(value)
 
@@ -86,7 +87,14 @@ class DatasetConfig(Input):
             if self.config:
                 raise ValueError("Choose a dataset configuration or one data file, not both.")
             if not self.data_file.lower().endswith(".json"):
-                raise ValueError("A selected ShareGPT data file must be JSON.")
+                raise ValueError("A selected data file must be JSON.")
+        if not self.data_file:
+            raise ValueError("Select the relative JSON file inside the dataset repository.")
+        if self.config or self.split != "train":
+            raise ValueError(
+                "Split/configuration filtering is unavailable; select the JSON file "
+                "containing the desired records instead."
+            )
         return self
 
 

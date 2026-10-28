@@ -1,5 +1,9 @@
 # Django serving and rollback
 
+For the combined public website and authenticated app, use the
+[Railway deployment guide](railway.md). The public-only preview instructions below
+do not cover private database migrations or the platform worker.
+
 ## Design
 
 Astro remains the source renderer and React remains the interactive frontend. Django serves the exact built HTML; WhiteNoise serves the same root-relative `/_astro/`, `/data/`, `/logos/`, and download URLs. There is no template conversion, Node proxy, inference import, database, authentication, or schema migration.
