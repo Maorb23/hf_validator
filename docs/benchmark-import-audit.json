@@ -1,0 +1,143 @@
+{
+  "sources": [
+    {
+      "file": "cpm_2_c128_runs.json",
+      "studies": 8,
+      "trials": 118,
+      "validMeasurements": 84,
+      "diagnostics": 34,
+      "underFiveMinutes": 1,
+      "states": {
+        "COMPLETE": 84,
+        "PRUNED": 34
+      }
+    },
+    {
+      "file": "gemma4_12_c128_runs.json",
+      "studies": 16,
+      "trials": 228,
+      "validMeasurements": 171,
+      "diagnostics": 57,
+      "underFiveMinutes": 0,
+      "states": {
+        "COMPLETE": 171,
+        "FAIL": 45,
+        "PRUNED": 12
+      }
+    },
+    {
+      "file": "dsparkgemma4_12_c128_runs.json",
+      "studies": 5,
+      "trials": 98,
+      "validMeasurements": 62,
+      "diagnostics": 36,
+      "underFiveMinutes": 0,
+      "states": {
+        "COMPLETE": 62,
+        "FAIL": 25,
+        "PRUNED": 11
+      }
+    },
+    {
+      "file": "q3_4_runs_c128.json",
+      "studies": 24,
+      "trials": 474,
+      "validMeasurements": 395,
+      "diagnostics": 79,
+      "underFiveMinutes": 0,
+      "states": {
+        "COMPLETE": 395,
+        "PRUNED": 55,
+        "FAIL": 24
+      }
+    },
+    {
+      "file": "dsparkq3_4_c128_runs.json",
+      "studies": 24,
+      "trials": 445,
+      "validMeasurements": 218,
+      "diagnostics": 227,
+      "underFiveMinutes": 3,
+      "states": {
+        "COMPLETE": 218,
+        "PRUNED": 35,
+        "FAIL": 192
+      }
+    },
+    {
+      "file": "q3_8_runs.json",
+      "studies": 6,
+      "trials": 120,
+      "validMeasurements": 112,
+      "diagnostics": 8,
+      "underFiveMinutes": 0,
+      "states": {
+        "COMPLETE": 112,
+        "PRUNED": 8
+      }
+    },
+    {
+      "file": "dsparkq3_8_runs.json",
+      "studies": 6,
+      "trials": 120,
+      "validMeasurements": 79,
+      "diagnostics": 41,
+      "underFiveMinutes": 0,
+      "states": {
+        "COMPLETE": 79,
+        "PRUNED": 41
+      }
+    }
+  ],
+  "totalStudies": 185,
+  "totalTrials": 3197,
+  "validMeasurements": 2394,
+  "diagnostics": 803,
+  "preservedStudies": 114,
+  "preservedTrials": 1948,
+  "overlappingStudies": 18,
+  "overlappingTrials": 354,
+  "conflicts": {
+    "model": 32,
+    "speculativeMethod": 16
+  },
+  "shortStudies": [
+    {
+      "id": "0bxo3s5e",
+      "seconds": 255.475419513,
+      "validMeasurements": 2
+    },
+    {
+      "id": "7hksyocg",
+      "seconds": 0,
+      "validMeasurements": 0
+    },
+    {
+      "id": "by7lkkyu",
+      "seconds": 181.022114485,
+      "validMeasurements": 2
+    },
+    {
+      "id": "x911x1uq",
+      "seconds": 150.238329691,
+      "validMeasurements": 2
+    }
+  ],
+  "allSelectedConcurrency": 128,
+  "unchangedSourceHashes": true,
+  "originalMeasurementsPreserved": true,
+  "missingTerminationReasons": 89,
+  "validation": {
+    "pythonTests": 14,
+    "frontendDataTests": 8,
+    "productionBuildPages": 13,
+    "publicBrowserRoutes": 11,
+    "browserViewports": [
+      1440,
+      390
+    ],
+    "modelVariantViewportChecks": 14,
+    "browserErrors": 0,
+    "fullReimportIdempotent": true
+  }
+}

@@ -137,6 +137,7 @@ def prepare(run: dict, preferences: dict, execution: dict, directory: Path,
     directory.mkdir(parents=True, exist_ok=True)
     context = StudyContext(model_id=model, revision=revision, gpu_type=values['gpu_type'],
         gpu_count=values.get('gpu_count', 1), concurrency=values['concurrency'],
+        objectives=values.get("objectives", []), constraints=values.get("constraints", []),
         workload=Workload(**{k: values[k] for k in ('input_tokens', 'output_tokens', 'num_prompts', 'seed', 'dataset') if k in values}))
     if context.gpu_count * values['gpu_hourly_cost_usd'] * len(frameworks) > values['budget_usd_per_hour']:
         return {'status': 'needs_input', 'needs_input': ['gpu_hourly_cost_usd', 'budget_usd_per_hour'],

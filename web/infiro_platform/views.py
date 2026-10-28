@@ -17,7 +17,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from pydantic import ValidationError as InputError
 
-from .contracts import Choices, DatasetConfig, Requirements
+from .contracts import Choices, DatasetConfig, DirectModel, Requirements
 from .models import Artifact, AuthThrottle, Connection, Dataset, Job, Prepared, Recommendation
 from .naming import (
     model_id,
@@ -31,9 +31,12 @@ from .services import TERMINAL, approve, connections, enqueue, owned
 from .study_status import display_progress, study_outcome, trial_failures
 
 
-def body(request):
+def body(request, max_bytes=None):
     try:
-        result = json.loads(request.body)
+        raw = request.read(max_bytes + 1) if max_bytes else request.body
+        if max_bytes and len(raw) > max_bytes:
+            raise ValueError("Request exceeds 16 MiB.")
+        result = json.loads(raw)
     except (ValueError, UnicodeError):
         raise ValueError("Send a JSON object.") from None
     if not isinstance(result, dict):
@@ -246,6 +249,7 @@ def recommendation_view(r):
         "version": r.version,
         "validation": r.report.get("validation", {}),
         "data_origin": r.report.get("data_origin", "provider_research"),
+        "selection_source": r.report.get("selection_source", "recommendation"),
         "created_at": r.created_at,
     }
 
@@ -257,6 +261,7 @@ def prepared_view(p):
         "model_id": model_id(p),
         "recommendation_id": str(p.recommendation_id),
         "recommendation_name": recommendation_name(p.recommendation),
+        "selection_source": p.recommendation.report.get("selection_source", "recommendation"),
         "dataset_id": str(p.dataset_id) if p.dataset_id else None,
         "choices": p.choices,
         "status": p.status,
@@ -278,6 +283,9 @@ def prepared_view(p):
 
 
 def job_view(j):
+    from .history import visible_result
+
+    result = visible_result(j)
     state = j.state
     if j.kind == "study" and state == "queued" and j.controller_run:
         state = j.progress.get("state", state)
@@ -288,12 +296,12 @@ def job_view(j):
         "state": state,
         "queue_state": j.state,
         "outcome": study_outcome(j),
-        "trial_failures": trial_failures(j.result) if j.kind == "study" else [],
+        "trial_failures": trial_failures(result) if j.kind == "study" else [],
         "attempts": j.attempts,
         "cancel_requested": j.cancel_requested,
         "error": j.error,
         "progress": display_progress(j),
-        "result": j.result,
+        "result": result,
         "created_at": j.created_at,
         "updated_at": j.updated_at,
         "artifacts": [
@@ -311,10 +319,13 @@ def job_view(j):
 
 @api(["GET"])
 def bootstrap(request):
+    from hf_model_watch.optimization.objectives import objective_options
+
     user = request.user
     return JsonResponse(
         {
             "user": {"username": user.username},
+            "optimization_objectives": objective_options(),
             "connections": [
                 connection_view(c) for c in Connection.objects.filter(owner=user).order_by("name")
             ],
@@ -324,14 +335,14 @@ def bootstrap(request):
             ],
             "recommendations": [
                 recommendation_view(r)
-                for r in Recommendation.objects.filter(owner=user).order_by("-created_at")[:50]
+                for r in Recommendation.objects.filter(owner=user, deleted_at__isnull=True).order_by("-created_at")[:50]
             ],
             "prepared": [
                 prepared_view(p)
-                for p in Prepared.objects.filter(owner=user).order_by("-created_at")[:100]
+                for p in Prepared.objects.filter(owner=user, deleted_at__isnull=True).order_by("-created_at")[:100]
             ],
             "jobs": [
-                job_view(j) for j in Job.objects.filter(owner=user).order_by("-created_at")[:100]
+                job_view(j) for j in Job.objects.filter(owner=user, deleted_at__isnull=True).order_by("-created_at")[:100]
             ],
             "live_enabled": bool(settings.INFIRO_LIVE_ENABLED and settings.INFIRO_PROVIDER_FACTORY),
             "tracking_configuration": {
@@ -478,9 +489,13 @@ def create_recommendation(request):
     )
 
 
-@api(["GET", "POST", "PATCH"])
+@api(["GET", "POST", "PATCH", "DELETE"])
 @transaction.atomic
 def recommendation_detail(request, identifier):
+    if request.method == "DELETE":
+        from .history import delete_history
+        delete_history(request.user, Recommendation, identifier)
+        return JsonResponse({"deleted": True})
     rec = owned(Recommendation, request.user, identifier)
     if request.method == "GET":
         return JsonResponse(recommendation_view(rec))
@@ -607,8 +622,46 @@ def create_prepared(request):
     return JsonResponse({"prepared": prepared_view(p), "job": job_view(job)}, status=202)
 
 
-@api(["GET", "POST", "PATCH"])
+@api(["POST"])
+@transaction.atomic
+def select_direct_model(request):
+    data = body(request)
+    model = DirectModel.model_validate(data.get("model", {})).model_dump()
+    refs = data.get("connection_refs", {})
+    connections(request.user, refs)
+    key = "model:" + digest({"model": model, "refs": refs,
+                              "submission_key": str(data.get("submission_key", ""))[:100]})
+    previous = Job.objects.filter(owner=request.user, dedupe_key=key).first()
+    if previous:
+        rec = owned(Recommendation, request.user, previous.target_id)
+        return JsonResponse({"recommendation": recommendation_view(rec), "job": job_view(previous)})
+    rec = Recommendation.objects.create(owner=request.user, name=model["model_id"],
+        requirements={"request": "Direct model selection"}, connection_refs=refs,
+        status="queued", report={"selection_source": "direct", "data_origin": "user_selected",
+                                  "requested_model": model})
+    job = enqueue(request.user, "model", rec, refs, key)
+    return JsonResponse(
+        {"recommendation": recommendation_view(rec), "job": job_view(job)}, status=202)
+
+
+@api(["GET", "POST"])
+def edit_prepared_request(request, identifier):
+    from .request_editing import revise_request
+
+    if request.method == "GET":
+        prepared = owned(Prepared, request.user, identifier)
+        return JsonResponse({"request": prepared.payload, "digest": prepared.digest})
+    data = body(request, max_bytes=16 * 1024**2)
+    prepared = revise_request(request.user, identifier, data.get("digest"), data.get("request"))
+    return JsonResponse({"prepared": prepared_view(prepared)}, status=201)
+
+
+@api(["GET", "POST", "PATCH", "DELETE"])
 def prepared_detail(request, identifier):
+    if request.method == "DELETE":
+        from .history import delete_history
+        delete_history(request.user, Prepared, identifier)
+        return JsonResponse({"deleted": True})
     if request.method == "PATCH":
         p = owned(Prepared, request.user, identifier)
         name = validate_name(body(request).get("name"))
@@ -622,8 +675,12 @@ def prepared_detail(request, identifier):
     return JsonResponse(job_view(job), status=202)
 
 
-@api(["GET", "POST"])
+@api(["GET", "POST", "DELETE"])
 def job_detail(request, identifier):
+    if request.method == "DELETE":
+        from .history import delete_history
+        delete_history(request.user, Job, identifier)
+        return JsonResponse({"deleted": True})
     job = owned(Job, request.user, identifier)
     if request.method == "POST" and job.state not in TERMINAL:
         Job.objects.filter(pk=job.pk, owner=request.user).update(
@@ -680,7 +737,8 @@ def retry_job(request, identifier):
         available_at=timezone.now(),
         error="",
     )
-    model = {"discover": Recommendation, "dataset": Dataset, "prepare": Prepared}.get(job.kind)
+    model = {"model": Recommendation, "discover": Recommendation,
+             "dataset": Dataset, "prepare": Prepared}.get(job.kind)
     if model:
         target = owned(model, request.user, job.target_id)
         if isinstance(target, Prepared) and target.invalidated:
@@ -708,3 +766,10 @@ def artifact_download(request, identifier):
     return FileResponse(
         path.open("rb"), as_attachment=True, filename=artifact.name, content_type="application/json"
     )
+
+
+@api(["DELETE"])
+def trial_detail(request, identifier):
+    from .history import delete_trial
+    delete_trial(request.user, identifier, body(request).get("trial_key"))
+    return JsonResponse({"deleted": True})

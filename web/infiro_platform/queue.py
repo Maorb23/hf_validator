@@ -34,6 +34,7 @@ ENV_FIELDS = {
     "tavily": {"api_key": "TAVILY_API_KEY"},
 }
 REQUIRED_KINDS = {
+    "model": {"huggingface"},
     "discover": {"nebius_inference", "huggingface", "tavily"},
     "dataset": {"huggingface"},
     "prepare": {"nebius_inference", "huggingface", "tavily", "nebius_jobs"},
@@ -44,7 +45,8 @@ REQUIRED_KINDS = {
 
 def mark_cancelled(job):
     Job.objects.filter(pk=job.pk).update(state="cancelled", lease_until=None)
-    model = {"discover": Recommendation, "dataset": Dataset, "prepare": Prepared}.get(job.kind)
+    model = {"model": Recommendation, "discover": Recommendation,
+             "dataset": Dataset, "prepare": Prepared}.get(job.kind)
     if model:
         model.objects.filter(pk=job.target_id, owner=job.owner).update(status="cancelled")
 
@@ -123,6 +125,9 @@ def child_environment(job):
 
 
 PERMANENT_INPUT_ERRORS = {
+    "Model access or revision lookup failed. Check the model ID, "
+    "revision and Hugging Face connection.",
+    "The model lookup did not return a pinned commit.",
     FORMAT_ERROR, MEMORY_ERROR, CACHE_FULL, CACHE_INVALID,
     "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown.",
     "Tokenizer exceeds the 128 MiB limit, or file sizes are unknown.",
@@ -170,7 +175,8 @@ def fail(job, message):
         lease_until=None,
     )
     if state == "failed":
-        model = {"discover": Recommendation, "dataset": Dataset, "prepare": Prepared}.get(job.kind)
+        model = {"model": Recommendation, "discover": Recommendation,
+                 "dataset": Dataset, "prepare": Prepared}.get(job.kind)
         if model:
             model.objects.filter(pk=job.target_id, owner=job.owner).update(status="failed")
         if job.kind == "dataset":

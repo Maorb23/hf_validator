@@ -74,7 +74,7 @@ try {
     await page.getByRole('button',{name:'Inspect highest-throughput trial',exact:true}).click();
     assert.ok(await page.locator('.result-inspector').getByText('9y5kjcb9-13 · COMPLETE',{exact:true}).isVisible());
     assert.ok(await page.getByRole('group',{name:'Measured output throughput versus p95 end-to-end latency',exact:true}).isVisible());
-    assert.ok(await page.locator('.measured-explorer tbody tr').first().getByText('TensorRT-LLM',{exact:true}).isVisible());
+    assert.ok(await page.locator('.measured-explorer tbody tr').first().getByText(/^TensorRT-LLM · /).isVisible());
     await page.screenshot({path:new URL(`../screenshots/benchmarks-trtllm-${device}.png`,import.meta.url).pathname,fullPage:true});
     const specificGroup=await page.getByLabel('Measured cohort',{exact:true}).locator('option').nth(1).getAttribute('value');
     await page.getByLabel('Measured cohort',{exact:true}).selectOption(specificGroup);
@@ -87,7 +87,7 @@ try {
       await page.getByLabel('Measured engine',{exact:true}).selectOption(engine);
       await page.getByRole('button',{name:'Apply filters',exact:true}).click();
       assert.ok(await page.getByRole('group',{name:'Measured output throughput versus p95 end-to-end latency',exact:true}).isVisible());
-      assert.ok(await page.locator('.measured-explorer tbody tr').first().getByText(engine,{exact:true}).isVisible());
+      assert.ok(await page.locator('.measured-explorer tbody tr').first().getByText(new RegExp(`^${engine} · `)).isVisible());
     }
     await page.getByLabel('Measured engine',{exact:true}).selectOption('all');
     await page.getByRole('button',{name:'Apply filters',exact:true}).click();

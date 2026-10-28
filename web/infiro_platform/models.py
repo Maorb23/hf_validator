@@ -37,6 +37,7 @@ class Dataset(Owned):
 
 
 class Recommendation(Owned):
+    deleted_at = models.DateTimeField(null=True, blank=True)
     name = models.CharField(max_length=160, blank=True, default="")
     requirements = models.JSONField()
     connection_refs = models.JSONField(default=dict)
@@ -47,6 +48,7 @@ class Recommendation(Owned):
 
 
 class Prepared(Owned):
+    deleted_at = models.DateTimeField(null=True, blank=True)
     name = models.CharField(max_length=160, blank=True, default="")
     recommendation = models.ForeignKey(Recommendation, on_delete=models.PROTECT)
     dataset = models.ForeignKey(Dataset, null=True, on_delete=models.PROTECT)
@@ -64,6 +66,8 @@ class Prepared(Owned):
 
 
 class Job(Owned):
+    deleted_trials = models.JSONField(default=list)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     kind = models.CharField(max_length=24)
     target_id = models.UUIDField()
     connection_refs = models.JSONField(default=dict)

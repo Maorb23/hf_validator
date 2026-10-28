@@ -13,6 +13,7 @@ from hf_model_watch.optimization.contracts import (
     NewStudyIntent,
     StudyContext,
     StudySummary,
+    TrialRecord,
 )
 
 
@@ -33,6 +34,8 @@ def _constraint_text(context: StudyContext) -> str | None:
     aliases = {
         "mean_e2e_latency_ms": "e2e_latency:mean",
         "mean_ttft_ms": "ttft:mean",
+        "p95_e2e_latency_ms": "e2e_latency:p95",
+        "p95_ttft_ms": "ttft:p95",
         "output_throughput": "output_throughput",
     }
     return (
@@ -75,14 +78,17 @@ class OptimizationAdapter:
             if cached is not None:
                 manifest = validate_manifest(cached)
                 if (manifest['dataset'] != dataset or manifest['tokenizer'] != c.model_id
-                        or manifest['tokenizer_revision'] != c.revision or manifest['seed'] != w.seed
+                        or manifest['tokenizer_revision'] != c.revision
+                        or manifest['seed'] != w.seed
                         or len(manifest['requests']) != w.num_prompts
-                        or any(r['prompt_len'] != w.input_tokens or r['output_len'] != w.output_tokens
+                        or any(r['prompt_len'] != w.input_tokens
+                               or r['output_len'] != w.output_tokens
                                for r in manifest['requests'])):
                     raise ValueError('Prepared custom workload differs from intent')
             else:
                 if w.dataset.data_file is not None:
-                    raise ValueError('Selected dataset data_file requires a frozen workload manifest')
+                    raise ValueError(
+                        'Selected dataset data_file requires a frozen workload manifest')
                 manifest = prepare_hf_workload(dataset, c.model_id, c.revision,
                     w.input_tokens, w.output_tokens, w.num_prompts, w.seed)
             if w.workload_sha256 and w.workload_sha256 != manifest['sha256']:
@@ -116,13 +122,19 @@ class OptimizationAdapter:
         for framework in intent.frameworks:
             if framework not in {"vllm", "sglang", "trtllm"}:
                 continue
-            defaults, files = expanded_server_args(framework, c.concurrency, c.workload.input_tokens)
+            defaults, files = expanded_server_args(
+                framework, c.concurrency, c.workload.input_tokens)
             supplied = payload["server_args"].get(framework, [])
             # Optuna-specific overrides must not collide with profile dimensions.
-            tuned = {**payload["optuna"], **execution.get("optuna_by_framework", {}).get(framework, {})}.get("server_args", [])
+            tuned = {
+                **payload["optuna"],
+                **execution.get("optuna_by_framework", {}).get(framework, {})
+            }.get("server_args", [])
             merged = merge_server_args(defaults, [*supplied, *tuned])
             payload["server_args"][framework] = merged[:-len(tuned)] if tuned else merged
-            if files and any("@LLM_OPTIMIZER_CONFIG@/" in arg for arg in payload["server_args"][framework]):
+            if files and any(
+                "@LLM_OPTIMIZER_CONFIG@/" in arg for arg in payload["server_args"][framework]
+            ):
                 payload["server_config_files"][framework] = {
                     **files, **payload["server_config_files"].get(framework, {})}
         overrides = self.execution.get("optuna_by_framework", {})
@@ -138,7 +150,8 @@ class OptimizationAdapter:
         return payload
 
     def submit(self, intent: NewStudyIntent) -> dict[str, Any]:
-        return self.controller.submit(self.build_request(intent), idempotency_key=intent.idempotency_key)
+        return self.controller.submit(
+            self.build_request(intent), idempotency_key=intent.idempotency_key)
 
     def status(self, reference: str) -> dict[str, Any]:
         return self.controller.status(reference)
@@ -147,6 +160,8 @@ class OptimizationAdapter:
         return self.controller.cancel(reference)
 
     def results(self, reference: str, context: StudyContext) -> StudySummary:
+        from hf_model_watch.optimization.timing import framework_timings, trial_timings
+
         report = self.controller.results(reference)
         if report.get("run_id") != reference:
             raise ValueError("Controller returned a different study")
@@ -192,20 +207,42 @@ class OptimizationAdapter:
             summary.trial_state_counts[framework] = stats.get("trial_state_counts", {})
             summary.failed_trials[framework] = stats.get("failed_trials", [])
             summary.gpu_seconds[framework] = stats.get("gpu_seconds", 0)
-            # Full measurements, including successful trials from failed frameworks.
+            seen_trials = set()
+            # Full measurements, including unsuccessful attempts for inspection.
             for row in manifest.get("test_results", []):
                 trial = row.get("optimization", {})
                 state = stats.get("trial_states", {}).get(
                     str(trial.get("trial_number")), trial.get("state", "COMPLETE")
                 )
+                trial_id = (
+                    str(trial["trial_number"]) if trial.get("trial_number") is not None
+                    else f"unreported-{len(seen_trials)}"
+                )
+                seen_trials.add(trial_id)
+                metrics = row.get("results", {})
+                config = row.get("config", {})
+                identity = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+                numeric = {
+                    k: v for k, v in metrics.items()
+                    if isinstance(v, (int, float))
+                    and not isinstance(v, bool) and math.isfinite(v)
+                }
+                timings = trial_timings(row.get("metadata", {}).get("execution", {}))
+                record = TrialRecord(framework=framework, trial_id=trial_id, status=state,
+                    configuration=config, configuration_id=identity,
+                    metrics=numeric, timings=timings)
+                summary.trials.append(record)
                 if state != "COMPLETE":
                     continue
-                metrics = row.get("results", {})
                 expected = context.workload.num_prompts
                 if (metrics.get("total_requests", expected) != expected
                     or metrics.get("completed", expected) != expected):
+                    record.status = "INVALID"
+                    record.reason = "Incomplete request count"
                     continue
                 if metrics.get("benchmark_valid") is False or metrics.get("failure_rate", 0) != 0:
+                    record.status = "INVALID"
+                    record.reason = "Benchmark invalid or requests failed"
                     continue
                 config = row.get("config", {})
                 identity = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
@@ -223,8 +260,24 @@ class OptimizationAdapter:
                                 and math.isfinite(v)
                             },
                             artifacts=artifacts,
+                            trial_id=trial_id,
+                            timings=timings,
                         )
                     )
                 except ValueError:
                     continue
+            failures = {str(t["number"]): t for t in stats.get("failed_trials", [])}
+            states = {**{n: "FAIL" for n in failures}, **stats.get("trial_states", {})}
+            for number, state in states.items():
+                if str(number) not in seen_trials:
+                    failure = failures.get(str(number), {})
+                    summary.trials.append(TrialRecord(framework=framework, trial_id=str(number),
+                        status=state, reason=failure.get("reason"),
+                        timings=trial_timings(failure.get("execution", {}))))
+            framework_trials = [t for t in summary.trials if t.framework == framework]
+            totals = framework_timings(framework_trials)
+            if sum(stats.get("trial_state_counts", {}).values()) > len(framework_trials):
+                # Older workers can report counts without exporting every attempt.
+                totals = {key: None for key in totals}
+            summary.framework_timings[framework] = totals
         return summary

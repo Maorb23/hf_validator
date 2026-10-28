@@ -178,9 +178,9 @@ class PlatformTests(TestCase):
     def test_wandb_reference_is_pinned_before_approval_hash(self):
         from .services import finalize_preparation
 
-        p = self.prepared()
+        p = seed_prepared(self.alice)
         p.choices["dry_run"] = False
-        p.payload["optuna"] = {"trials": p.choices["trials"]}
+        p.payload["optuna"] = {"trials": p.choices["trials"], "objectives": p.choices["objectives"]}
         p.payload["images"] = {}
         tracking = {"project": "test", "entity": "team", "secret_version_id": "parent-secret"}
         p.summary = {"tracking": tracking, "workload_identity": {}}
@@ -1502,6 +1502,7 @@ class PlatformTests(TestCase):
         manifest["sha256"] = fingerprint(manifest)
         prepared.dataset = None
         prepared.choices["workload_mode"] = "sharegpt"
+        prepared.choices.update(objectives=["mean_ttft_ms"], sampler="RandomSampler", pruner="MedianPruner")
         prepared.payload, prepared.intent, prepared.summary, prepared.digest = {}, {}, {}, ""
         prepared.status = "queued"
         prepared.save()
@@ -1523,6 +1524,10 @@ class PlatformTests(TestCase):
         request = json.loads((directory / "request.json").read_text())
         intent = json.loads((directory / "intent.json").read_text())
         self.assertEqual(request["workload_manifest"], manifest)
+        self.assertEqual(request["optuna"]["objectives"], ["mean_ttft_ms"])
+        self.assertEqual(request["optuna"]["sampler"], "RandomSampler")
+        self.assertEqual(request["optuna"]["pruner"], "MedianPruner")
+        self.assertEqual(intent["context"]["objectives"], ["mean_ttft_ms"])
         self.assertEqual(intent["context"]["workload"]["dataset"]["data_file"], DEFAULT_DATA_FILE)
         self.assertEqual(request["semantic_context"]["workload"]["dataset"]["data_file"],
                          DEFAULT_DATA_FILE)
@@ -1530,6 +1535,65 @@ class PlatformTests(TestCase):
             OptimizationRequest.parse(request).to_dict()["workload_manifest"], manifest
         )
         self.assertFalse(Job.objects.filter(kind="study", target_id=prepared.id).exists())
+
+        from llm_optimizer.remote.worker import optimizer_command
+        args = optimizer_command({"request": prepared.payload, "framework": "vllm"},
+                                 Path(self.root.name) / "controlled-results.json")
+        self.assertEqual(args[args.index("--optuna-sampler") + 1], "RandomSampler")
+        self.assertEqual(args[args.index("--optuna-pruner") + 1], "MedianPruner")
+        self.assertEqual(args[args.index("--optuna-objective") + 1], "mean_ttft_ms")
+
+    def test_optimization_choices_reject_unsupported_combinations(self):
+        for metric in ["output_throughput", "mean_e2e_latency_ms", "mean_ttft_ms"]:
+            for sampler in ["TPESampler", "RandomSampler", "GridSampler", "GPSampler", "NSGAIISampler"]:
+                choices = Choices(objectives=[metric], sampler=sampler, pruner="MedianPruner")
+                self.assertEqual(choices.objectives, [metric])
+        self.assertEqual(Choices(concurrency=1).objectives, ["p95_e2e_latency_ms", "p95_ttft_ms"])
+        self.assertEqual(Choices(concurrency=4).objectives, ["output_throughput", "p95_e2e_latency_ms"])
+        self.assertTrue(Choices(concurrency=4, tpe_multivariate=True).tpe_multivariate)
+        for invalid in [
+            {"pruner": "MedianPruner"}, {"pruner": "ThresholdPruner"},
+            {"sampler": "UnknownSampler"}, {"constraints": []},
+            {"sampler": "RandomSampler", "tpe_multivariate": True},
+            {"objectives": ["mean_e2e_latency_ms", "mean_e2e_latency_ms"]},
+            {"objectives": ["p95_ttft_ms", "p95_ttft_ms"]},
+            {"objectives": ["unknown_metric"]},
+        ]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                Choices(**invalid)
+
+    def test_approval_rejects_multivariate_setting_dropped_during_preparation(self):
+        from .services import finalize_preparation
+
+        with patch("infiro_platform.demo.Choices", side_effect=lambda **kw: Choices(
+            tpe_multivariate=True, **kw
+        )):
+            prepared = seed_prepared(self.alice)
+        prepared.payload["optuna"].pop("sampler_kwargs")
+        prepared.summary["draft_sha256"] = digest({
+            "payload": prepared.payload, "intent": prepared.intent,
+            "workload_identity": prepared.summary["workload_identity"]})
+        job = enqueue(self.alice, "prepare", prepared, {}, "multivariate-drift")
+        with self.assertRaisesRegex(ValueError, "multivariate TPE differs"):
+            finalize_preparation(job, prepared, {})
+
+    def test_queue_wait_survives_polling_and_completion(self):
+        p = seed_prepared(self.alice)
+        job = approve(self.alice, p.id, p.digest, True)
+        controller = Mock()
+        controller.submit.return_value = {"run_id": "timing-run"}
+        controller.status.return_value = {"state": "running", "created_at": "2026-10-26T10:00:00Z",
+            "jobs": [{"framework": "vllm", "state": "running"}]}
+        controller.results.return_value = {"run_id": "timing-run", "state": "running", "manifests": {}}
+        observed = timezone.datetime(2026, 10, 26, 10, 0, 5, tzinfo=timezone.get_default_timezone())
+        with patch("infiro_platform.controller.make_controller", return_value=controller), patch("infiro_platform.services.timezone.now", return_value=observed):
+            perform_study(job)
+            self.assertEqual(job.result["summary"]["framework_timings"]["vllm"]["queue_wait_s"], 5)
+            controller.status.return_value["state"] = "completed"
+            controller.status.return_value["jobs"][0]["state"] = "completed"
+            perform_study(job)
+        self.assertEqual(job.result["summary"]["framework_timings"]["vllm"]["queue_wait_s"], 5)
+        self.assertIsNone(job.result["summary"]["framework_timings"]["vllm"]["benchmark_s"])
 
     def test_configuration_validation_is_terminal_and_diagnostics_are_redacted(self):
         from pydantic import ValidationError
@@ -1720,6 +1784,30 @@ class ControllerIntegrationTests(TransactionTestCase):
         self.assertEqual(space["chunked_prefill_size"], PREFILL_BUDGETS_1)
         self.assertEqual(space["mem_fraction_static"], [0.70, 0.75, 0.80, 0.85])
 
+    def test_controlled_study_retains_settings_through_approval_execution_and_results(self):
+        with patch("infiro_platform.demo.Choices", side_effect=lambda **kw: Choices(
+            objectives=["mean_ttft_ms"], sampler="TPESampler", tpe_multivariate=True,
+            pruner="MedianPruner", **kw
+        )):
+            prepared = seed_prepared(self.alice)
+        self.assertEqual(prepared.payload["optuna"]["sampler_kwargs"], {"multivariate": True})
+        from llm_optimizer.remote.worker import optimizer_command
+        args = optimizer_command({"request": prepared.payload, "framework": "vllm"},
+                                 Path(self.root.name) / "multivariate-results.json")
+        self.assertEqual(args[args.index("--optuna-sampler") + 1], "TPESampler")
+        self.assertEqual(json.loads(args[args.index("--optuna-sampler-kwargs") + 1]),
+                         {"multivariate": True})
+        study = approve(self.alice, prepared.id, prepared.digest, True)
+        perform_study(study)
+        self.assertEqual(study.state, "dry_run")
+        self.assertEqual(study.result["optimization_settings"], {
+            "objectives": ["mean_ttft_ms"], "sampler": "TPESampler", "pruner": "MedianPruner",
+            "sampler_kwargs": {"multivariate": True},
+            "trials": 2, "seed": 1})
+        study.save()
+        perform_study(study)
+        self.assertEqual(study.result["optimization_settings"]["pruner"], "MedianPruner")
+
     def test_real_prepare_controller_dry_run_restart_results_and_two_user_scope(self):
         from .controller import ScopedController
 
@@ -1818,6 +1906,8 @@ class ControllerIntegrationTests(TransactionTestCase):
                         "results": {
                             "mean_e2e_latency_ms": latency,
                             "mean_ttft_ms": ttft,
+                            "p95_e2e_latency_ms": latency * 1.5,
+                            "p95_ttft_ms": ttft * 1.5,
                             "output_throughput": throughput,
                             "total_requests": 3,
                             "completed": 3,

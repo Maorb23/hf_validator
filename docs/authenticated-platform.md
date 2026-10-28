@@ -573,3 +573,28 @@ validator messages and contexts. An already submitted study retains its
 controller reference and becomes `attention_required` on validation failure.
 Restart the worker to use these changes. Failed preparations require a new
 preparation from Review configuration; existing frozen requests remain unchanged.
+
+## Delete saved history
+
+Recommendations now have **Delete recommendation**; completed, failed, cancelled and
+past dry-run studies have **Delete study**. A trial inspector in a finished study
+also has **Delete trial**. Each action first offers **Confirm deletion** and
+**Keep history**. Deleting a recommendation removes its dependent study history.
+Active or worker-leased operations must finish or be cancelled before removal.
+
+Deletion is persisted in SQLite, scoped to the authenticated owner, and protected
+by CSRF. Deleted resources disappear from bootstrap and cannot be opened or retried
+through their old API URLs. Original execution artifacts and provider logs remain
+on disk; this is workspace-history deletion, not a storage purge. Individual trial
+removal leaves original results intact, filters the visible measurements and
+reuses the optimizer analysis to recompute selections and Pareto fronts. Incomplete
+legacy context leaves a selection unavailable rather than retaining a deleted one.
+Original resource usage totals remain unchanged.
+
+Background operations display only active work. Finished, failed and cancelled
+research operations no longer produce stale Retry panels.
+
+Migration `0004_job_deleted_at_job_deleted_trials_and_more` adds the persistent
+history fields. After updating another installation, run `web/manage.py migrate`,
+rebuild `web/` and restart Django and the worker. No GPU jobs are needed to apply
+or test this feature.

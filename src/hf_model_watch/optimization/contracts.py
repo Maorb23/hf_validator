@@ -6,7 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-Metric = Literal["mean_e2e_latency_ms", "mean_ttft_ms", "output_throughput"]
+Metric = Literal["mean_e2e_latency_ms", "mean_ttft_ms", "output_throughput",
+                 "p95_e2e_latency_ms", "p95_ttft_ms"]
 Policy = Literal[
     "latency_first", "ttft_first", "throughput_first", "balanced", "knee_point", "constrained"
 ]
@@ -14,6 +15,8 @@ DIRECTIONS = {
     "mean_e2e_latency_ms": "minimize",
     "mean_ttft_ms": "minimize",
     "output_throughput": "maximize",
+    "p95_e2e_latency_ms": "minimize",
+    "p95_ttft_ms": "minimize",
 }
 
 
@@ -92,10 +95,10 @@ class StudyContext(Contract):
         expected = objectives_for(self.concurrency)
         if not self.objectives:
             self.objectives = expected
-        elif len(self.objectives) == 1:
-            pass  # Explicit scalar studies support native intermediate pruning.
-        elif self.objectives != expected:
-            raise ValueError(f"Objectives for concurrency {self.concurrency} must be {expected}")
+        else:
+            from llm_optimizer.optimization import objective_names
+
+            objective_names(",".join(self.objectives))
         return self
 
 
@@ -141,6 +144,19 @@ class Candidate(Contract):
     metrics: dict[str, float]
     artifacts: dict[str, str] = Field(default_factory=dict)
     validation_status: str = "not_independently_validated"
+    trial_id: str | None = None
+    timings: dict[str, float | None] = Field(default_factory=dict)
+
+
+class TrialRecord(Contract):
+    framework: str
+    trial_id: str
+    status: str
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    timings: dict[str, float | None] = Field(default_factory=dict)
+    reason: str | None = None
+    configuration_id: str | None = None
 
 
 class StudySummary(Contract):
@@ -151,6 +167,8 @@ class StudySummary(Contract):
     gpu_seconds: dict[str, float] = Field(default_factory=dict)
     failed_trials: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     candidates: list[Candidate] = Field(default_factory=list)
+    trials: list[TrialRecord] = Field(default_factory=list)
+    framework_timings: dict[str, dict[str, float | None]] = Field(default_factory=dict)
     framework_errors: dict[str, str] = Field(default_factory=dict)
     importance_per_objective: dict[str, dict[str, Any]] = Field(default_factory=dict)
     artifacts: dict[str, str] = Field(default_factory=dict)

@@ -41,11 +41,11 @@ test('inference examples are simulated, finite, and isolated by workload', async
 });
 test('imported measurements retain every run and disclose incomplete metadata', async () => {
   const p=await load('publication.json');
-  assert.equal(p.kind,'measurement');assert.equal(p.studies.length,114);assert.equal(p.rows.length,1948);
-  assert.equal(p.studies.filter(s=>s.state==='crashed').length,6);
-  assert.equal(p.rows.filter(r=>r.plotEligible).length,1524);
+  assert.equal(p.kind,'measurement');assert.equal(p.studies.length,185);assert.equal(p.rows.length,3197);
+  assert.equal(p.studies.filter(s=>s.state==='crashed').length,10);
+  assert.equal(p.rows.filter(r=>r.plotEligible).length,2394);
   assert.ok(p.studies.some(s=>s.missingMetadata.includes('revision')));
-  assert.deepEqual([...new Set(p.studies.map(s=>s.context.model))].sort(),['Qwen/Qwen3-4B','Qwen/Qwen3.5-4B']);
+  assert.deepEqual([...new Set(p.studies.map(s=>s.context.model))].sort(),['Qwen/Qwen3-4B','Qwen/Qwen3-8B','Qwen/Qwen3.5-4B','google/gemma-4-12B-it','openbmb/MiniCPM5-2B']);
   for(const row of p.rows) {
     assert.ok(p.studies.some(s=>s.id===row.runId));
     if(row.plotEligible){assert.equal(row.state,'COMPLETE');assert.ok(row.throughput>0&&row.latency>0);}
@@ -90,4 +90,32 @@ test('dependent filter changes clear hidden group restrictions and incompatible 
 test('multi-group browsing preserves Pareto points within each context', () => {
   const rows=[{id:'a',cohort:'A',latency:10,throughput:100},{id:'b',cohort:'A',latency:20,throughput:90},{id:'c',cohort:'B',latency:30,throughput:80}];
   assert.deepEqual(measuredPareto(rows).map(r=>r.id),['a','c']);
+});
+
+
+test('new variants expose all trials, preserve concurrency and exclude diagnostics from frontiers', async () => {
+  const p=await load('publication.json');
+  assert.equal(new Set(p.rows.map(r=>r.id)).size,p.rows.length);
+  assert.equal(new Set(p.rows.map(r=>`${r.runId}:${r.number}`)).size,p.rows.length);
+  assert.equal(p.sources.length,8);
+  const studies=p.studies.filter(s=>s.search);
+  assert.equal(studies.length,89);
+  assert.equal(studies.filter(s=>s.durationSeconds<300).length,4);
+  assert.ok(studies.every(s=>s.context.workload.max_concurrency===128));
+  assert.equal(studies.filter(s=>s.metadataConflicts.some(c=>c.field==='model')).length,32);
+  assert.equal(studies.filter(s=>s.metadataConflicts.some(c=>c.field==='speculativeMethod')).length,16);
+  assert.ok(studies.every(s=>s.terminationReason===null));
+  for(const [model,variants] of [['openbmb/MiniCPM5-2B',['Baseline']],['google/gemma-4-12B-it',['Baseline','DSpark']],['Qwen/Qwen3-4B',['Baseline','DSpark']],['Qwen/Qwen3-8B',['Baseline','DSpark']]]) {
+    for(const variant of variants) {
+      const rows=matchingMeasuredRows(p.rows,{model,variant,engine:'all',sampler:'all',cohort:'all',runId:'all'});
+      assert.ok(rows.length>0,`${model} ${variant}`);
+      assert.ok(rows.every(r=>r.context.variant===variant));
+      assert.ok(rows.some(r=>r.plotEligible));
+      assert.ok(measuredPareto(rows).every(r=>r.plotEligible));
+      if(variant==='DSpark')assert.ok(rows.every(r=>r.context.draftModel&&r.context.draftRevision));
+    }
+  }
+  const short=studies.filter(s=>s.durationSeconds>0&&s.durationSeconds<300);
+  assert.equal(short.length,3);
+  assert.ok(short.some(s=>p.rows.some(r=>r.runId===s.id&&r.plotEligible)));
 });

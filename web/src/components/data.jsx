@@ -9,7 +9,7 @@ export function useDataset(file) {
       if (!r.ok) throw new Error(`Dataset unavailable (${r.status})`);
       return r.json();
     }).then(data => {
-      if (data.schemaVersion !== 1) throw new Error('Unsupported dataset version');
+      if (data.schemaVersion !== 1 && !(file === 'publication.json' && data.schemaVersion === 2)) throw new Error('Unsupported dataset version');
       setState(s => ({ ...s, data }));
     }).catch(error => { if (error.name !== 'AbortError') setState(s => ({ ...s, error: error.message })); });
     return () => controller.abort();

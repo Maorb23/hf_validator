@@ -147,3 +147,11 @@ Changing model, engine or strategy clears a specific group restriction; select a
 group explicitly to narrow results. The highest observed throughput is surfaced
 and the trial table sorts throughput descending. Mixed-group browsing does not
 merge Pareto frontiers or permit cross-group configuration comparisons.
+
+
+The seven-model import and metadata resolutions are documented in
+[benchmark import verification](../docs/benchmark-import.md). The importer accepts
+repeated `--input` arguments and `--merge web/public/data/publication.json` to preserve
+existing runs. Backups are rejected. Baseline/DSpark variants have an explicit filter;
+study and trial inspectors expose sanitized execution evidence and metadata conflicts.
+No minimum-duration threshold applies.

@@ -10,6 +10,26 @@ class Input(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class DirectModel(Input):
+    model_id: str = Field(min_length=1, max_length=180)
+    revision: str = Field(default="main", min_length=1, max_length=100)
+
+    @field_validator("model_id")
+    @classmethod
+    def repository(cls, value):
+        from huggingface_hub.utils import validate_repo_id
+
+        validate_repo_id(value)
+        return value
+
+    @field_validator("revision")
+    @classmethod
+    def safe_revision(cls, value):
+        if not re.fullmatch(r"[\w./-]+", value) or ".." in value:
+            raise ValueError("Use a Hugging Face branch, tag or commit revision.")
+        return value
+
+
 class Requirements(Input):
     request: str = Field(min_length=3, max_length=12000)
     gpu_memory_gb: float | None = Field(default=None, gt=0, le=2048)
@@ -82,6 +102,17 @@ class Choices(Input):
     spending_limit_usd: float = Field(default=20, gt=0, le=50000)
     timeout_minutes: int = Field(default=60, ge=60, le=240)
     trials: int = Field(default=10, ge=1, le=100)
+    objectives: list[Literal["output_throughput", "mean_e2e_latency_ms", "mean_ttft_ms",
+                             "p95_e2e_latency_ms", "p95_ttft_ms"]] = Field(
+        default_factory=list, max_length=3
+    )
+    sampler: Literal["TPESampler", "RandomSampler", "GridSampler", "GPSampler", "NSGAIISampler"] = (
+        "TPESampler"
+    )
+    tpe_multivariate: bool = False
+    pruner: Literal["NopPruner", "MedianPruner", "SuccessiveHalvingPruner", "HyperbandPruner"] = (
+        "NopPruner"
+    )
     dry_run: bool = True
     num_prompts: int = Field(default=100, ge=1, le=1000)
     seed: int = Field(default=1, ge=0, le=2**31 - 1)
@@ -92,6 +123,27 @@ class Choices(Input):
 
     @model_validator(mode="after")
     def limits(self):
+        from hf_model_watch.optimization.contracts import StudyContext, Workload
+
+        # Keep saved mean-based requests valid; new web requests use p95.
+        if not self.objectives:
+            self.objectives = (
+                ["p95_e2e_latency_ms", "p95_ttft_ms"] if self.concurrency == 1
+                else ["output_throughput", "p95_e2e_latency_ms"]
+            )
+        context = StudyContext(
+            model_id="web/validation",
+            revision="validation",
+            gpu_type=self.gpu_type,
+            concurrency=self.concurrency,
+            workload=Workload(input_tokens=self.input_tokens, output_tokens=self.output_tokens),
+            objectives=self.objectives,
+        )
+        self.objectives = context.objectives
+        if self.tpe_multivariate and self.sampler != "TPESampler":
+            raise ValueError("Multivariate TPE requires TPESampler.")
+        if self.pruner != "NopPruner" and len(self.objectives) != 1:
+            raise ValueError("Pruning requires an unconstrained scalar objective.")
         if len(set(self.frameworks)) != len(self.frameworks):
             raise ValueError("Frameworks must be unique.")
         estimate = self.gpu_count * self.gpu_hourly_cost_usd * len(self.frameworks)

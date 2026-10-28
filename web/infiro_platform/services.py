@@ -17,7 +17,10 @@ def owned(model, user, identifier):
     from django.http import Http404
 
     try:
-        return model.objects.get(pk=identifier, owner=user)
+        filters = {"pk": identifier, "owner": user}
+        if any(f.name == "deleted_at" for f in model._meta.fields):
+            filters["deleted_at__isnull"] = True
+        return model.objects.get(**filters)
     except (model.DoesNotExist, ValueError, TypeError):
         raise Http404 from None
 
@@ -232,6 +235,29 @@ def perform_discovery(job):
     job.state = "completed"
 
 
+def perform_model_selection(job):
+    import os
+
+    from huggingface_hub import HfApi
+
+    rec = Recommendation.objects.get(pk=job.target_id, owner=job.owner)
+    if not rec.selected:
+        requested = rec.report["requested_model"]
+        try:
+            info = HfApi(token=os.environ.get("HF_TOKEN") or False).model_info(
+                requested["model_id"], revision=requested["revision"])
+        except Exception as exc:
+            raise ValueError("Model access or revision lookup failed. Check the model ID, "
+                             "revision and Hugging Face connection.") from exc
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", info.sha or ""):
+            raise ValueError("The model lookup did not return a pinned commit.")
+        rec.selected = {"model_id": requested["model_id"], "revision": info.sha}
+        rec.status = "ready"
+        rec.save(update_fields=["selected", "status", "updated_at"])
+    job.state = "completed"
+    job.result = {"recommendation_id": str(rec.id), "selected": rec.selected}
+
+
 def perform_dataset(job):
     from .workloads import identity, materialize
 
@@ -305,6 +331,25 @@ def finalize_preparation(job, prepared, found):
         for v in prepared.payload.get("optuna_by_framework", {}).values()
     ):
         raise ValueError("Prepared trial count differs from Configure. Prepare again.")
+    optuna = prepared.payload.get("optuna", {})
+    for key, default in (("sampler", "TPESampler"), ("pruner", "NopPruner")):
+        if optuna.get(key, default) != prepared.choices.get(key, default) or any(
+            override.get(key, optuna.get(key, default)) != prepared.choices.get(key, default)
+            for override in prepared.payload.get("optuna_by_framework", {}).values()
+        ):
+            raise ValueError(f"Prepared {key} differs from Configure. Prepare again.")
+    if prepared.choices.get("objectives") and (
+        optuna.get("objectives") != prepared.choices["objectives"]
+        or prepared.intent["context"]["objectives"] != prepared.choices["objectives"]
+    ):
+        raise ValueError("Prepared objectives differ from Configure. Prepare again.")
+    expected_multivariate = prepared.choices.get("tpe_multivariate", False)
+    kwargs = optuna.get("sampler_kwargs", {})
+    if kwargs.get("multivariate", False) != expected_multivariate or any(
+        override.get("sampler_kwargs", kwargs).get("multivariate", False) != expected_multivariate
+        for override in prepared.payload.get("optuna_by_framework", {}).values()
+    ):
+        raise ValueError("Prepared multivariate TPE differs from Configure. Prepare again.")
     prepared.digest = digest(binding(prepared))
     prepared.status = "prepared"
     prepared.save()
@@ -393,7 +438,12 @@ def perform_prepare(job):
         "timeout_minutes": prepared.choices["timeout_minutes"],
         "workload_manifest": manifest,
         "images": settings.INFIRO_SERVING_IMAGES,
-        "optuna": {"trials": prepared.choices["trials"], "sampler": "TPESampler"},
+        "optuna": {"trials": prepared.choices["trials"],
+                   "seed": prepared.choices["seed"],
+                   "sampler": prepared.choices.get("sampler", "TPESampler"),
+                   **({"sampler_kwargs": {"multivariate": True}}
+                      if prepared.choices.get("tpe_multivariate") else {}),
+                   "pruner": prepared.choices.get("pruner", "NopPruner")},
     }
     run = {
         "run_id": "run_" + prepared.recommendation.id.hex,
@@ -481,7 +531,17 @@ def perform_study(job):
         controller.cancel(job.controller_run)
     controller.tick()
     status = controller.status(job.controller_run)
+    from hf_model_watch.optimization.timing import elapsed
+
+    observations = job.progress.get("queue_observations", {})
+    for framework_job in status["jobs"]:
+        framework = framework_job["framework"]
+        if framework_job["state"] == "running" and framework not in observations:
+            observed_at = timezone.now().isoformat()
+            observations[framework] = {"running_observed_at": observed_at,
+                "queue_wait_s": elapsed(status.get("created_at"), observed_at)}
     job.progress = {
+        "queue_observations": observations,
         "state": status["state"],
         **{
             key: job.progress[key]
@@ -495,11 +555,25 @@ def perform_study(job):
             for j in status["jobs"]
         ],
     }
+    # Keep the first running observation even if result retrieval must retry.
+    job.save(update_fields=["progress"])
     intent = NewStudyIntent.model_validate(prepared.intent)
     summary = OptimizationAdapter(controller, {}).results(job.controller_run, intent.context)
+    for framework in prepared.choices["frameworks"]:
+        timing = summary.framework_timings.setdefault(framework, {
+            "startup_to_ready_s": None, "benchmark_s": None})
+        timing["queue_wait_s"] = observations.get(framework, {}).get("queue_wait_s")
     result = analyze(summary, intent.selection_policy)
     job.result = redact(
         {
+            "optimization_settings": {
+                "objectives": intent.context.objectives,
+                "sampler": prepared.payload.get("optuna", {}).get("sampler", "TPESampler"),
+                "sampler_kwargs": prepared.payload.get("optuna", {}).get("sampler_kwargs", {}),
+                "pruner": prepared.payload.get("optuna", {}).get("pruner", "NopPruner"),
+                "trials": prepared.payload.get("optuna", {}).get("trials"),
+                "seed": intent.context.workload.seed,
+            },
             "summary": summary.model_dump(mode="json"),
             "analysis": result.model_dump(mode="json"),
             "measurement_status": "unmeasured_dry_run"
@@ -601,6 +675,7 @@ def perform_validation(job):
 
 def perform(job):
     {
+        "model": perform_model_selection,
         "discover": perform_discovery,
         "dataset": perform_dataset,
         "prepare": perform_prepare,

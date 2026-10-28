@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from .contracts import DIRECTIONS, Candidate, OptimizationResult, SelectionPolicy, StudySummary
+from .contracts import Candidate, OptimizationResult, SelectionPolicy, StudySummary
 
 
 def _identity(candidate: Candidate) -> tuple[str, str]:
@@ -19,7 +19,9 @@ def _valid(candidate: Candidate, objectives: list[str]) -> bool:
 
 
 def _loss(candidate: Candidate, metric: str) -> float:
-    return candidate.metrics[metric] * (-1 if DIRECTIONS[metric] == "maximize" else 1)
+    from llm_optimizer.optimization import objective_direction
+
+    return candidate.metrics[metric] * (-1 if objective_direction(metric) == "maximize" else 1)
 
 
 def pareto_front(candidates: list[Candidate], objectives: list[str]) -> list[Candidate]:
@@ -97,6 +99,9 @@ def analyze(summary: StudySummary, policy: SelectionPolicy) -> OptimizationResul
         "throughput_first": "output_throughput",
     }.get(policy.name)
     if priority:
+        percentile = priority.replace("mean_", "p95_", 1)
+        if percentile in objectives:
+            priority = percentile
         if priority not in objectives:
             result.reason = f"Policy {policy.name} requires objective {priority}"
             return result

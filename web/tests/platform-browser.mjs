@@ -72,7 +72,7 @@ try{
   }else{await screenshot('approval');await page.getByRole('button',{name:'Open study',exact:true}).click()}
   await page.getByRole('heading',{name:'Latency & throughput',exact:true}).waitFor();assert.ok(await page.getByRole('heading',{name:'No comparable measurements yet'}).isVisible());await screenshot('study');
   const studyName='Comparison <script>window.nameExecuted=true</script> '+device;
-  await page.getByLabel('Study name',{exact:true}).fill('  '+studyName+'  ');
+  await page.getByLabel('Run name',{exact:true}).fill('  '+studyName+'  ');
   await page.getByRole('button',{name:'Save name',exact:true}).click();
   await page.getByRole('heading',{name:studyName,exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>window.nameExecuted),undefined);

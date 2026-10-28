@@ -70,6 +70,9 @@ def main():
         from .workloads import FORMAT_ERROR, MEMORY_ERROR
 
         safe = {
+            "Model access or revision lookup failed. Check the model ID, "
+            "revision and Hugging Face connection.",
+            "The model lookup did not return a pinned commit.",
             FORMAT_ERROR, MEMORY_ERROR, CACHE_FULL, CACHE_INVALID,
             "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown.",
             "Tokenizer exceeds the 128 MiB limit, or file sizes are unknown.",
