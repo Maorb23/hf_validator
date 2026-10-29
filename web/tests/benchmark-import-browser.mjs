@@ -20,7 +20,7 @@ try {
    await page.locator('.sample-point').first().focus();
    await page.keyboard.press('Enter');
    assert.ok(await page.locator('.result-inspector').getByText(`${model} · ${variant}`,{exact:true}).isVisible());
-   const record=page.locator('.result-inspector').getByText(/^Study metadata · /);
+   const record=page.locator('.result-inspector').getByText(/^Run metadata · /);
    await record.click();
    assert.ok(await page.locator('.result-inspector').getByRole('link',{name:'Original run record ↗'}).isVisible());
    assert.ok(await page.locator('.result-inspector').getByText(/Termination reason: Not reported/).isVisible());
@@ -41,12 +41,12 @@ try {
    if(id==='7hksyocg') {
     assert.equal(await page.locator('.sample-point').count(),0);
     await page.locator('.measured-replay').getByText('Recorded context and missing metadata',{exact:true}).click();
-    await page.locator('.measured-replay').getByText(`Study metadata · ${id}`,{exact:true}).click();
+    await page.locator('.measured-replay').getByText(`Run metadata · ${id}`,{exact:true}).click();
     assert.ok(await page.locator('.measured-replay').getByText(/Duration: 0 seconds/).isVisible());
    } else {
     assert.equal(await page.locator('.sample-point').count(),2);
     await page.locator('.sample-point').first().focus();await page.keyboard.press('Space');
-    await page.locator('.result-inspector').getByText(`Study metadata · ${id}`,{exact:true}).click();
+    await page.locator('.result-inspector').getByText(`Run metadata · ${id}`,{exact:true}).click();
     assert.ok(await page.locator('.result-inspector').getByText(/Termination reason: Not reported/).isVisible());
    }
   }

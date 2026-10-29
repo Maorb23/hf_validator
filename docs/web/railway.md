@@ -3,8 +3,11 @@
 Railway runs one CPU service: Gunicorn serves the Astro artifact and Django `/app/`
 APIs, and `platform_worker` handles the durable queue and preparation. Nebius runs
 GPU workloads. The root `Dockerfile` remains the separate model-worker image.
-This setup intentionally keeps SQLite and local artifacts; do not add replicas,
-regions, a separate worker service, or ephemeral storage for private state.
+The existing Railway PostgreSQL service stores accounts, encrypted connections,
+the durable queue, and optimizer controller tables. One application service still
+uses `/data` for private artifacts, frozen workloads, caches and worker locks. Do
+not add app replicas, regions, or a separate worker service with this file layout.
+Local development without `DATABASE_URL` continues to use SQLite.
 
 ## Files and service configuration
 
@@ -20,10 +23,13 @@ regions, a separate worker service, or ephemeral storage for private state.
   SIGTERM/SIGINT stop both, with a bounded 20-second shutdown and forced cleanup.
   The worker also kills/reaps isolated preparation children; interrupted jobs
   recover from durable leases on the next start.
-- `.railway/railway.ts`: one service, one replica in `europe-west4-drams3a`, one 10 GiB
+- `.railway/railway.ts`: the `web` partial manages one application service and its
+  artifact volume, preserving your existing PostgreSQL service. One replica in
+  `europe-west4-drams3a`, one 10 GiB
   volume mounted at `/data`, `/healthz`, no overlap, 30-second drain and failure
-  restarts. Choose region and initial size before provisioning. SQLite and cache
-  growth require monitoring free space. Disable Railway Serverless sleeping.
+  restarts. Choose region and initial size before provisioning. Artifact/cache
+  growth requires monitoring volume space; monitor PostgreSQL separately. Disable
+  Railway Serverless sleeping.
 
 Use Railway's current [Infrastructure as Code workflow](https://docs.railway.com/infrastructure-as-code)
 with CLI 5.42.1 or newer and Node 24 or newer. Install the pinned authoring SDK with
@@ -69,9 +75,20 @@ DJANGO_ALLOWED_HOSTS=<deployment hostname>,healthcheck.railway.app
 DJANGO_TRUST_PROXY_SSL_HEADER=1
 INFIRO_CREDENTIAL_KEYS=<persistent Fernet encryption key>
 INFIRO_PRIVATE_ROOT=/data/private
-INFIRO_DATABASE=/data/private/platform.sqlite3
+DATABASE_URL=${{Postgres.DATABASE_URL}}
 INFIRO_LIVE_ENABLED=0
 ```
+
+In the **web service → Variables**, add a reference variable `DATABASE_URL` pointing
+to your existing PostgreSQL service's `DATABASE_URL`. `${{Postgres.DATABASE_URL}}`
+is the Railway reference syntax when the service is named `Postgres`; use its
+actual name or Railway's reference picker. Use the private connection URL, not
+`DATABASE_PUBLIC_URL`. Keep it as a runtime secret. Remove the old
+`INFIRO_DATABASE` variable from the Railway web service; it is only a local SQLite
+fallback and is ignored when `DATABASE_URL` is present. Production container
+startup requires a PostgreSQL URL and refuses to silently create SQLite instead.
+The IaC partial preserves the existing reference and does not provision or replace
+Postgres. See [Railway PostgreSQL connections](https://docs.railway.com/databases/postgresql).
 
 Hostnames have no scheme, port, or path; add any custom hostname explicitly.
 Use a password manager to generate/store the Django secret (for example,
@@ -81,7 +98,7 @@ restarts. For a migration, use the **original** encryption key(s), never generat
 replacement keys for existing ciphertext. Escrow keys separately from backups.
 
 Enter provider secrets only through the authenticated Connections UI; they are
-encrypted in SQLite and passed to isolated child environments only as needed.
+encrypted in PostgreSQL and passed to isolated child environments only as needed.
 Do not set them as Astro variables, `PUBLIC_*`, Docker ARG/ENV, source files,
 committed dotenv files, command-line arguments, or public JSON. The dedicated
 Docker ignore file allows only build inputs and excludes private directories,
@@ -113,16 +130,22 @@ For live jobs, HF/storage credentials additionally need immutable Nebius
 SecretStash version references; UI credentials alone do not prove worker access.
 See [provider requirements and live prerequisites](../authenticated-platform.md).
 
-## Move an existing installation
+## Move an existing SQLite installation to PostgreSQL
 
-1. Keep `INFIRO_LIVE_ENABLED=0` on the target. Schedule maintenance, block new local
-   requests, stop local web writes and **all** local platform/controller workers.
-   Reconcile any running Nebius workloads first: stopping Railway/local processes
-   does not cancel remote GPU allocations. Do not start a second controller.
-2. Record the exact application/optimizer revisions and save the original Django
-   secret and `INFIRO_CREDENTIAL_KEYS` in secure escrow. Find the actual source DB
-   and private root; defaults are `web/private/platform.sqlite3` and `web/private`.
-3. With writers stopped, use SQLite's backup API for a consistent DB copy:
+For a new installation with no accounts/data to retain, set `DATABASE_URL` and
+start the service; migrations create the PostgreSQL schema automatically. For
+existing data, use a maintenance window and a fresh, dedicated target database:
+
+1. Block new requests and stop **all** web writers and local platform/controller
+   workers. Keep `INFIRO_LIVE_ENABLED=0` on the target. Reconcile any running
+   Nebius workloads first: stopping an app does not cancel remote allocations.
+2. Save the exact source/image/optimizer revisions and original Django secret and
+   `INFIRO_CREDENTIAL_KEYS` in secure escrow. Do not generate new encryption keys
+   for existing ciphertext. Find the actual source SQLite path and private root
+   (defaults: `web/private/platform.sqlite3` and `web/private`).
+3. Back up the stopped SQLite database with its backup API, check integrity, and
+   copy the complete private root, including user/job directories, frozen workloads,
+   artifacts and caches. Keep an encrypted, checksummed original backup:
 
    ```python
    import sqlite3
@@ -132,30 +155,57 @@ See [provider requirements and live prerequisites](../authenticated-platform.md)
            assert target.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
    ```
 
-   Copy the **entire** private root to the backup directory as well, preserving
-   user/job directory names, frozen workloads, artifacts, and workload caches.
-   Replace the copied database with the backup API copy; omit stale SQLite journal,
-   WAL/SHM and lease files only after clean shutdown. Never copy only the main DB
-   while writers are active. Make an encrypted archive and checksum it; restrict
-   permissions and retain an untouched source backup.
-4. Provision `/data` before application startup. With the destination app stopped,
-   use an authenticated administrative transfer/maintenance container attached to
-   that volume to extract the encrypted backup into `/data/private`, then verify
-   checksums, SQLite integrity and permissions (`0700` directories, `0600` files).
-   Railway SSH operates on the mounted remote container; `railway run` executes
-   locally and does **not** mount the volume. Use an encrypted private storage
-   transfer if direct copying is unavailable; never expose a public upload route,
-   public bucket, or bake a backup into an image. Stop the maintenance container
-   before starting the app. Do not run app migrations during the transfer.
-5. Set the target Variables including the **original** credential keys. Start one
-   service. Startup applies migrations after mount. Check every migrated
-   connection decrypts, sample artifacts match stored hashes, and frozen dataset
-   identities survive. Review stored payloads/controller state for old absolute
-   paths or environment-specific references. Re-prepare unapproved drafts if
-   needed; never mutate an approved request or regenerate its approval silently.
-6. Run the acceptance checklist below, including a restart and redeploy. Switch
-   DNS/traffic only after verification. Keep the old installation stopped and the
-   original backup for rollback; never allow both installations to write.
+4. Export Django records from that backup using the updated CPU environment:
+
+   ```bash
+   env -u DATABASE_URL INFIRO_DATABASE=/secure-backup/platform.sqlite3 \
+     python web/manage.py dumpdata --natural-foreign \
+     --exclude contenttypes --exclude auth.permission \
+     --output /secure-backup/platform.json
+   ```
+
+   Preserve primary keys: **do not use `--natural-primary`**. Credential envelopes
+   bind user and connection IDs, and artifact paths bind user/job IDs. Natural
+   foreign keys resolve permissions against target migrations. The fixture and
+   backup remain private; never put either in Git or an image. `dumpdata` excludes
+   the optimizer's unmanaged controller tables; import those in step 6.
+5. Provision `/data`, and with the destination app/worker stopped, securely transfer
+   the complete private tree to `/data/private`. Preserve names/paths, verify
+   checksums and set private permissions (`0700` directories, `0600` files). Keep
+   the SQLite backup in a secure maintenance location for the controller import;
+   it is no longer the running application DB. Do not mount private files under
+   the public Astro `web/dist/data` directory. `railway run` executes locally and
+   does not mount the remote volume; use an authenticated maintenance session or
+   container attached to the target volume. Never expose a public upload route.
+6. In the maintenance environment, configure `DATABASE_URL` for the dedicated
+   target PostgreSQL database, the original credential keys, and private root.
+   Keep all app/worker processes stopped while running:
+
+   ```bash
+   python web/manage.py migrate --noinput
+   python web/manage.py loaddata /secure-backup/platform.json
+   python web/manage.py import_sqlite_controllers --source /secure-backup/platform.sqlite3
+   ```
+
+   `loaddata` preserves IDs and resets managed sequences. The controller importer
+   copies only UUID-scoped optimizer tables for existing study jobs, preserves run
+   IDs/requests and refuses to overwrite nonempty target controllers. Each study
+   import is transactional; if an import fails after earlier studies completed,
+   restore the target's pre-import backup or use a fresh empty target before
+   retrying the whole procedure. Never restart the importer against partially
+   populated controllers or an unrelated application's database.
+7. Verify all saved credentials decrypt without printing them, model counts and
+   identities match, artifact SHA-256 checks pass, and existing dry-run controller
+   status/run IDs remain intact. Review environment-specific paths and remote
+   references in saved payloads. Re-prepare unapproved drafts if needed; never
+   silently regenerate an approved request. Start one app service and perform
+   the restart/redeploy acceptance checks below before switching traffic.
+8. Keep the original installation stopped and the matched SQLite/private backup
+   for rollback. Do not allow both installations to write. New writes in PostgreSQL
+   are not mirrored back to SQLite.
+
+For an existing PostgreSQL installation, restore a coordinated `pg_dump` and private
+artifact backup instead of using the SQLite export/import procedure.
 
 ## Local checks and acceptance
 
@@ -169,12 +219,19 @@ npm run build --prefix web
 npm test --prefix web
 npm ci --prefix .railway
 npm run check --prefix .railway
+# Optional: explicitly select a disposable LOCAL PostgreSQL test server (needs CREATE DATABASE).
+# Never point this at your production Railway database.
+export INFIRO_TEST_DATABASE_URL=postgresql://test_user@127.0.0.1:5432/test_admin
 PYTHONPATH=src:web /tmp/infiro-railway-env/bin/python -m pytest -q tests/test_web_deployment.py
 PYTHONPATH=src:web /tmp/infiro-railway-env/bin/python web/manage.py test infiro_site infiro_platform --noinput
+# Run the same Django checks against a disposable local PostgreSQL database too.
+DATABASE_URL="$INFIRO_TEST_DATABASE_URL" PYTHONPATH=src:web \
+  /tmp/infiro-railway-env/bin/python web/manage.py test infiro_site infiro_platform --noinput
 # Where a Docker daemon is available:
 docker build -f docker/web.Dockerfile -t infiro-web:review .
 ```
 
+For a local container check, supply a reachable local PostgreSQL `DATABASE_URL`.
 Use the container with a named volume mounted at `/data`, runtime Variables from
 a private, ignored env file, and `-p 127.0.0.1:8000:8000 -e PORT=8000`. For a local
 HTTP probe supply `Host: <allowed hostname>` and `X-Forwarded-Proto: https` to
@@ -229,24 +286,28 @@ check in this repository enables live mode or submits those jobs.
 
 ## Backups, restore and rollback
 
-Enable Railway volume backup schedules and separately retain encrypted off-site
-backups of a quiesced private tree plus a SQLite backup API copy as above. A volume
-snapshot without coordinated writers may need SQLite recovery and does not prove
-DB/artifact consistency. Record image/source revision, optimizer archive checksum,
-DB migration level, key versions and archive checksum with each backup. Include
+Stop writers and the worker, then take a PostgreSQL custom-format dump with
+`pg_dump --format=custom --file=/secure-backup/platform.dump` using private `PG*`
+connection variables, and back up the complete private artifact tree. Do not put
+passwords or credential-bearing URLs in command arguments/logs. Enable backups
+on the PostgreSQL service as well as the application's artifact volume and retain
+encrypted off-site copies. Neither backup alone preserves the complete app.
+Record image/source revision, optimizer archive checksum, DB migration level, key versions and archive checksum with each backup. Include
 remote object storage retention/versioning and controller resource IDs for live
 installations; the Railway volume does not back up Nebius/S3. Test restores on an
 isolated volume with live mode disabled and original keys before relying on them.
 
 For restore, stop the app/worker, preserve the current tree as an incident backup,
-restore a matched DB/private-tree backup to the volume, restore original secrets,
-run integrity/checksum checks, then start the matching release and validate before
-reopening traffic. Never restore an old controller database while remote jobs are
+restore the PostgreSQL dump into an empty dedicated target database using
+`pg_restore --exit-on-error --single-transaction`, restore the matched private tree
+to the artifact volume, restore original secrets, run database/checksum checks,
+then start the matching release and validate before reopening traffic. Never restore an old controller database while remote jobs are
 still active without reconciling resource IDs and remote state.
 
 For rollback, first stop writes and the worker. A Railway image rollback does not
-roll back SQLite migrations or artifacts. If schemas are backward compatible,
-restart the previous reviewed image with the current volume after a backup.
+roll back PostgreSQL migrations or artifacts. If schemas are backward compatible,
+restart the previous reviewed image with the current database and volume after a
+backup.
 Otherwise restore the pre-deploy matched backup and its release/keys, accepting
 and documenting loss of changes since that backup. Do not blindly reverse Django
 migrations or attach an empty volume. Volume-backed rollbacks have downtime.
@@ -291,17 +352,16 @@ GPU jobs; cancel/reconcile them through the existing controller/provider flow.
 
 ## Local verification record
 
-On 2026-10-28, the dedicated requirements installed into an isolated Python 3.12
-CPU environment, using only the vendored optimizer snapshot and this checkout.
-Dependency checks passed without torch or serving runtimes. Astro production build
-and 13 frontend tests passed; the Railway SDK graph check passed; 132 Django tests
-and 53 recommender/discovery tests passed. Seven focused deployment checks exercise real
-Gunicorn/worker restarts, shutdown and failure handling, encrypted-state/artifact
-persistence and the documented Fernet rotation. Production `check --deploy` reports
-the existing optional HSTS subdomain/preload advisories: those are not enabled
-without a domain owner deciding their policy.
+PostgreSQL support is exercised with a disposable local PostgreSQL 16 server,
+including migrations, credential decryption, controller dry runs, a real isolated
+worker child, SQLite controller import, private artifact checksums, key rotation,
+and Gunicorn/worker restarts. The full Django suite passed against PostgreSQL
+and local SQLite, along with ten deployment checks and three PostgreSQL-specific
+checks (including concurrent idempotent submission and safe controller import).
+No connection to the production Railway database was used.
 
 Docker Desktop's daemon is unavailable in this WSL environment. The full Docker
 image build, mounted-container/redeploy test, real Railway HTTPS routing and live
-provider validation remain operator acceptance steps; local process tests do not
-claim those were performed. No external deployment or GPU job was launched.
+provider validation remain operator acceptance steps. No external deployment or
+GPU job was launched. Production `check --deploy` retains the optional HSTS
+subdomain/preload advisories until the domain owner chooses that policy.

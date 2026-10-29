@@ -77,6 +77,13 @@ def child_environment(job):
         "OMP_NUM_THREADS": "1",
         "AWS_EC2_METADATA_DISABLED": "true",
     }
+    if settings.DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql":
+        from infiro_site.database import database_url
+
+        # Use the effective settings, including a Django test database when present.
+        # Keep this infrastructure credential confined to the worker child environment.
+        env["DATABASE_URL"] = database_url(settings.DATABASES["default"])
+        env.pop("INFIRO_DATABASE")
     env["INFIRO_WORKER_PID"] = str(os.getpid())
     root = private_dir(job.owner_id, job.id)
     for name, subdir in {

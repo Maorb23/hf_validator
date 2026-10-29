@@ -137,7 +137,7 @@ class ExistingBuildParityTests(SimpleTestCase):
 class ProductionSettingsTests(SimpleTestCase):
     def load_settings(self, **overrides):
         env = os.environ.copy()
-        for key in ["DJANGO_SECRET_KEY", "DJANGO_ALLOWED_HOSTS", "DJANGO_SECURE_SSL_REDIRECT", "DJANGO_TRUST_PROXY_SSL_HEADER"]:
+        for key in ["DJANGO_SECRET_KEY", "DJANGO_ALLOWED_HOSTS", "DJANGO_SECURE_SSL_REDIRECT", "DJANGO_TRUST_PROXY_SSL_HEADER", "DATABASE_URL"]:
             env.pop(key, None)
         env.update(INFIRO_ENV="production", **overrides)
         return subprocess.run(

@@ -9,7 +9,7 @@ import Callout from '../components/Callout.astro';
   <nav class="workflow-nav" aria-label="Technology workflow">
     <a href="#research"><span class="workflow-nav-number">01</span><span><strong>Research</strong><small>Assess model candidates</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg></a>
     <a href="#execution"><span class="workflow-nav-number">02</span><span><strong>Prepare</strong><small>Define the request</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg></a>
-    <a href="#optimize"><span class="workflow-nav-number">03</span><span><strong>Optimize</strong><small>Run or reuse a study</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg></a>
+    <a href="#optimize"><span class="workflow-nav-number">03</span><span><strong>Optimize</strong><small>Start a run or reuse results</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg></a>
   </nav>
   <div class="workflow-surface">
     <article class="workflow-stage" id="research" tabindex="-1" data-reveal>
@@ -25,7 +25,7 @@ import Callout from '../components/Callout.astro';
       <div class="workflow-stage-content">
         <p>Research suggests model candidates; you choose which one to explore. Confiron prepares a JSON request containing the selected model, workload, serving settings, and optimization objectives.</p>
         <p>Choose a new run on Nebius Serverless AI Jobs, or reuse compatible existing results for that model when they are available. Preparing the request keeps those choices explicit.</p>
-        <div class="workflow-output"><span>Prepared artifacts</span><div class="workflow-files"><code>intent.json</code><span aria-hidden="true">+</span><code>request.json</code></div><p>New remote run or compatible prior-study data.</p></div>
+        <div class="workflow-output"><span>Prepared artifacts</span><div class="workflow-files"><code>intent.json</code><span aria-hidden="true">+</span><code>request.json</code></div><p>New remote run or compatible prior-run data.</p></div>
         <a class="workflow-link" href="/architecture">Explore the connected workflow <span aria-hidden="true"></span></a>
       </div>
     </article>
@@ -33,8 +33,8 @@ import Callout from '../components/Callout.astro';
       <div class="workflow-stage-heading"><span class="workflow-stage-number" aria-label="Step 3">03</span><h2>Search serving settings. Keep the workload fixed.</h2></div>
       <div class="workflow-stage-content">
         <div class="workflow-modes">
-          <div><h3>New remote run</h3><p>For a new run, LLM Optimizer executes the prepared study through Nebius Serverless AI Jobs. It manages trial scheduling, remote GPU jobs, checkpoints, and result collection.</p></div>
-          <div><h3>Reuse prior results</h3><p>For offline exploration, reuse a compatible previous study for the selected model. Analyze stored inference measurements and compare configurations without launching another GPU job.</p></div>
+          <div><h3>New remote run</h3><p>For a new run, LLM Optimizer executes the prepared run through Nebius Serverless AI Jobs. It manages trial scheduling, remote GPU jobs, checkpoints, and result collection.</p></div>
+          <div><h3>Reuse prior results</h3><p>For offline exploration, reuse a compatible previous run for the selected model. Analyze stored inference measurements and compare configurations without launching another GPU job.</p></div>
         </div>
         <p>The optimizer explores framework-specific configuration dimensions. Input/output lengths, prompt count, request concurrency, and seed stay attached to each comparison. Throughput, E2E latency, and TTFT objectives retain their measurement definitions.</p>
       </div>

@@ -133,7 +133,7 @@ def pin_secret_references(found):
 
 def validate_live_configuration(prepared, found, images):
     if "nebius_jobs" not in found or "storage" not in found:
-        raise ValueError("Live studies require separate Nebius jobs and storage connections.")
+        raise ValueError("Live runs require separate Nebius jobs and storage connections.")
     for framework in prepared.choices["frameworks"]:
         if not re.fullmatch(r"[^\s]+@sha256:[a-f0-9]{64}", images.get(framework, "")):
             raise ValueError("Live worker images must be configured and pinned by SHA-256 digest.")
@@ -427,7 +427,7 @@ class NebiusSDKProvider:
             or (expected_name is not None and remote.metadata.name != expected_name)
             or (expected_id is not None and remote.metadata.id != expected_id)
         ):
-            raise ValueError("Provider job does not belong to this private study.")
+            raise ValueError("Provider job does not belong to this private run.")
         return remote
 
     @observed_provider_call
@@ -440,7 +440,7 @@ class NebiusSDKProvider:
             run_id != self.job.controller_run
             or framework not in self.prepared.choices["frameworks"]
         ):
-            raise ValueError("Provider lookup is outside this study's authorized scope.")
+            raise ValueError("Provider lookup is outside this run's authorized scope.")
 
         try:
             remote = self.client.get_by_name(
@@ -515,12 +515,12 @@ def factory(job, prepared):
                 or "\\" in name
                 or ".." in name
             ):
-                raise ValueError("Storage artifact is outside this study's authorized scope.")
+                raise ValueError("Storage artifact is outside this run's authorized scope.")
             return super().key(run_id, framework, name)
 
         def put_report(self, run_id, report):
             if run_id != job.controller_run:
-                raise ValueError("Storage report is outside this study's authorized scope.")
+                raise ValueError("Storage report is outside this run's authorized scope.")
             return super().put_report(run_id, report)
 
     return NebiusSDKProvider(

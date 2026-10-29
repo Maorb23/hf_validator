@@ -24,7 +24,7 @@ def payload_blob(payload, prepared, job):
         payload["run_id"] != job.controller_run
         or payload["framework"] not in prepared.choices["frameworks"]
     ):
-        raise ValueError("Worker payload is outside this study's authorized scope.")
+        raise ValueError("Worker payload is outside this run's authorized scope.")
     request = {
         k: v
         for k, v in approved.items()
@@ -144,7 +144,7 @@ def load_and_run():
         or request.get("bucket") != reference["bucket"]
         or request.get("prefix", "").strip("/") != prefix
     ):
-        raise ValueError("Downloaded payload belongs to a different study.")
+        raise ValueError("Downloaded payload belongs to a different run.")
     verification = verify_frozen_workload(payload)
     if verification is not None:
         print(json.dumps({"frozen_workload_verification": verification}), flush=True)

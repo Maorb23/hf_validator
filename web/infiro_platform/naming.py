@@ -8,12 +8,12 @@ MAX_STUDY_NAME = 160
 
 def validate_name(value):
     if not isinstance(value, str):
-        raise ValueError("Study name must be text.")
+        raise ValueError("Run name must be text.")
     value = value.strip()
     if len(value) > MAX_STUDY_NAME:
-        raise ValueError("Study name must be at most 160 characters.")
+        raise ValueError("Run name must be at most 160 characters.")
     if any(unicodedata.category(c).startswith("C") for c in value):
-        raise ValueError("Study name cannot contain control characters.")
+        raise ValueError("Run name cannot contain control characters.")
     return value
 
 
@@ -43,4 +43,4 @@ def validate_recommendation_name(value):
     try:
         return validate_name(value)
     except ValueError as exc:
-        raise ValueError(str(exc).replace("Study", "Recommendation")) from None
+        raise ValueError(str(exc).replace("Run", "Recommendation")) from None

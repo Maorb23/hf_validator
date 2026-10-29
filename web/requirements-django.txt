@@ -7,3 +7,6 @@ sqlparse==0.6.0
 packaging==26.3
 cryptography>=46,<51
 pydantic>=2.7,<3
+# PostgreSQL URL parsing and a CPU-only libpq driver (no system compiler needed).
+dj-database-url==3.1.2
+psycopg[binary]==3.3.6

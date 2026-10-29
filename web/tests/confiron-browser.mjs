@@ -9,6 +9,16 @@ const fmt=n=>n.toLocaleString('en',{maximumFractionDigits:1});
 await mkdir(new URL('../screenshots/',import.meta.url),{recursive:true});
 const browser=await chromium.launch();
 try{
+ // The landing chart and metrics must be available before JavaScript downloads.
+ const staticPage=await browser.newPage({javaScriptEnabled:false,viewport:{width:1440,height:1000}});
+ await staticPage.goto(origin,{waitUntil:'load'});
+ assert.equal(await staticPage.locator('.benchmark-preview .uplift-metric>strong').count(),3);
+ assert.ok(await staticPage.locator('.benchmark-preview svg circle').count()>0,'chart needs initial HTML');
+ assert.ok((await staticPage.locator('.benchmark-preview').boundingBox()).width<=600,'benchmark card width');
+ const plotProps=await staticPage.locator('astro-island[component-export="default"]').evaluateAll(islands=>islands.filter(el=>el.getAttribute('component-url')?.includes('BenchmarkPlot')).map(el=>el.getAttribute('props')));
+ assert.equal(plotProps.length,1);
+ assert.ok(Buffer.byteLength(plotProps[0])<250_000,'landing chart payload should exclude the full publication');
+ await staticPage.close();
  for(const viewport of [{width:1440,height:1000},{width:390,height:844}]){
   const page=await browser.newPage({viewport,reducedMotion:'reduce'}),errors=[];
   page.on('pageerror',e=>errors.push(e.message));

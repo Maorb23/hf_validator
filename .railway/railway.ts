@@ -1,5 +1,8 @@
 import { defineRailway, project, service, volume, preserve } from "railway/iac";
 
+// Manage only the web service and artifact volume; retain the existing Postgres service.
+export const partial = "web";
+
 export default defineRailway(() => {
   const data = volume("infiro-data", { region: "europe-west4-drams3a", sizeMB: 10240 });
   const web = service("infiro-web", {
@@ -19,7 +22,7 @@ export default defineRailway(() => {
       INFIRO_ENV: "production",
       DJANGO_TRUST_PROXY_SSL_HEADER: "1",
       INFIRO_PRIVATE_ROOT: "/data/private",
-      INFIRO_DATABASE: "/data/private/platform.sqlite3",
+      DATABASE_URL: preserve(),
       INFIRO_LIVE_ENABLED: "0",
     },
   });

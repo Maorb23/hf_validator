@@ -513,6 +513,8 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 }
 
 /* Confiron brand and recorded configuration uplift. */
+.benchmark-preview{max-width:600px}
+@media(min-width:1100px){.hero.section{grid-template-columns:minmax(0,1fr) minmax(0,1.06fr)}}
 .wordmark>img,.app-brand>img{flex-shrink:0;display:block}
 .hero-copy h1{font-size:clamp(38px,4vw,62px);line-height:1.08;letter-spacing:-2px}
 .user-experience>h2{margin:0 0 30px;font-size:clamp(30px,4vw,46px);letter-spacing:-1px}
@@ -525,8 +527,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .uplift-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .uplift-metric{display:flex;flex-direction:column;gap:7px;min-width:0;overflow-wrap:anywhere;font-size:12px;color:var(--body)}
 .uplift-metric>strong{font:500 clamp(21px,2.3vw,32px) var(--mono);color:var(--accent)}
-.uplift-metric small,.uplift-note{font-size:11px;line-height:1.65;color:var(--muted)}
-.uplift-note{margin:16px 0 0}
+.uplift-metric small{font-size:11px;line-height:1.65;color:var(--muted)}
 .uplift-metric button{text-align:left;font-size:11px;min-height:32px}
-.interactive-benchmark>.uplift-summary{margin:12px 24px}
+.interactive-benchmark>.uplift-summary{grid-column:1/-1;margin:12px}
 @media(max-width:600px){.hero-copy h1{font-size:40px;letter-spacing:-1.5px}.uplift-summary{padding:14px}.uplift-metrics{gap:12px}.uplift-metric>strong{font-size:20px}.uplift-metric{font-size:11px}.interactive-benchmark>.uplift-summary{margin:12px}.uplift-summary:not(.compact) .uplift-metrics{grid-template-columns:1fr}.uplift-summary:not(.compact) .uplift-metric{padding:12px 0;border-bottom:1px solid var(--line)}}

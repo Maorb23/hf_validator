@@ -21,7 +21,10 @@ class Command(BaseCommand):
                             help="Process preparation only; never claim or recover GPU studies.")
 
     def handle(self, *args, **options):
-        lock_path = Path(str(settings.DATABASES["default"]["NAME"]) + ".platform-worker.lock")
+        if settings.DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3":
+            lock_path = Path(str(settings.DATABASES["default"]["NAME"]) + ".platform-worker.lock")
+        else:
+            lock_path = settings.INFIRO_PRIVATE_ROOT / ".platform-worker.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a") as lock:
             try:

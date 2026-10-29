@@ -711,7 +711,7 @@ def job_detail(request, identifier):
 def study_diagnostics(request, identifier):
     job = owned(Job, request.user, identifier)
     if job.kind != "study" or not job.controller_run:
-        raise ValueError("Logs are available only for launched studies.")
+        raise ValueError("Logs are available only for launched runs.")
     from .study_logs import saved_logs
 
     try:
@@ -737,7 +737,7 @@ def retry_job(request, identifier):
     ):
         raise ValueError(
             "Only failed or cancelled operations can be retried; "
-            "a new study requires fresh preparation and approval."
+            "a new run requires fresh preparation and approval."
         )
     found = connections(request.user, job.connection_refs)
     if {k: c.version for k, c in found.items()} != job.connection_versions:

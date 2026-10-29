@@ -521,7 +521,7 @@ def perform_study(job):
         pk=job.target_id, owner=job.owner
     )
     if not prepared.approved_at:
-        raise ValueError("Study has no explicit approval.")
+        raise ValueError("Run has no explicit approval.")
     if not job.controller_run:
         assert_current(prepared)
     controller = make_controller(job, prepared)

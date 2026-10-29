@@ -60,11 +60,11 @@ def main():
     if not os.path.ismount("/data"):
         raise SystemExit("A persistent volume must be mounted at /data.")
     private = Path(os.environ["INFIRO_PRIVATE_ROOT"]).resolve()
-    database = Path(os.environ["INFIRO_DATABASE"]).resolve()
-    if not private.is_relative_to("/data") or not database.is_relative_to(private):
-        raise SystemExit("Private root and database must be on the /data volume.")
+    if not private.is_relative_to("/data"):
+        raise SystemExit("Private root must be on the /data volume.")
+    if not os.environ.get("DATABASE_URL"):
+        raise SystemExit("Configure DATABASE_URL from the Railway PostgreSQL service.")
     private.mkdir(parents=True, exist_ok=True, mode=0o700)
-    database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # A deployment-wide lease also excludes concurrent migrations/HTTP writers.
     with (private / ".web-service.lock").open("a") as lock:
         try:

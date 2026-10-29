@@ -818,7 +818,6 @@ class PlatformTests(TestCase):
             )
         response = self.client.get("/app/api/artifacts/" + str(a.id))
         raw = b"".join(response.streaming_content).decode()
-        response.close()
         self.assertNotIn("very-sensitive-token", raw)
         self.assertNotIn("api_key", raw)
         (
@@ -1716,7 +1715,9 @@ class PlatformTests(TestCase):
         artifact = Artifact.objects.get(job=j, name="request.json")
         response = self.client.get("/app/api/artifacts/" + str(artifact.id))
         self.assertEqual(response.status_code, 200)
-        response.close()
+        # Consume the test client's streaming wrapper so request cleanup does not
+        # close the PostgreSQL connection inside this TestCase's transaction.
+        b"".join(response.streaming_content)
         self.client.force_login(self.bob)
         self.assertEqual(self.client.get("/app/api/artifacts/" + str(artifact.id)).status_code, 404)
         pinned = {

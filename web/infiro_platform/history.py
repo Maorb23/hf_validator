@@ -46,12 +46,12 @@ def trial_key(trial):
 def delete_trial(user, identifier, key):
     job = owned(Job, user, identifier)
     if job.kind != 'study':
-        raise ValueError('Trial results belong to studies.')
+        raise ValueError('Trial results belong to runs.')
     require_finished(Job.objects.filter(pk=job.pk, owner=user))
     summary = job.result.get('summary', {})
     trials = summary.get('trials') or summary.get('candidates', [])
     if not isinstance(key, str) or key not in {trial_key(t) for t in trials}:
-        raise ValueError('Trial not found in this study.')
+        raise ValueError('Trial not found in this run.')
     job.deleted_trials = sorted(set(job.deleted_trials + [key]))
     job.save(update_fields=['deleted_trials', 'updated_at'])
 

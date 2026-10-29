@@ -69,7 +69,7 @@ try{
    await page.getByRole('checkbox',{name:/I reviewed the pinned model/}).check();await approveButton.click();
    await page.waitForURL(/\/app\/studies\//);ownerStudy=page.url().split('/').at(-1);
    await page.getByText('Controller dry run completed. No GPU resources were allocated and no inference measurements were produced.',{exact:true}).waitFor({timeout:60000});
-  }else{await screenshot('approval');await page.getByRole('button',{name:'Open study',exact:true}).click()}
+  }else{await screenshot('approval');await page.getByRole('button',{name:'Open run',exact:true}).click()}
   await page.getByRole('heading',{name:'Latency & throughput',exact:true}).waitFor();assert.ok(await page.getByRole('heading',{name:'No comparable measurements yet'}).isVisible());await screenshot('study');
   const studyName='Comparison <script>window.nameExecuted=true</script> '+device;
   await page.getByLabel('Run name',{exact:true}).fill('  '+studyName+'  ');
@@ -97,7 +97,7 @@ try{
   }
   await page.goto(origin+'/app/datasets');await page.getByRole('heading',{name:'Datasets',exact:true}).waitFor();await screenshot('datasets');
   await page.goto(origin+'/app/recommendations');await page.getByRole('heading',{name:'Recommendations',exact:true}).waitFor();await screenshot('recommendations');
-  await page.getByRole('button',{name:'Configure workload',exact:true}).first().click();await page.getByRole('heading',{name:'Configure your study',exact:true}).waitFor();await screenshot('configure');
+  await page.getByRole('button',{name:'Configure workload',exact:true}).first().click();await page.getByRole('heading',{name:'Configure your run',exact:true}).waitFor();await screenshot('configure');
   assert.equal(await page.evaluate(()=>localStorage.length),0,'No credentials or private progress belongs in localStorage');
   assert.equal(await page.evaluate(()=>sessionStorage.length),0,'No credentials or private progress belongs in sessionStorage');
   await page.keyboard.press('Tab');assert.ok(await page.evaluate(()=>['A','BUTTON','INPUT','SELECT','SUMMARY','TEXTAREA'].includes(document.activeElement.tagName)),'Keyboard focus must reach a usable control');

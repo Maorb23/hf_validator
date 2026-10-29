@@ -1,4 +1,5 @@
 """Offline deployment checks; no provider requests and no GPU jobs."""
+
 import os
 import signal
 import socket
@@ -27,11 +28,18 @@ def test_supervisor_orders_startup_and_stops_peers(tmp_path, failure):
     migrated = tmp_path / "migrated"
     ready = tmp_path / "ready"
     stopped = tmp_path / "stopped"
-    migration = [sys.executable, "-c", (
-        "from pathlib import Path; import sys; "
-        f"Path({str(migrated)!r}).touch(); sys.exit({1 if failure == 'migration' else 0})"
-    )]
-    worker = [sys.executable, "-c", f'''
+    migration = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; import sys; "
+            f"Path({str(migrated)!r}).touch(); sys.exit({1 if failure == 'migration' else 0})"
+        ),
+    ]
+    worker = [
+        sys.executable,
+        "-c",
+        f"""
 from pathlib import Path
 import signal, time
 assert Path({str(migrated)!r}).exists()
@@ -41,13 +49,20 @@ def stop(*args):
 signal.signal(signal.SIGTERM, stop)
 Path({str(ready)!r}).touch()
 while True: time.sleep(.05)
-''']
-    peer = [sys.executable, "-c", (
-        "import time; time.sleep(1); "
-        + ("raise SystemExit(0)" if failure == "service" else "time.sleep(60)")
-    )]
-    script = ("from deploy.web_start import supervise; "
-              f"raise SystemExit(supervise({migration!r}, {[worker, peer]!r}))")
+""",
+    ]
+    peer = [
+        sys.executable,
+        "-c",
+        (
+            "import time; time.sleep(1); "
+            + ("raise SystemExit(0)" if failure == "service" else "time.sleep(60)")
+        ),
+    ]
+    script = (
+        "from deploy.web_start import supervise; "
+        f"raise SystemExit(supervise({migration!r}, {[worker, peer]!r}))"
+    )
     process = subprocess.Popen([sys.executable, "-c", script], cwd=ROOT)
     try:
         if failure != "migration":
@@ -64,19 +79,28 @@ while True: time.sleep(.05)
             process.wait()
 
 
-def test_database_artifacts_and_credentials_survive_fresh_processes(tmp_path):
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
+def test_database_artifacts_and_credentials_survive_fresh_processes(tmp_path, request, backend):
     from cryptography.fernet import Fernet
 
-    env = {**os.environ, "PYTHONPATH": f"{ROOT / 'src'}:{ROOT / 'web'}",
-           "DJANGO_SETTINGS_MODULE": "infiro_site.settings",
-           "INFIRO_ENV": "production", "DJANGO_SECRET_KEY": "deployment-test-secret-" * 4,
-           "DJANGO_ALLOWED_HOSTS": "testserver,healthcheck.railway.app",
-           "DJANGO_TRUST_PROXY_SSL_HEADER": "1",
-           "INFIRO_PRIVATE_ROOT": str(tmp_path),
-           "INFIRO_DATABASE": str(tmp_path / "platform.sqlite3"),
-           "INFIRO_CREDENTIAL_KEYS": Fernet.generate_key().decode(),
-           "INFIRO_LIVE_ENABLED": "0"}
-    setup = '''
+    env = {
+        **os.environ,
+        "PYTHONPATH": f"{ROOT / 'src'}:{ROOT / 'web'}",
+        "DJANGO_SETTINGS_MODULE": "infiro_site.settings",
+        "INFIRO_ENV": "production",
+        "DJANGO_SECRET_KEY": "deployment-test-secret-" * 4,
+        "DJANGO_ALLOWED_HOSTS": "testserver,healthcheck.railway.app",
+        "DJANGO_TRUST_PROXY_SSL_HEADER": "1",
+        "INFIRO_PRIVATE_ROOT": str(tmp_path),
+        "INFIRO_DATABASE": str(tmp_path / "platform.sqlite3"),
+        "INFIRO_CREDENTIAL_KEYS": Fernet.generate_key().decode(),
+        "INFIRO_LIVE_ENABLED": "0",
+    }
+    env.pop("DATABASE_URL", None)
+    if backend == "postgresql":
+        env["DATABASE_URL"] = request.getfixturevalue("temporary_postgres_database")
+        env.pop("INFIRO_DATABASE")
+    setup = """
 import django
 django.setup()
 from django.core.management import call_command
@@ -95,8 +119,8 @@ j = approve(user, p.id, p.digest, True)
 perform_study(j)
 j.save()
 assert j.state == 'dry_run'
-'''
-    verify = '''
+"""
+    verify = """
 import django
 django.setup()
 import hashlib
@@ -120,10 +144,16 @@ assert client.login(username='deployment', password='offline-test-password')
 assert client.get('/app/', secure=True).status_code == 200
 assert client.get('/app/api/bootstrap', secure=True).status_code == 200
 assert client.get('/private/platform.sqlite3', secure=True).status_code == 404
-'''
+"""
     for script in (setup, verify, verify):
-        result = subprocess.run([sys.executable, "-c", script], cwd=ROOT, env=env,
-                                capture_output=True, text=True, timeout=90)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
         assert result.returncode == 0, result.stdout + result.stderr
 
     # Exercise the real startup processes twice with the same persisted state.
@@ -132,35 +162,63 @@ assert client.get('/private/platform.sqlite3', secure=True).status_code == 404
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         commands = [
-            [sys.executable, "-m", "gunicorn", "--chdir", "web",
-             "infiro_site.wsgi:application", "--bind", f"127.0.0.1:{port}",
-             "--workers", "1", "--graceful-timeout", "2"],
+            [
+                sys.executable,
+                "-m",
+                "gunicorn",
+                "--chdir",
+                "web",
+                "infiro_site.wsgi:application",
+                "--bind",
+                f"127.0.0.1:{port}",
+                "--workers",
+                "1",
+                "--graceful-timeout",
+                "2",
+            ],
             [sys.executable, "web/manage.py", "platform_worker"],
         ]
         migration = [sys.executable, "web/manage.py", "migrate", "--noinput"]
-        script = ("from deploy.web_start import supervise; "
-                  f"raise SystemExit(supervise({migration!r}, {commands!r}))")
-        server = subprocess.Popen([sys.executable, "-c", script], cwd=ROOT, env=env,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        script = (
+            "from deploy.web_start import supervise; "
+            f"raise SystemExit(supervise({migration!r}, {commands!r}))"
+        )
+        server = subprocess.Popen(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         try:
             deadline = time.monotonic() + 20
             while True:
                 assert server.poll() is None
                 try:
-                    request = Request(f"http://127.0.0.1:{port}/healthz",
-                                      headers={"Host": "healthcheck.railway.app"})
+                    request = Request(
+                        f"http://127.0.0.1:{port}/healthz",
+                        headers={"Host": "healthcheck.railway.app"},
+                    )
                     with urlopen(request, timeout=1) as response:
                         assert response.status == 200
                     break
                 except (URLError, TimeoutError):
                     assert time.monotonic() < deadline
-                    time.sleep(.1)
-            request = Request(f"http://127.0.0.1:{port}/",
-                              headers={"Host": "testserver", "X-Forwarded-Proto": "https"})
+                    time.sleep(0.1)
+            request = Request(
+                f"http://127.0.0.1:{port}/",
+                headers={"Host": "testserver", "X-Forwarded-Proto": "https"},
+            )
             with urlopen(request, timeout=5) as response:
                 assert response.status == 200
-            result = subprocess.run([sys.executable, "-c", verify], cwd=ROOT, env=env,
-                                    capture_output=True, text=True, timeout=30)
+            result = subprocess.run(
+                [sys.executable, "-c", verify],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
             assert result.returncode == 0, result.stdout + result.stderr
         finally:
             server.send_signal(signal.SIGTERM)
@@ -195,12 +253,11 @@ def test_startup_refuses_an_unmounted_volume(monkeypatch):
         main()
 
 
-def test_startup_refuses_ephemeral_database(monkeypatch):
+def test_startup_refuses_ephemeral_private_root(monkeypatch):
     from deploy.web_start import main
 
     monkeypatch.setattr("deploy.web_start.os.path.ismount", lambda path: True)
-    monkeypatch.setenv("INFIRO_PRIVATE_ROOT", "/data/private")
-    monkeypatch.setenv("INFIRO_DATABASE", "/tmp/platform.sqlite3")
+    monkeypatch.setenv("INFIRO_PRIVATE_ROOT", "/tmp/private")
     with pytest.raises(SystemExit, match="must be on the /data volume"):
         main()
 
@@ -218,3 +275,111 @@ def test_optimizer_snapshot_checksum_and_scope():
     allowed = {"src", "pyproject.toml", "README.md", "LICENSE"}
     assert all(len(path.parts) == 1 or path.parts[1] in allowed for path in paths)
     assert not any(path.suffix in {".sqlite", ".sqlite3", ".pem", ".key"} for path in paths)
+
+
+@pytest.fixture
+def temporary_postgres_database():
+    """Only connect to an explicitly supplied local test server; own a fresh DB."""
+    import uuid
+
+    import psycopg
+    from infiro_site.database import database_config, database_url
+    from psycopg import sql
+
+    admin_url = os.environ.get("INFIRO_TEST_DATABASE_URL")
+    if not admin_url:
+        pytest.skip("Set INFIRO_TEST_DATABASE_URL to a disposable PostgreSQL test server")
+    config = database_config(admin_url, "unused")
+    config["NAME"] = "infiro_deployment_" + uuid.uuid4().hex
+    with psycopg.connect(admin_url, autocommit=True) as admin:
+        admin.execute(
+            sql.SQL("CREATE DATABASE {} TEMPLATE template0 ENCODING 'UTF8'").format(
+                sql.Identifier(config["NAME"])
+            )
+        )
+        try:
+            yield database_url(config)
+        finally:
+            admin.execute(
+                sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(config["NAME"]))
+            )
+
+
+def test_startup_requires_railway_database_url(monkeypatch):
+    from deploy.web_start import main
+
+    monkeypatch.setattr("deploy.web_start.os.path.ismount", lambda path: True)
+    monkeypatch.setenv("INFIRO_PRIVATE_ROOT", "/data/private")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(SystemExit, match="Configure DATABASE_URL"):
+        main()
+
+
+def test_sqlite_fixture_migration_to_postgres(tmp_path, temporary_postgres_database):
+    """Exercise the documented full migration, retaining envelope-bound IDs."""
+    from cryptography.fernet import Fernet
+
+    source = tmp_path / "source.sqlite3"
+    fixture = tmp_path / "platform.json"
+    env = {
+        **os.environ,
+        "PYTHONPATH": f"{ROOT / 'src'}:{ROOT / 'web'}",
+        "DJANGO_SETTINGS_MODULE": "infiro_site.settings",
+        "INFIRO_ENV": "local",
+        "INFIRO_DATABASE": str(source),
+        "INFIRO_PRIVATE_ROOT": str(tmp_path),
+        "INFIRO_CREDENTIAL_KEYS": Fernet.generate_key().decode(),
+        "INFIRO_LIVE_ENABLED": "0",
+    }
+    env.pop("DATABASE_URL", None)
+    export = f'''
+import django
+django.setup()
+from django.core.management import call_command
+from django.contrib.auth import get_user_model
+from infiro_platform.models import Connection
+from infiro_platform.security import seal
+from infiro_platform.demo import seed_prepared
+from infiro_platform.services import approve, perform_study
+call_command('migrate', interactive=False, verbosity=0)
+user = get_user_model().objects.create_user('migrated', id=42)
+connection = Connection(owner=user, kind='huggingface', name='migration')
+connection.ciphertext = seal(connection, {{'token': 'private-source-token'}})
+connection.save()
+p = seed_prepared(user)
+j = approve(user, p.id, p.digest, True)
+perform_study(j)
+j.save()
+assert j.state == 'dry_run'
+call_command('dumpdata', use_natural_foreign_keys=True,
+             exclude=['contenttypes', 'auth.permission'], output={str(fixture)!r}, verbosity=0)
+'''
+    result = subprocess.run([sys.executable, "-c", export], cwd=ROOT, env=env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "private-source-token" not in fixture.read_text()
+    env["DATABASE_URL"] = temporary_postgres_database
+    restore = f'''
+import django
+django.setup()
+import hashlib
+from django.core.management import call_command
+from django.contrib.auth import get_user_model
+from infiro_platform.models import Connection, Job, Artifact
+from infiro_platform.security import unseal, private_dir
+from infiro_platform.controller import ScopedController
+call_command('migrate', interactive=False, verbosity=0)
+call_command('loaddata', {str(fixture)!r}, verbosity=0)
+call_command('import_sqlite_controllers', source={str(source)!r}, verbosity=0)
+assert get_user_model().objects.get(username='migrated').id == 42
+assert get_user_model().objects.create_user('after-migration').id > 42
+assert unseal(Connection.objects.get()) == {{'token': 'private-source-token'}}
+job = Job.objects.get(kind='study')
+assert ScopedController(job).status(job.controller_run)['state'] == 'dry_run'
+for artifact in Artifact.objects.all():
+    path = private_dir(artifact.owner_id, artifact.job_id) / artifact.relative_path
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == artifact.sha256
+'''
+    result = subprocess.run([sys.executable, "-c", restore], cwd=ROOT, env=env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr

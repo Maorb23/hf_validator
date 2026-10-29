@@ -24,7 +24,7 @@ try{
  const page=await browser.newPage({viewport:{width:1200,height:900}}),errors=[];
  page.on('pageerror',e=>errors.push(e.message));
  const choices={trials:1,dry_run:true,num_prompts:100,input_tokens:512,output_tokens:128,concurrency:24,seed:1};
- const previous={id:'previous',name:'Previous study',recommendation_name:'Coding research',recommendation_id:'rec',choices,summary:{},status:'prepared',configuration_files:[{id:'request',name:'request.json',download_url:'/app/api/artifacts/request'}]};
+ const previous={id:'previous',name:"Previous run",recommendation_name:'Coding research',recommendation_id:'rec',choices,summary:{},status:'prepared',configuration_files:[{id:'request',name:'request.json',download_url:'/app/api/artifacts/request'}]};
  const labels={output_throughput:'Output throughput (tokens/second)',p95_e2e_latency_ms:'95th-percentile end-to-end latency (ms)',p95_ttft_ms:'95th-percentile time to first token (ms)'};
  const keys=Object.keys(labels),optimization_objectives=[...keys.map(k=>[k]),[keys[0],keys[1]],[keys[0],keys[2]],[keys[1],keys[2]],keys].map(names=>({value:names.join(','),label:(names.length>1?'Pareto · ':'')+names.map(m=>labels[m]).join(' + ')}));
  const data={optimization_objectives,user:{username:'test'},connections:[{id:'connection',kind:'nebius_inference',name:'Test inference'}],datasets:[],jobs:[],recommendations:[{id:'rec',name:'Coding research',requirements:{request:'A coding assistant'},recommendations:[],status:'recommended',selected:{model_id:'org/model',revision:'a'.repeat(40)},connection_refs:{nebius_inference:'connection'}}],prepared:[previous],live_enabled:true,tracking_configuration:{project:'tracking-test'}};
@@ -63,7 +63,7 @@ try{
    editedSubmission=route.request().postDataJSON();
    if(editedSubmission.request.model!==editorRequest.model)return route.fulfill({status:400,json:{error:'Protected fields changed: model.'}});
    source.invalidated=true;editorRequest=editedSubmission.request;
-   const revised={...source,id:'edited',name:'Edited study',invalidated:false,digest:'new-digest',choices:{...source.choices,trials:editorRequest.optuna.trials,timeout_minutes:editorRequest.timeout_minutes},summary:{...source.summary,optuna:editorRequest.optuna,timeout_minutes:editorRequest.timeout_minutes,maximum_gpu_cost_usd:2}};
+   const revised={...source,id:'edited',name:"Edited run",invalidated:false,digest:'new-digest',choices:{...source.choices,trials:editorRequest.optuna.trials,timeout_minutes:editorRequest.timeout_minutes},summary:{...source.summary,optuna:editorRequest.optuna,timeout_minutes:editorRequest.timeout_minutes,maximum_gpu_cost_usd:2}};
    data.prepared.unshift(revised);
    return route.fulfill({status:201,json:{prepared:revised}});
   }
@@ -84,7 +84,7 @@ try{
   }
   if(path.endsWith('/prepared')&&route.request().method()==='POST'){
    submitted=route.request().postDataJSON();
-   prepared={...previous,id:'new',name:'New study',choices:submitted.choices,status:'queued',summary:{model:'org/model',dry_run:true,optuna:{trials:submitted.choices.trials}}};
+   prepared={...previous,id:'new',name:"New run",choices:submitted.choices,status:'queued',summary:{model:'org/model',dry_run:true,optuna:{trials:submitted.choices.trials}}};
    data.prepared.unshift(prepared);
    return route.fulfill({status:202,json:{prepared,job:{id:'preparation'}}});
   }
@@ -227,12 +227,12 @@ try{
  assert.equal(submitted.choices.pruner,'MedianPruner');
  assert.equal(submitted.dataset_id,'frozen');
  assert.equal(submitted.choices.workload_mode,'sharegpt');
- assert.equal(await page.getByRole('list',{name:'Study workflow'}).count(),0);
+ assert.equal(await page.getByRole('list',{name:"Run workflow"}).count(),0);
  assert.equal(await page.getByRole('link',{name:/Download draft/}).count(),0);
  assert.ok(await page.getByText('2 trials per framework.',{exact:false}).isVisible());
  prepared.status='prepared';
  await page.getByRole('heading',{name:'Configuration ready. Opening approval…',exact:true}).waitFor({timeout:12000});
- await page.getByRole('heading',{name:'New study',exact:true}).waitFor();
+ await page.getByRole('heading',{name:"New run",exact:true}).waitFor();
  assert.ok(await page.getByText('TPE (multivariate)',{exact:true}).isVisible());
  assert.ok(await page.getByRole('button',{name:'Approve dry run',exact:true}).isDisabled());
  const job={id:'study',kind:'study',target_id:'new',state:'completed',outcome:'partial_success',trial_failures:[{framework:'vllm',reason:'1 trial failed.'}],progress:{recovered_provider_error:{message:'Old timeout'},jobs:[{framework:'vllm',state:'completed'}]},result:{summary:{candidates:[],trial_state_counts:{vllm:{COMPLETE:0,FAIL:1},sglang:{COMPLETE:1,FAIL:0}}}},artifacts:[]};
@@ -304,14 +304,33 @@ try{
  await page.screenshot({path:'/tmp/direct-model-desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});
  await page.getByRole('button',{name:'Use this model',exact:true}).click();
- await page.getByRole('heading',{name:'Configure your study',exact:true}).waitFor();
+ await page.getByRole('heading',{name:"Configure your run",exact:true}).waitFor();
  assert.deepEqual(directSubmission.model,{model_id:'org/my-model',revision:'release'});
  assert.ok(await page.getByText('d'.repeat(40),{exact:true}).isVisible());
  assert.ok(await page.getByText('Direct model selection · discovery was skipped.',{exact:true}).isVisible());
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'direct model mobile overflow');
 
+ // Identical selections remain separate runs; deleting one persists across reloads.
+ data.recommendations.unshift({...data.recommendations.find(r=>r.id==='direct'),id:'direct-copy'});
+ await page.goto(origin+'/app/studies');
+ await page.getByRole('heading',{name:'Runs',exact:true}).waitFor();
+ assert.equal(await page.getByRole('link',{name:/^Runs(?:\s*\d+)?$/,includeHidden:true}).count(),1);
+ const selections=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'Direct model selections',exact:true})});
+ assert.equal(await selections.getByRole('button',{name:'Delete model selection run',exact:true}).count(),2);
+ await selections.getByRole('button',{name:'Delete model selection run',exact:true}).first().click();
+ await selections.getByRole('button',{name:'Keep history',exact:true}).click();
+ assert.equal(data.recommendations.filter(r=>r.selection_source==='direct').length,2);
+ await selections.getByRole('button',{name:'Delete model selection run',exact:true}).first().click();
+ await selections.getByRole('button',{name:'Confirm deletion',exact:true}).click();
+ assert.ok(!data.recommendations.some(r=>r.id==='direct-copy'));
+ assert.ok(data.recommendations.some(r=>r.id==='direct'));
+ await page.reload();
+ await selections.getByRole('button',{name:'Delete model selection run',exact:true}).waitFor();
+ assert.equal(await selections.getByRole('button',{name:'Delete model selection run',exact:true}).count(),1);
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'direct model deletion mobile overflow');
+
  // Unsaved or invalid request edits cannot reuse previous approval consent.
- const editable={...previous,id:'editable',name:'Editable study',digest:'old-digest',choices:{...choices,concurrency:1,dry_run:true},summary:{model:'org/model',dry_run:true,optuna:editorRequest.optuna},invalidated:false};
+ const editable={...previous,id:'editable',name:"Editable run",digest:'old-digest',choices:{...choices,concurrency:1,dry_run:true},summary:{model:'org/model',dry_run:true,optuna:editorRequest.optuna},invalidated:false};
  data.prepared.unshift(editable);
  await page.goto(origin+'/app/approval/editable');
  await page.getByLabel('I reviewed the pinned model, workload, allocation, connections and estimated costs. I explicitly approve this exact configuration.').check();
@@ -335,7 +354,7 @@ try{
  const uploaded={...editorRequest,timeout_minutes:120,optuna:{...editorRequest.optuna,trials:3}};
  await page.getByLabel('Upload request.json',{exact:true}).setInputFiles({name:'request.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(uploaded))});
  await page.getByRole('button',{name:'Validate & save request',exact:true}).click();
- await page.getByRole('heading',{name:'Edited study',exact:true}).waitFor();
+ await page.getByRole('heading',{name:"Edited run",exact:true}).waitFor();
  assert.equal(editedSubmission.digest,'old-digest');
  assert.equal(editedSubmission.request.optuna.trials,3);
  assert.equal(await page.getByRole('button',{name:'Approve dry run',exact:true}).isDisabled(),true);
@@ -344,7 +363,7 @@ try{
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'request editor mobile overflow');
  await page.getByLabel('I reviewed the pinned model, workload, allocation, connections and estimated costs. I explicitly approve this exact configuration.').check();
  await page.getByRole('button',{name:'Approve dry run',exact:true}).click();
- await page.getByRole('heading',{name:'Edited study',exact:true}).waitFor();
+ await page.getByRole('heading',{name:"Edited run",exact:true}).waitFor();
  assert.equal(approvedSubmission.digest,'new-digest');
  // Delete one trial, then its past study, then a saved recommendation.
  await page.goto(origin+'/app/studies/study');
@@ -363,18 +382,18 @@ try{
  await page.goto(origin+'/app/studies');
  for(const viewport of [{width:1200,height:900},{width:390,height:844}]){
   await page.setViewportSize(viewport);
-  const historyLink=page.locator('.history-study-row > button:first-child').first();
+  const historyLink=page.locator(".history-study-row > button:first-child").first();
   await historyLink.waitFor();
-  assert.equal(await historyLink.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)','Study navigation must not use native grey button styling');
+  assert.equal(await historyLink.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)',"Run navigation must not use native grey button styling");
   assert.equal(await historyLink.evaluate(el=>getComputedStyle(el).display),'flex');
-  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Study history overflow');
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"Run history overflow");
   await page.screenshot({path:`/tmp/study-history-${viewport.width}.png`,fullPage:true});
  }
 
  await page.goto(origin+'/app/studies/study');
- await page.getByRole('button',{name:'Delete study',exact:true}).click();
+ await page.getByRole('button',{name:"Delete run",exact:true}).click();
  await page.getByRole('button',{name:'Confirm deletion',exact:true}).click();
- await page.getByRole('heading',{name:'Studies',exact:true}).waitFor();
+ await page.getByRole('heading',{name:"Runs",exact:true}).waitFor();
  assert.ok(!data.jobs.some(j=>j.id==='study'));
  data.jobs=data.jobs.filter(j=>j.kind!=='discover');
  await page.goto(origin+'/app/recommendations');

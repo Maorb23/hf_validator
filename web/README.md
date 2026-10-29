@@ -97,7 +97,8 @@ Review the snapshot before publication. The current public site deliberately has
 ## Railway deployment
 
 Use the [Railway deployment and operations guide](../docs/web/railway.md) for the
-public website and authenticated app in one CPU service with a persistent volume.
+public website and authenticated app in one CPU service, using your Railway
+PostgreSQL `DATABASE_URL` and a persistent volume for private artifacts.
 The dedicated image is `docker/web.Dockerfile`; the root model-worker Dockerfile
 remains separate. No external deployment has been performed.
 

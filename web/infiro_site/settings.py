@@ -28,7 +28,12 @@ else:
     SECRET_KEY = SECRET_KEY or secrets.token_urlsafe(50)
 
 INSTALLED_APPS = ["django.contrib.auth", "django.contrib.contenttypes", "django.contrib.sessions", "infiro_site.apps.InfiroSiteConfig", "infiro_platform"]
-DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": os.environ.get("INFIRO_DATABASE", str(BASE_DIR / "private" / "platform.sqlite3")), "OPTIONS": {"timeout": 30, "transaction_mode": "IMMEDIATE"}}}
+from .database import database_config
+
+DATABASES = {"default": database_config(
+    os.environ.get("DATABASE_URL"),
+    os.environ.get("INFIRO_DATABASE", str(BASE_DIR / "private" / "platform.sqlite3")),
+)}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIRS": [], "APP_DIRS": True, "OPTIONS": {"context_processors": ["django.template.context_processors.request", "django.contrib.auth.context_processors.auth"]}}]
 INFIRO_PRIVATE_ROOT = Path(os.environ.get("INFIRO_PRIVATE_ROOT", BASE_DIR / "private")).resolve()

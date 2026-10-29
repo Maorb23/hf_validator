@@ -48,6 +48,43 @@ class HistoryTests(TestCase):
         self.assertIsNotNone(Prepared.objects.get(pk=self.prepared.id).deleted_at)
         self.assertIsNone(Recommendation.objects.get(pk=foreign.id).deleted_at)
 
+    def test_direct_model_selection_deletion_preserves_identical_other_selection(self):
+        self.rec.report = {'selection_source': 'direct'}
+        self.rec.selected = {'model_id': 'Qwen/Qwen3.5-4B', 'revision': 'a'*40}
+        self.rec.save()
+        duplicate = Recommendation.objects.create(owner=self.user, requirements={},
+            report=self.rec.report, selected=self.rec.selected)
+        pin = Job.objects.create(owner=self.user, kind='model', target_id=self.rec.id,
+            available_at=timezone.now(), state='completed', dedupe_key='direct-pin')
+        route = 'recommendations/'+str(self.rec.id)
+        self.client.force_login(self.other)
+        self.assertEqual(self.delete(route).status_code, 404)
+        self.client.force_login(self.user)
+        self.assertEqual(self.delete(route).status_code, 200)
+        for item in [self.rec, self.prepared, self.job, pin]:
+            item.refresh_from_db()
+            self.assertIsNotNone(item.deleted_at)
+        data = self.client.get('/app/api/bootstrap').json()
+        self.assertEqual([r['id'] for r in data['recommendations']], [str(duplicate.id)])
+        duplicate.refresh_from_db()
+        self.assertIsNone(duplicate.deleted_at)
+
+    def test_direct_model_selection_without_preparation_can_be_deleted(self):
+        rec = Recommendation.objects.create(owner=self.user, requirements={},
+            report={'selection_source': 'direct'}, selected={'model_id': 'org/model'})
+        self.assertEqual(self.delete('recommendations/'+str(rec.id)).status_code, 200)
+        rec.refresh_from_db()
+        self.assertIsNotNone(rec.deleted_at)
+
+    def test_direct_model_selection_with_active_pin_cannot_be_deleted(self):
+        self.rec.report = {'selection_source': 'direct'}
+        self.rec.save()
+        Job.objects.create(owner=self.user, kind='model', target_id=self.rec.id,
+            available_at=timezone.now(), state='running', dedupe_key='direct-active-pin')
+        self.assertEqual(self.delete('recommendations/'+str(self.rec.id)).status_code, 400)
+        self.rec.refresh_from_db()
+        self.assertIsNone(self.rec.deleted_at)
+
     def test_active_or_leased_operations_cannot_be_deleted(self):
         for state in ['queued', 'running', 'attention_required']:
             Job.objects.filter(pk=self.job.pk).update(state=state)

@@ -217,7 +217,8 @@ limits. Explicit approval checks the full canonical digest again. Selection,
 configuration or connection changes invalidate reviews. Duplicate approval
 returns the existing study job; it does not create another allocation.
 
-The existing llm-optimizer controller is reused through a small SQLite adapter
+The existing llm-optimizer controller is reused through a small database adapter
+(SQLite locally, PostgreSQL when `DATABASE_URL` is configured)
 that namespaces its tables by study UUID in the same database. Its reconciliation,
 submission-unknown handling, cancellation, manifests and results logic run within
 that study's scope and credentials. No second durable controller database is
@@ -585,7 +586,7 @@ also has **Delete trial**. Each action first offers **Confirm deletion** and
 **Keep history**. Deleting a recommendation removes its dependent study history.
 Active or worker-leased operations must finish or be cancelled before removal.
 
-Deletion is persisted in SQLite, scoped to the authenticated owner, and protected
+Deletion is persisted in the application database, scoped to the authenticated owner, and protected
 by CSRF. Deleted resources disappear from bootstrap and cannot be opened or retried
 through their old API URLs. Original execution artifacts and provider logs remain
 on disk; this is workspace-history deletion, not a storage purge. Individual trial

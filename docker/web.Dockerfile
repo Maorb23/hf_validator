@@ -12,7 +12,7 @@ RUN npm run build
 FROM python:3.12-slim-bookworm
 ENV INFIRO_ENV=production PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PYTHONPATH=/opt/infiro/src:/opt/infiro/web \
-    INFIRO_PRIVATE_ROOT=/data/private INFIRO_DATABASE=/data/private/platform.sqlite3 \
+    INFIRO_PRIVATE_ROOT=/data/private \
     HF_HUB_DISABLE_TELEMETRY=1 TOKENIZERS_PARALLELISM=false
 WORKDIR /opt/infiro
 COPY web/requirements-django.txt web/requirements-platform.txt web/requirements-railway.txt ./web/
