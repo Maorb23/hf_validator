@@ -88,6 +88,13 @@ try{
    data.prepared.unshift(prepared);
    return route.fulfill({status:202,json:{prepared,job:{id:'preparation'}}});
   }
+  if(path.endsWith('/rerun')){
+   const original=data.jobs.find(j=>path.includes('/'+j.id+'/'));
+   const source=data.prepared.find(p=>p.id===original.target_id);
+   const revised={...source,id:'rerun-review',approved_at:null,digest:'rerun-digest',summary:{...source.summary,rerun_of:original.id}};
+   data.prepared.unshift(revised);
+   return route.fulfill({status:202,json:{prepared:revised}});
+  }
   if(path.endsWith('/diagnostics'))return route.fulfill({json:{frameworks:[{framework:'vllm',log_available:true,log_tail:'<script>window.logExecuted=true</script>\nSuccessful requests: 99',failure_reasons:['99/100 requests succeeded. Benchmark excluded.']}]}});
   return route.fulfill({json:{}});
  });
@@ -107,6 +114,14 @@ try{
  assert.match(await page.evaluate(()=>window.copiedTemplate),/--prepared <PREPARED_CONFIGURATION_UUID>/);
  await page.getByRole('button',{name:'Add connection',exact:true}).click();
  await page.getByLabel('API key',{exact:true}).fill('typed-test-credential-never-copy');
+ await page.getByLabel('How to set up api key',{exact:true}).click();
+ assert.ok(await page.getByText('Create an API key in this provider’s console (Nebius Token Factory or Tavily). Paste the key, without a Bearer prefix.',{exact:true}).isVisible());
+ await page.getByLabel('Provider',{exact:true}).selectOption('storage');
+ assert.equal(await page.getByLabel('Session token (optional)',{exact:true}).count(),0);
+ await page.getByLabel('Provider',{exact:true}).selectOption('nebius_jobs');
+ await page.getByLabel('How to set up project id',{exact:true}).click();
+ assert.ok(await page.getByText('Select the Nebius project in the console and copy its project ID. The service account must have Admin access in this project for this deployment.',{exact:true}).isVisible());
+ await page.getByLabel('Provider',{exact:true}).selectOption('nebius_inference');
  const inferenceHelp=page.getByText('Set up Nebius inference',{exact:true}).locator('..');
  await inferenceHelp.getByRole('button',{name:/Template copied|Copy command template/}).click();
  assert.ok(!(await page.evaluate(()=>window.copiedTemplate)).includes('typed-test-credential'));
@@ -196,7 +211,7 @@ try{
  await page.goto(origin+'/app/configure/rec');
  const source=page.getByLabel('Dataset source',{exact:true});
  await source.selectOption('sharegpt');
- await source.selectOption('random');
+ assert.equal(await source.locator('option[value="random"]').count(),0);
  await source.selectOption('frozen');
  assert.ok(await page.getByText('f'.repeat(64),{exact:true}).isVisible());
 
@@ -365,6 +380,14 @@ try{
  await page.getByRole('button',{name:'Approve dry run',exact:true}).click();
  await page.getByRole('heading',{name:"Edited run",exact:true}).waitFor();
  assert.equal(approvedSubmission.digest,'new-digest');
+ // Rerun opens a new review without launching a study.
+ await page.goto(origin+'/app/studies/study');
+ const studyCount=data.jobs.filter(j=>j.kind==='study').length;
+ await page.getByRole('button',{name:'Rerun / edit and rerun',exact:true}).click();
+ await page.waitForURL('**/app/approval/rerun-review');
+ assert.equal(data.jobs.filter(j=>j.kind==='study').length,studyCount);
+ await page.getByRole('button',{name:'Edit request.json',exact:true}).waitFor();
+ assert.ok(data.jobs.some(j=>j.id==='study'));
  // Delete one trial, then its past study, then a saved recommendation.
  await page.goto(origin+'/app/studies/study');
  await page.getByRole('button',{name:'Inspect vllm trial 0',exact:true}).click();

@@ -99,7 +99,7 @@ class DatasetConfig(Input):
 
 
 class Choices(Input):
-    workload_mode: Literal["random", "sharegpt"] = "random"
+    workload_mode: Literal["sharegpt"] = "sharegpt"
     gpu_type: Literal["gpu-h100-sxm", "gpu-h200-sxm", "gpu-l40s-d"] = "gpu-h100-sxm"
     gpu_count: Literal[1, 8] = 1
     frameworks: list[Literal["vllm", "sglang", "trtllm"]] = Field(

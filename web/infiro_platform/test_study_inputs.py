@@ -61,8 +61,7 @@ class StudyInputTests(TransactionTestCase):
         self.assertEqual(self.post("models", body).json()["recommendation"]["id"], str(rec.id))
         self.assertEqual(Recommendation.objects.count(), 1)
         self.assertFalse(Prepared.objects.exists())
-        from .demo import FixtureTokenizer
-        from .workloads import random_workload
+        from .demo import fixture_manifest
 
         connection = Connection(
             owner=self.user,
@@ -84,8 +83,8 @@ class StudyInputTests(TransactionTestCase):
         preparation = Job.objects.get(pk=response.json()["job"]["id"])
         with (
             patch(
-                "infiro_platform.workloads.random_workload",
-                side_effect=lambda config: random_workload(config, tokenizer=FixtureTokenizer()),
+                "infiro_platform.workloads.materialize",
+                side_effect=lambda config, **kwargs: fixture_manifest(model=config["model"], model_revision=config["model_revision"])[1],
             ),
             patch(
                 "hf_model_watch.optimization.preparation.research",

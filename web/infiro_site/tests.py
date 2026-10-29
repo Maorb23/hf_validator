@@ -157,11 +157,16 @@ class ProductionSettingsTests(SimpleTestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("explicit DJANGO_ALLOWED_HOSTS", result.stderr)
 
-    def test_production_defaults_to_https_with_private_database(self):
-        result = self.load_settings(DJANGO_SECRET_KEY="test-only-" * 8, DJANGO_ALLOWED_HOSTS="example.invalid")
+    def test_production_defaults_to_https_with_postgresql(self):
+        result = self.load_settings(DJANGO_SECRET_KEY="test-only-" * 8, DJANGO_ALLOWED_HOSTS="example.invalid", DATABASE_URL="postgresql://user:password@db/platform")
         self.assertEqual(result.returncode, 0, result.stderr)
         result = json.loads(result.stdout)
         self.assertFalse(result["debug"])
         self.assertTrue(result["ssl"])
         self.assertEqual(result["hsts"], 31536000)
-        self.assertEqual(result["databases"]["default"]["ENGINE"], "django.db.backends.sqlite3")
+        self.assertEqual(result["databases"]["default"]["ENGINE"], "django.db.backends.postgresql")
+
+    def test_production_refuses_ephemeral_database(self):
+        result = self.load_settings(DJANGO_SECRET_KEY="test-only-" * 8, DJANGO_ALLOWED_HOSTS="example.invalid")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("persistent PostgreSQL DATABASE_URL", result.stderr)

@@ -788,3 +788,11 @@ def trial_detail(request, identifier):
     from .history import delete_trial
     delete_trial(request.user, identifier, body(request).get("trial_key"))
     return JsonResponse({"deleted": True})
+
+
+@api(["POST"])
+def rerun_job(request, identifier):
+    from .request_editing import clone_failed_study
+
+    prepared = clone_failed_study(request.user, identifier, body(request).get("submission_key"))
+    return JsonResponse({"prepared": prepared_view(prepared)}, status=202)

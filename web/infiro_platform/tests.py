@@ -146,8 +146,6 @@ class PlatformTests(TestCase):
 
     def test_two_trials_survive_api_preparation_and_approval(self):
         from .services import perform_prepare
-        from .workloads import random_workload
-
         p = self.prepared()
         c = self.connection(kind="nebius_inference", endpoint="https://example.com/v1")
         choices = Choices(trials=2, num_prompts=3, input_tokens=16, output_tokens=8).model_dump()
@@ -161,8 +159,8 @@ class PlatformTests(TestCase):
         with (
             patch("hf_model_watch.optimization.preparation.research",
                   return_value={"sources": [], "inspection": {"heads": {}, "claims": []}}),
-            patch("infiro_platform.workloads.random_workload", side_effect=lambda config:
-                  random_workload(config, tokenizer=FixtureTokenizer())),
+            patch("infiro_platform.workloads.materialize", side_effect=lambda config, **kwargs:
+                  fixture_manifest(model=config["model"], model_revision=config["model_revision"])[1]),
         ):
             perform_prepare(preparation)
         prepared.refresh_from_db()
@@ -1305,6 +1303,9 @@ class PlatformTests(TestCase):
 
     def test_large_workload_resource_budget_is_scoped_to_sharegpt(self):
         p = self.prepared()
+        # Historical random jobs retain their small resource envelope.
+        p.choices["workload_mode"] = "random"
+        p.save(update_fields=["choices"])
         random_job = enqueue(self.alice, "prepare", p, {}, "small-random-budget")
         self.assertNotIn("INFIRO_LARGE_WORKLOAD", child_environment(random_job))
         self.assertNotIn("INFIRO_SHAREGPT_CACHE", child_environment(random_job))
@@ -1390,15 +1391,15 @@ class PlatformTests(TestCase):
                 patch("infiro_platform.queue.os.killpg") as kill,
             ):
                 if limit == "time":
-                    with patch("infiro_platform.queue.time.monotonic", side_effect=[0, 301]):
+                    with patch("infiro_platform.queue.time.monotonic", side_effect=[0, 1801]):
                         run_once()
                 else:
-                    with patch("infiro_platform.queue.DISK_LIMIT", -1):
+                    with patch("infiro_platform.queue.SHAREGPT_DISK_BYTES", -1):
                         run_once()
                 kill.assert_called_once()
                 process.wait.assert_called_once()
             j.refresh_from_db()
-            self.assertIn("execution time or 256 MiB disk limit", j.error)
+            self.assertIn("execution time or 1.25 GiB disk limit", j.error)
             Job.objects.filter(pk=j.pk).update(state="failed")
 
     def test_api_preparation_is_idempotent_and_invalidates_approved_queue_entry(self):

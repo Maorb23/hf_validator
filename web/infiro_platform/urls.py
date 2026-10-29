@@ -21,6 +21,7 @@ urlpatterns = [
     path("/api/jobs/<uuid:identifier>/trials", views.trial_detail),
     path("/api/jobs/<uuid:identifier>/diagnostics", views.study_diagnostics),
     path("/api/jobs/<uuid:identifier>/retry", views.retry_job),
+    path("/api/jobs/<uuid:identifier>/rerun", views.rerun_job),
     path("/api/artifacts/<uuid:identifier>", views.artifact_download),
     path("", views.shell),
     path("/", views.shell),

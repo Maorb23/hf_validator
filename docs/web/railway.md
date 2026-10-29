@@ -120,7 +120,7 @@ In `/app/connections`, save and validate each needed connection:
 | Nebius inference | Create a Nebius AI Studio account/API key; enter API key and its HTTPS OpenAI-compatible endpoint | Inference validation/model access; independent of Jobs IAM |
 | Nebius jobs | Create a Nebius project and service account; enter project ID, service account ID, public key ID and private key; alternatively a short-lived IAM token | Project/job permissions; token expiry requires renewal |
 | Hugging Face | Create an HF account, accept required gated model/dataset terms, create a read token | HF identity and access to pinned model/dataset revisions |
-| Object storage | Provision a private S3-compatible bucket; enter access key ID, secret key, optional session token, bucket, region and public HTTPS endpoint if needed | HeadBucket plus intended prefix read/write permissions |
+| Object storage | Provision a private S3-compatible bucket; enter permanent access key ID, secret key, bucket, region and public HTTPS endpoint if needed | HeadBucket plus intended prefix read/write permissions |
 | Tavily | Create a Tavily account/API key | Search validation and sufficient quota |
 
 Provider validation makes outbound requests and may consume provider quota, but
@@ -365,3 +365,33 @@ image build, mounted-container/redeploy test, real Railway HTTPS routing and liv
 provider validation remain operator acceptance steps. No external deployment or
 GPU job was launched. Production `check --deploy` retains the optional HSTS
 subdomain/preload advisories until the domain owner chooses that policy.
+
+## Keep existing accounts during deployments
+
+Production Django settings now refuse to start without a PostgreSQL `DATABASE_URL`,
+including when started without the Railway supervisor. Keep the web service reference
+pointed at the same PostgreSQL service and database in the same Railway environment.
+A redeploy runs migrations; it does not recreate users. Never run database flush or
+replace the database as a deployment step. Keep `DJANGO_SECRET_KEY` and
+`INFIRO_CREDENTIAL_KEYS` stable, and retain the `/data` private-artifact volume.
+
+Before switching an existing SQLite installation, back up its database and private
+artifacts and follow the SQLite migration procedure above, including users and
+controller data. Do not register replacement accounts before restoring existing data.
+If accounts disappeared after an earlier deployment, compare the old/new database
+references and inspect the old volume or backups. Recovery requires that original
+data; code changes cannot restore an erased container filesystem.
+
+After deployment, verify an existing account can log in and see its saved connections
+and runs, then repeat after a restart and redeploy. Take a PostgreSQL backup before
+migration or changing database references.
+
+Random token workloads are no longer offered for new preparations or approvals.
+Use the default bounded HF dataset or select a validated frozen dataset. Historical
+random runs remain readable. New storage connections use permanent access keys;
+existing encrypted temporary credentials remain readable by execution workers.
+Failed/cancelled runs and completed runs with failed trials expose a rerun action.
+It creates a new review of the original request, linked to the original run, with
+fresh provider checks and explicit approval. The review supports validated
+`request.json` editing/upload; this reruns the configured search, not individual
+Optuna trial records.

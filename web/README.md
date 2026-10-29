@@ -14,6 +14,61 @@ screenshots and the unchanged sibling optimizer test failure.
 
 Astro pages and React visualization islands built from the approved dark design, served by a lightweight Django layer. The built HTML and frontend URLs are preserved. The existing Python inference workflows and the `design-prototypes/` comparison remain separate.
 
+## Run the local app in two terminals
+
+For the existing WSL environment, use `/home/maorb/.venvs/infiro/bin/python`.
+On another machine, substitute the Python executable from an environment with
+`web/requirements-railway.txt` installed from the repository root.
+
+Create the local environment file **once for a fresh installation**:
+
+```bash
+cd /mnt/c/users/maorb/work/hf_validator
+/home/maorb/.venvs/infiro/bin/python web/scripts/platform_env.py \
+  --output "$HOME/.config/infiro/local.env" \
+  --data-dir "$HOME/.local/share/infiro"
+```
+
+Keep that file private and back it up separately from the database. Reuse it on
+subsequent starts. If you have existing local accounts/connections to preserve,
+recover their original environment file and encryption key instead of generating
+replacement keys. The helper refuses to overwrite an existing file.
+
+If the frontend has not been built, or after frontend changes, run from the
+repository root:
+
+```bash
+npm --prefix web ci
+npm --prefix web run build
+```
+
+**Terminal 1 — website:**
+
+```bash
+cd /mnt/c/users/maorb/work/hf_validator
+export PYTHONPATH="$PWD/src:$PWD/web"
+export INFIRO_ENV_FILE="$HOME/.config/infiro/local.env"
+
+/home/maorb/.venvs/infiro/bin/python web/manage.py migrate --noinput
+/home/maorb/.venvs/infiro/bin/python web/manage.py runserver 127.0.0.1:8000 --noreload
+```
+
+**Terminal 2 — background worker:**
+
+```bash
+cd /mnt/c/users/maorb/work/hf_validator
+export PYTHONPATH="$PWD/src:$PWD/web"
+export INFIRO_ENV_FILE="$HOME/.config/infiro/local.env"
+
+/home/maorb/.venvs/infiro/bin/python web/manage.py platform_worker
+```
+
+Open **http://127.0.0.1:8000/app/** (or `/app/register` for a new account).
+Leave both terminals running; stop each with **Ctrl+C**. These commands use a
+separate local SQLite database when `DATABASE_URL` is unset. Railway starts its
+web server and worker automatically and uses its configured PostgreSQL database;
+these local terminals do not control Railway.
+
 ## Run the website with Django
 
 From the repository root, enter **`web/`** first:

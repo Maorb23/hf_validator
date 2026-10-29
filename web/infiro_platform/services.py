@@ -111,6 +111,8 @@ def approve(user, identifier, reviewed_digest, explicit):
         or prepared.status != "prepared"
     ):
         raise ValueError("Explicit approval of this exact prepared configuration is required.")
+    if prepared.choices.get("workload_mode") != "sharegpt":
+        raise ValueError("Random workloads were removed. Prepare a dataset-backed configuration.")
     assert_current(prepared)
     if not prepared.choices["dry_run"] and not (
         settings.INFIRO_LIVE_ENABLED and settings.INFIRO_PROVIDER_FACTORY
@@ -360,7 +362,7 @@ def finalize_preparation(job, prepared, found):
 def perform_prepare(job):
     from hf_model_watch.optimization.preparation import prepare
 
-    from .workloads import DEFAULT_DATASET, identity, materialize, random_workload
+    from .workloads import DEFAULT_DATASET, identity, materialize
 
     prepared = Prepared.objects.select_related("recommendation", "dataset").get(
         pk=job.target_id, owner=job.owner
@@ -375,6 +377,8 @@ def perform_prepare(job):
         return
     if prepared.invalidated or prepared.recommendation.version != prepared.recommendation_version:
         raise ValueError("Selection changed. Prepare a new configuration.")
+    if prepared.choices.get("workload_mode") != "sharegpt":
+        raise ValueError("Random workloads are no longer supported. Select and prepare a dataset.")
     selected = prepared.recommendation.selected
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", selected.get("revision", "")):
         raise ValueError("The selected model needs a pinned commit revision.")
@@ -414,11 +418,7 @@ def perform_prepare(job):
             "data_file": "ShareGPT_V3_unfiltered_cleaned_split.json",
             "split": "train",
         }
-        manifest = (
-            random_workload(config)
-            if prepared.choices["workload_mode"] == "random"
-            else materialize(config, progress=stage)
-        )
+        manifest = materialize(config, progress=stage)
     if redact(manifest) != manifest:
         raise ValueError(
             "Workload content contains a configured credential. Remove secrets from the dataset."

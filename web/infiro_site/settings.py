@@ -33,6 +33,7 @@ from .database import database_config
 DATABASES = {"default": database_config(
     os.environ.get("DATABASE_URL"),
     os.environ.get("INFIRO_DATABASE", str(BASE_DIR / "private" / "platform.sqlite3")),
+    production=ENVIRONMENT == "production",
 )}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIRS": [], "APP_DIRS": True, "OPTIONS": {"context_processors": ["django.template.context_processors.request", "django.contrib.auth.context_processors.auth"]}}]

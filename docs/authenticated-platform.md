@@ -245,10 +245,10 @@ length, with a fixed requested output length. This is a serving benchmark, not
 conversation quality evaluation. Previews expose at most three samples of 400
 characters, only to their owner. A custom workload never falls back silently.
 
-Default random mode freezes the optimizer's existing native random-token sampler,
-with seed, tokenizer commit and generator source hash. The default HF ShareGPT
-source is also offered and goes through the same bounded validation; large
-ShareGPT repositories are explicitly rejected rather than bypassing limits.
+New web runs require dataset-backed workloads. The default HF ShareGPT source
+and selected frozen datasets go through bounded validation; oversized sources
+are rejected rather than bypassing limits. Random mode is removed from new
+preparations and approvals; historical random runs remain readable.
 
 | Limit | Value |
 | --- | --- |

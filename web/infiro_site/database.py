@@ -3,8 +3,10 @@
 from django.core.exceptions import ImproperlyConfigured
 
 
-def database_config(url, sqlite_path):
+def database_config(url, sqlite_path, *, production=False):
     if url is None:
+        if production:
+            raise ImproperlyConfigured("Production requires a persistent PostgreSQL DATABASE_URL.")
         return {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": str(sqlite_path),

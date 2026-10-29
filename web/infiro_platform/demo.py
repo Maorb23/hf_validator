@@ -26,15 +26,12 @@ class FixtureTokenizer:
 
 def fixture_manifest(**overrides):
     overrides.setdefault("data_file", "data.json")
-    config = DatasetConfig(
-        repo_id="infiro/local-sharegpt-fixture",
-        model=MODEL,
-        model_revision=REV,
-        num_prompts=3,
-        input_tokens=16,
-        output_tokens=8,
+    config = DatasetConfig.model_validate({
+        "repo_id": "infiro/local-sharegpt-fixture",
+        "model": MODEL, "model_revision": REV,
+        "num_prompts": 3, "input_tokens": 16, "output_tokens": 8,
         **overrides,
-    ).model_dump()
+    }).model_dump()
     files = [SimpleNamespace(size=4096, rfilename="data.json")]
     model_files = [SimpleNamespace(size=1024, rfilename="tokenizer.json")]
     api = SimpleNamespace(

@@ -304,3 +304,55 @@ def revise_request(user, identifier, reviewed_digest, raw):
         write_artifact(job, "workload.json", payload["workload_manifest"])
     Prepared.objects.filter(pk=source.pk, approved_at__isnull=True).update(invalidated=True)
     return revised
+
+
+@transaction.atomic
+def clone_failed_study(user, identifier, submission_key):
+    """Create an unapproved draft without mutating an executed request."""
+    from .models import Job
+    from .services import binding, connections
+    from .study_status import study_outcome
+
+    job = owned(Job, user, identifier)
+    if job.kind != "study" or job.state not in {"failed", "cancelled", "completed"}:
+        raise ValueError("Only terminal runs with failures can be rerun.")
+    if job.state == "completed" and study_outcome(job) not in {
+        "partial_success", "no_valid_results"
+    }:
+        raise ValueError("This run has no failed configurations to rerun.")
+    if not isinstance(submission_key, str) or not 1 <= len(submission_key) <= 100:
+        raise ValueError("A submission key is required.")
+    key = "rerun:" + digest({"job": str(job.id), "submission": submission_key})
+    previous = Job.objects.filter(owner=user, dedupe_key=key).first()
+    if previous:
+        return owned(Prepared, user, previous.target_id)
+    source = owned(Prepared, user, job.target_id)
+    if not source.digest or source.digest != digest(binding(source)):
+        raise ValueError("The original request failed its integrity check.")
+    if source.choices.get("workload_mode") != "sharegpt":
+        raise ValueError("Random workloads were removed. Use Configure to select a dataset.")
+    if source.recommendation.version != source.recommendation_version:
+        raise ValueError("The selected model changed. Prepare a new configuration.")
+    found = connections(user, source.connection_refs)
+    revised = Prepared.objects.create(
+        owner=user, recommendation=source.recommendation,
+        recommendation_version=source.recommendation_version,
+        dataset=source.dataset, name=source.name,
+        choices=Choices.model_validate(source.choices).model_dump(),
+        connection_refs=copy.deepcopy(source.connection_refs),
+        connection_versions={kind: connection.version for kind, connection in found.items()},
+        payload=copy.deepcopy(source.payload), intent=copy.deepcopy(source.intent),
+        summary=copy.deepcopy(source.summary),
+    )
+    revised.intent["idempotency_key"] = "rerun-" + revised.id.hex
+    revised.summary.update(rerun_of=str(job.id), provider_verification="pending")
+    revised.summary["draft_sha256"] = digest({
+        "payload": revised.payload, "intent": revised.intent,
+        "workload_identity": revised.summary["workload_identity"],
+    })
+    revised.save(update_fields=["intent", "summary"])
+    preparation = enqueue(user, "prepare", revised, revised.connection_refs, key)
+    for name, content in (("request.json", revised.payload), ("intent.json", revised.intent),
+                          ("workload.json", revised.payload["workload_manifest"])):
+        write_artifact(preparation, name, content)
+    return revised

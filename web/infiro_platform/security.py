@@ -20,7 +20,7 @@ PROVIDERS = {
     },
     "huggingface": {"secrets": {"token"}, "required": {"token"}, "metadata": {"secret_version_id"}},
     "storage": {
-        "secrets": {"access_key_id", "secret_access_key", "session_token"},
+        "secrets": {"access_key_id", "secret_access_key"},
         "required": {"access_key_id", "secret_access_key"},
         "metadata": {"bucket", "region", "endpoint", "secret_version_id"},
     },

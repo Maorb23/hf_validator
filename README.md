@@ -12,6 +12,8 @@ Use the CLI directly or access recommendation and optimization through NanoClaw.
 Code paths above are relative to `src/hf_model_watch/`. The previous detailed README is
 preserved in [instructions.md](instructions.md).
 
+For the website and authenticated app, see [two-terminal localhost startup](web/README.md#run-the-local-app-in-two-terminals).
+
 ## Setup
 
 Use Python 3.11+ on Linux or WSL. For recommendation and optimization preparation, a CPU
