@@ -1,0 +1,125 @@
+--- a/src/llm_optimizer/remote/contracts.py
++++ b/src/llm_optimizer/remote/contracts.py
+@@ -28,6 +28,8 @@
+     optuna: dict[str, Any] = field(default_factory=dict)
+     optuna_by_framework: dict[str, dict[str, Any]] = field(default_factory=dict)
+     prefix: str = "llm-optimizer"
++    server_ready_timeout_seconds: dict[str, int] = field(default_factory=dict)
++    cache_pinned_model_assets: bool = False
+     timeout_minutes: int = 180
+     dry_run: bool = True
+     preemptible: bool = False
+@@ -107,6 +109,17 @@
+             or not 60 <= request.timeout_minutes <= 10080
+         ):
+             raise ValueError("timeout_minutes must be between 60 and 10080")
++        if not isinstance(request.server_ready_timeout_seconds, dict) or any(
++            f not in request.frameworks or type(seconds) is not int or not 30 <= seconds <= 3600
++            for f, seconds in request.server_ready_timeout_seconds.items()
++        ):
++            raise ValueError("server_ready_timeout_seconds must map selected frameworks to 30..3600 seconds")
++        if type(request.cache_pinned_model_assets) is not bool:
++            raise ValueError("cache_pinned_model_assets must be a boolean")
++        if request.cache_pinned_model_assets:
++            import re
++            if not re.fullmatch(r"[a-f0-9]{40}", request.revision or ""):
++                raise ValueError("Caching model assets requires a pinned revision")
+         if not isinstance(request.bucket, str) or (
+             not request.bucket and not request.dry_run
+         ):
+--- a/src/llm_optimizer/remote/worker.py
++++ b/src/llm_optimizer/remote/worker.py
+@@ -55,6 +55,29 @@
+             arg = key + "=" + repr(resolve(ast.literal_eval(raw)))
+         result.append(arg)
+     return result
++
++
++def check_runtime_backend(request, framework):
++    # TRT can silently fall back to MMHA when FlashInfer is unavailable.
++    # Check dispatch inside the serving environment before starting a Gemma trial.
++    if request.model != "google/gemma-4-12B-it" or framework != "trtllm":
++        return
++    code = (
++        "from tensorrt_llm._torch.attention_backend.utils import get_attention_backend; "
++        "backend = get_attention_backend('FLASHINFER'); "
++        "\nif backend.__name__ != 'FlashInferAttention':\n"
++        "    raise RuntimeError('Gemma requires FlashInferAttention; fallback is prohibited')"
++    )
++    subprocess.run([sys.executable, "-c", code], check=True)
++
++
++def cache_model_assets(request):
++    """Warm the shared HF cache at the approved commit; never fetch weights."""
++    from huggingface_hub import snapshot_download
++    return snapshot_download(
++        request.model, revision=request.revision,
++        allow_patterns=["*.json", "*.model", "*.tiktoken", "*.txt", "*.jinja"],
++    )
+ 
+ 
+ def optimizer_command(payload: dict[str, Any], output: Path) -> list[str]:
+@@ -242,9 +265,14 @@
+         actual = validate_manifest(json.loads(path.read_text(encoding="utf-8")))
+         if actual != expected:
+             raise ValueError("Staged custom workload differs from approved workload")
++    check_runtime_backend(request, framework)
+     command = optimizer_command(payload, output)
+     worker_env = os.environ.copy()
+     worker_env["LLM_OPTIMIZER_RUN_ID"] = run_id
++    if framework in request.server_ready_timeout_seconds:
++        worker_env["LLM_OPTIMIZER_SERVER_READY_TIMEOUT_SECONDS"] = str(request.server_ready_timeout_seconds[framework])
++    if request.cache_pinned_model_assets:
++        cache_model_assets(request)
+     public_command = command.copy()
+     optuna = request.optuna_for(framework)
+     public_optuna = optuna.copy()
+--- a/src/llm_optimizer/server_utils.py
++++ b/src/llm_optimizer/server_utils.py
+@@ -213,10 +213,16 @@
+     delay: int = 5,
+     request_timeout: int = 5,
+     process: t.Optional[psutil.Popen] = None,
++    timeout_seconds: t.Optional[float] = None,
+ ) -> bool:
+     """Repeatedly try to access the server until it's available."""
+     logger.info(f"Waiting for server to be ready at {url}...")
+-    for attempt in range(max_retries):
++    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
++    attempts = max_retries if deadline is None else int(timeout_seconds / max(delay, 0.01)) + 1
++    for attempt in range(attempts):
++        remaining = None if deadline is None else deadline - time.monotonic()
++        if remaining is not None and remaining <= 0:
++            return False
+         if process is not None and process.poll() is not None:
+             logger.error(
+                 "Server process exited before readiness "
+@@ -224,7 +230,7 @@
+             )
+             return False
+         try:
+-            response = requests.get(url, timeout=request_timeout)
++            response = requests.get(url, timeout=request_timeout if remaining is None else min(request_timeout, remaining))
+             if response.status_code == 200:
+                 lifecycle = getattr(process, "_trt_lifecycle", None)
+                 if (
+@@ -243,7 +249,7 @@
+             f"Server not ready yet (attempt {attempt + 1}/{max_retries}). "
+             f"Retrying in {delay}s."
+         )
+-        time.sleep(delay)
++        time.sleep(delay if deadline is None else max(0, min(delay, deadline - time.monotonic())))
+     return False
+ 
+ 
+@@ -287,7 +293,9 @@
+             )
+         logger.debug(f"Started server with PID: {server_process.pid}")
+ 
+-        if not wait_for_server(ready_url, process=server_process):
++        ready_timeout = envs.get("LLM_OPTIMIZER_SERVER_READY_TIMEOUT_SECONDS")
++        if not wait_for_server(ready_url, process=server_process,
++                               **({"timeout_seconds": float(ready_timeout)} if ready_timeout else {})):
+             raise ServerNotReadyError(
+                 "Server did not become ready in the allotted time."
+             )

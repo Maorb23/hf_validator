@@ -208,3 +208,41 @@ class StudyInputTests(TransactionTestCase):
         self.assertEqual(
             self.post(url, {"digest": source.digest, "request": request}).status_code, 400
         )
+
+    def test_gemma_request_editor_rejects_removed_or_prohibited_constraints(self):
+        from hf_model_watch.optimization.runtime_constraints import GEMMA, overrides
+        from hf_model_watch.optimization.contracts import StudyContext
+        from llm_optimizer.search_profiles import merge_server_args
+        from .security import digest
+        from .services import binding
+
+        source = seed_prepared(self.user)
+        source.recommendation.selected['model_id'] = GEMMA
+        source.recommendation.save()
+        source.payload['model'] = GEMMA
+        source.payload['semantic_context']['model_id'] = GEMMA
+        source.intent['context']['model_id'] = GEMMA
+        context = StudyContext.model_validate(source.payload['semantic_context'])
+        source.payload['server_args']['vllm'] = merge_server_args(
+            source.payload['server_args']['vllm'], overrides('vllm', context))
+        source.digest = digest(binding(source))
+        source.save()
+        for args in [[], ["attention_backend=['FLASH_ATTN']", "kv_cache_dtype=['fp8']"]]:
+            raw = copy.deepcopy(source.payload)
+            raw['server_args']['vllm'] = args
+            response = self.post('prepared/' + str(source.id) + '/request', {
+                'digest': source.digest, 'request': raw})
+            self.assertEqual(response.status_code, 400, response.content)
+            self.assertIn('Gemma runtime constraint', response.json()['error'])
+        raw = copy.deepcopy(source.payload)
+        raw['optuna']['server_args'] = ["attention_backend=['FLASH_ATTN']"]
+        response = self.post('prepared/' + str(source.id) + '/request', {
+            'digest': source.digest, 'request': raw})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('Unsupported search setting', response.json()['error'])
+        raw = copy.deepcopy(source.payload)
+        raw['server_ready_timeout_seconds'] = {'vllm': 1200}
+        response = self.post('prepared/' + str(source.id) + '/request', {
+            'digest': source.digest, 'request': raw})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('Protected fields', response.json()['error'])

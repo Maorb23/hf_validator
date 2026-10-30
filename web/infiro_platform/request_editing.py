@@ -232,6 +232,8 @@ def revise_request(user, identifier, reviewed_digest, raw):
             arg not in args for arg in prior if "speculative" in arg or "draft" in arg
         ):
             raise ValueError("Required speculative settings cannot be removed.")
+    from hf_model_watch.optimization.runtime_constraints import validate_request
+    validate_request(payload)
     intent = copy.deepcopy(source.intent)
     intent["context"].update(
         gpu_type=choices["gpu_type"],

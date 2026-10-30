@@ -118,6 +118,12 @@ class OptimizationAdapter:
         if manifest is not None:
             payload['workload_manifest'] = manifest
         from llm_optimizer.search_profiles import expanded_server_args, merge_server_args
+        from hf_model_watch.optimization.runtime_constraints import (
+            GEMMA,
+            constrain_trt_files,
+            overrides as runtime_overrides,
+            validate_request,
+        )
         # The optimizer owns parameter domains and framework-native rendering.
         payload["optuna"] = {"trials": 30, "sampler": "TPESampler", **payload["optuna"]}
         payload["server_args"] = dict(execution.get("server_args", {}))
@@ -127,6 +133,9 @@ class OptimizationAdapter:
                 continue
             defaults, files = expanded_server_args(
                 framework, c.concurrency, c.workload.input_tokens)
+            defaults = merge_server_args(defaults, runtime_overrides(framework, c))
+            if c.model_id == GEMMA and framework == "trtllm":
+                defaults, files = constrain_trt_files(defaults, files)
             supplied = payload["server_args"].get(framework, [])
             # Optuna-specific overrides must not collide with profile dimensions.
             tuned = {
@@ -150,6 +159,13 @@ class OptimizationAdapter:
             if settings.get("pruner", "NopPruner") != "NopPruner":
                 if len(c.objectives) != 1 or c.constraints:
                     raise ValueError("Pruning requires an unconstrained scalar objective")
+        deferred = {"server_ready_timeout_seconds", "cache_pinned_model_assets"} & payload.keys()
+        if deferred:
+            raise ValueError(
+                "Worker extensions are deferred for existing images; remove: "
+                + ", ".join(sorted(deferred))
+            )
+        validate_request(payload)
         return payload
 
     def submit(self, intent: NewStudyIntent) -> dict[str, Any]:
