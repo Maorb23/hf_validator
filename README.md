@@ -424,6 +424,8 @@ for live provider requirements and image compatibility.
 5. Explicitly approve the study. The worker processes it; monitor progress, trials,
    diagnostics, and result downloads on the study page.
 
+#### Dataset customization
+
 The web app accepts these text-only dataset formats:
 
 | Format | Expected record fields | Prompt used |
@@ -436,10 +438,25 @@ Messages roles must be `system`, `user`, or `assistant`, with nonempty text cont
 Provide a Hugging Face repository ID or URL, dataset revision, and relative JSON
 or JSONL file path, plus the tokenizer model and its revision. The selected file
 defines the records; split/configuration filtering is not applied in the web app.
+
+Start with **`main` for both Dataset revision and Tokenizer revision**, unless you
+need a specific version. Dataset revision belongs to the dataset repository;
+Tokenizer revision belongs to the selected model repository. A branch, tag, or
+commit must exist in its respective repository. Do not copy a commit from another
+model or dataset. When changing the tokenizer model, use `main` again unless you
+have verified a revision for that model. Validation resolves revisions to immutable
+commits and freezes the workload for reproducible comparisons.
+
+Enter the JSON data file as a relative path, such as `train.json`, without leading
+or trailing spaces; it must exist in the selected dataset repository and revision.
+Choose a prompt count no larger than the number of valid records available.
+
 Prompts are tokenized, repeated or truncated to the requested input length, and
 every request uses the fixed output length. This benchmarks serving performance,
 not answer quality or full conversations. Each framework and trial uses the same
 frozen workload.
+
+#### Running the study
 
 Choose **20 trials per framework** as a starting budget, following the TPE guidance
 above. Live Nebius jobs can take time: they run the user-selected workload, and
