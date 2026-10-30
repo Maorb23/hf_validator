@@ -1,7 +1,7 @@
 # hf-model-watch
 
 `hf_validator` contains **hf-model-watch**, a toolkit for discovering Hugging Face
-models, validating their behavior, and optimizing inference on Nebius GPUs. Use
+models, orchestrating workloads, and optimizing inference on Nebius GPUs. Use
 it from the local CLI or the Confiron web application.
 
 ## Run jobs on Nebius
@@ -12,7 +12,7 @@ Choose the execution path for your task:
 | --- | --- | --- |
 | Optimize through the website | [Local web app](#run-the-web-app-locally), then prepare and approve a study | The separate `platform_worker`, using the optimizer controller and Nebius SDK |
 | Optimize from the CLI | [Optimization commands](#3-inference-optimization) | The `llm-optimizer` controller processing your approved study |
-| Scan and validate models remotely | [Validation orchestrator](#run-the-validation-orchestrator-locally) | The local controller calling the Nebius CLI |
+| Orchestrate remote model jobs | [Job orchestrator](#run-the-job-orchestrator-locally) | The local controller calling the Nebius CLI |
 
 Running a controller locally can launch paid remote GPUs. Recommendation and
 request preparation do not allocate GPUs. Dry runs exercise the workflow without
@@ -27,7 +27,7 @@ the hosted recommendation model. GPU jobs require IAM/service-account credential
 For web jobs, save credentials in [Connections](#configure-connectors). CLI jobs
 use their controller environment and execution configuration.
 
-### Run the validation orchestrator locally
+### Run the job orchestrator locally
 
 Use Python 3.11+ on Linux or WSL and install `uv`. Run commands from the repository
 root. This installs the full project, including GPU/runtime dependencies;
@@ -47,7 +47,6 @@ Configure these before a live run:
 | `config/serverless.yaml` | Worker image, GPU platform, matching preset, GPU count, timeout |
 | `config/storage.yaml` | Your S3 bucket, prefix, endpoint, `enabled: true`, and `dry_run: false` |
 | `config/scan.yaml` | Scan window, eligibility filters, maximum candidates |
-| `config/finetune.yaml` | `enabled: false` to skip adaptation; `wandb_enabled: false` if not using W&B |
 
 Build and publish the root `Dockerfile` to a registry accessible by your project.
 Set that image in `config/serverless.yaml` or `HF_MODEL_WATCH_NEBIUS_IMAGE`. Replace
@@ -105,7 +104,7 @@ uv run hf-watch prefect-flow --config-dir config
 **Both live commands can allocate paid GPUs.** The flow scans, scores, selects
 candidates, submits jobs, follows logs, and imports completed results. It currently
 submits and monitors one candidate at a time; `max_parallel_jobs` does not create
-parallel submissions in this flow. Fine-tuning is enabled in the checked-in config.
+parallel submissions in this flow.
 
 Keep the terminal running. Trace events include run and job IDs. Inspect a printed
 job ID with:
@@ -126,7 +125,7 @@ uv run hf-watch leaderboard \
 Defaults are `outputs/synced-nebius/` for downloaded reporting artifacts,
 `results/hf_model_watch.sqlite` for the database, and `reports/leaderboard.md`
 for the leaderboard. Stopping the local process does not cancel remote jobs;
-manage validation jobs through Nebius. Use the study cancel command below for
+manage orchestrated jobs through Nebius. Use the study cancel command below for
 optimizer jobs.
 
 For optional scheduling, see [Nebius and Prefect](instructions.md#nebius-and-prefect).
@@ -137,7 +136,7 @@ For worker bootstrap checks, see [dry runs](instructions.md#dry-runs).
 | Module | Purpose | Main code under `src/hf_model_watch/` |
 | --- | --- | --- |
 | Recommendation | Discover models for a workload or assess a specific model | `recommender/`, `hub/` |
-| Validation and evaluation | Run inference checks, measure latency/quality/context behavior, optionally evaluate PEFT adaptation | `runtime/`, `evals/`, `finetune/` |
+| Orchestration | Coordinate candidate selection, remote job submission, monitoring, and result synchronization | `orchestration/` |
 | Inference optimization | Prepare and approve studies and compare framework configurations | `optimization/`, `orchestration/optimization_adapter.py` |
 
 The web application in `web/` adds accounts, connections, datasets, configuration
@@ -189,23 +188,19 @@ mention does not establish runtime support, and unknown speculative-head compati
 does not enable a head. See [preferences](docs/recommender_preferences.md) and the
 [quickstart notebook](notebooks/recommender_quickstart.ipynb).
 
-### 2. Validation and evaluation
+### 2. Orchestration
 
-Use the [validation orchestrator](#run-the-validation-orchestrator-locally) for
-remote evaluation. For a small local smoke test in the full `uv sync` environment:
+Orchestration coordinates candidate selection, remote job submission, status and
+log monitoring, and result synchronization. The Prefect flow submits and monitors
+one candidate at a time through the Nebius CLI; see
+[local orchestrator setup](#run-the-job-orchestrator-locally).
 
-```bash
-uv run hf-watch run-local \
-  --model-id sshleifer/tiny-gpt2 --config-dir config --skip-finetune
-uv run hf-watch leaderboard \
-  --db results/hf_model_watch.sqlite --out reports/leaderboard.md
-```
-
-This downloads weights and runs local checks, writing artifacts and SQLite results.
-Larger models need sufficient hardware. Prompts live in `config/eval_tasks.yaml`;
-adaptation settings live in `config/finetune.yaml`. Fine-tuning requires
-`uv sync --extra finetune` and compatible hardware. See the
-[detailed guide](instructions.md) for quality datasets, PEFT, and reporting.
+For inference optimization, the orchestration adapter translates prepared requests
+into optimizer studies. The CLI or web worker submits approved studies to the
+`llm-optimizer` controller, which owns GPU execution and study results. The web
+worker also processes queued dataset preparation and research operations. See
+[inference optimization](#3-inference-optimization) for the preparation, approval,
+monitoring, and cancellation workflow.
 
 ### 3. Inference optimization
 
@@ -490,7 +485,6 @@ python web/manage.py study_logs --latest
 - [Study diagnostics and W&B](docs/platform-study-diagnostics.md)
 - [Optimization configuration and analysis](docs/optimization.md)
 - [Custom HF optimization workloads](docs/optimization-hf-datasets.md)
-- [Detailed validation and reporting guide](instructions.md)
 - [Railway deployment](docs/web/railway.md)
 
 CLI help:
