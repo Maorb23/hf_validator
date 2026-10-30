@@ -28,15 +28,24 @@ class WorkloadLimitError(ValueError):
     """Static, safe-to-display limit rejection from the web boundary."""
 
 
+HF_LOADING_ADVICE = {
+    401: "Authentication failed; check the HF read-token connection.",
+    403: "Access denied; check token permissions and gated repository terms.",
+    404: "Repository or revision not found, or not accessible with this token.",
+    429: "Hugging Face rate limit reached; retry later with an HF read-token connection.",
+    None: "Check worker network access, repository access and installed dependencies.",
+}
+HF_LOADING_ERRORS = frozenset(
+    f"Custom HF {stage} loading or access failed. {advice}"
+    for stage in ("dataset metadata", "tokenizer metadata", "tokenizer files")
+    for advice in HF_LOADING_ADVICE.values()
+)
+
+
 def loading_error(stage, exc):
     """Describe the failed stage without exposing provider text or credentials."""
     status = getattr(getattr(exc, "response", None), "status_code", None)
-    advice = {
-        401: "Authentication failed; check the HF read-token connection.",
-        403: "Access denied; check token permissions and gated repository terms.",
-        404: "Repository or revision not found, or not accessible with this token.",
-        429: "Hugging Face rate limit reached; retry later with an HF read-token connection.",
-    }.get(status, "Check worker network access, repository access and installed dependencies.")
+    advice = HF_LOADING_ADVICE.get(status, HF_LOADING_ADVICE[None])
     return ValueError(f"Custom HF {stage} loading or access failed. {advice}")
 
 

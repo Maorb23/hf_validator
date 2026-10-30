@@ -8,7 +8,7 @@ from .contracts import DatasetConfig
 from .demo import FixtureTokenizer, fixture_manifest
 from . import test_dataset_safety
 from .workload_runtime import verify_frozen_workload
-from .workloads import WorkloadLimitError, adapt_record, loading_error, materialize
+from .workloads import HF_LOADING_ERRORS, WorkloadLimitError, adapt_record, loading_error, materialize
 
 
 class DatasetFormatTests(SimpleTestCase):
@@ -23,6 +23,9 @@ class DatasetFormatTests(SimpleTestCase):
                 self.assertIn('tokenizer files', message)
                 self.assertIn(expected, message)
                 self.assertNotIn('hf-secret', message)
+                self.assertIn(message, HF_LOADING_ERRORS)
+        self.assertNotIn('Custom HF dataset metadata loading or access failed. hf-secret',
+                         HF_LOADING_ERRORS)
 
     def test_metadata_errors_identify_failed_repository(self):
         config, _ = fixture_manifest()

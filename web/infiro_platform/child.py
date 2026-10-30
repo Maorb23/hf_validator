@@ -69,13 +69,13 @@ def main():
         from hf_model_watch.optimization.dspark import DSparkConfigurationError
 
         from .workload_cache import CACHE_FULL, CACHE_INVALID
-        from .workloads import FORMAT_ERROR, MEMORY_ERROR
+        from .workloads import FORMAT_ERROR, MEMORY_ERROR, HF_LOADING_ERRORS
 
         safe = {
             "Model access or revision lookup failed. Check the model ID, "
             "revision and Hugging Face connection.",
             "The model lookup did not return a pinned commit.",
-            FORMAT_ERROR, MEMORY_ERROR, CACHE_FULL, CACHE_INVALID,
+            FORMAT_ERROR, MEMORY_ERROR, CACHE_FULL, CACHE_INVALID, *HF_LOADING_ERRORS,
             "Selected dataset files exceed the 1 GiB download limit, or sizes are unknown.",
             "Tokenizer exceeds the 128 MiB limit, or file sizes are unknown.",
             "Workload settings changed; validate a new dataset sample first.",
