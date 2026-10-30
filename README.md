@@ -227,6 +227,16 @@ bucket, compatible framework images, matching GPU preset, timeout, and trial bud
 The validation worker image is separate from optimizer framework images.
 See [optimization configuration](docs/optimization.md) for schemas and overrides.
 
+**Start with 20 trials per framework study.** The default TPE sampler uses random
+sampling for its initial exploration phase (`n_startup_trials=10`). A budget above
+10 leaves room for guided optimization; failed trials and duplicate proposals can
+reduce the useful observations collected. For example, five choices for each of
+two independent parameters give 25 configurations, enough for a 20-trial search.
+For 10 or fewer distinct configurations, consider a full grid comparison instead.
+Other samplers or a customized startup count may need different budgets. Twenty
+trials is a starting recommendation, not a guarantee of convergence or improvement;
+set the trial budget explicitly when preparing your run.
+
 After selecting a recommendation, replace the saved run ID:
 
 ```bash
@@ -413,6 +423,27 @@ for live provider requirements and image compatibility.
    and connection references.
 5. Explicitly approve the study. The worker processes it; monitor progress, trials,
    diagnostics, and result downloads on the study page.
+
+The web app accepts these text-only dataset formats:
+
+| Format | Expected record fields | Prompt used |
+|---|---|---|
+| ShareGPT | `conversations` with `from` / `value` turns | First `human` turn |
+| Alpaca | `instruction` and optional `input` | Instruction plus input |
+| Messages | `messages` with `role` / `content` turns | First `user` message |
+
+Messages roles must be `system`, `user`, or `assistant`, with nonempty text content.
+Provide a Hugging Face repository ID or URL, dataset revision, and relative JSON
+or JSONL file path, plus the tokenizer model and its revision. The selected file
+defines the records; split/configuration filtering is not applied in the web app.
+Prompts are tokenized, repeated or truncated to the requested input length, and
+every request uses the fixed output length. This benchmarks serving performance,
+not answer quality or full conversations. Each framework and trial uses the same
+frozen workload.
+
+Choose **20 trials per framework** as a starting budget, following the TPE guidance
+above. Live Nebius jobs can take time: they run the user-selected workload, and
+the web app currently does not reuse offline study results for those jobs.
 
 Start with a dry run. For an offline demonstration after registering, use the same
 environment exports as the server:
