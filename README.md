@@ -2,7 +2,7 @@
 
 `hf_validator` contains **hf-model-watch**, a toolkit for discovering Hugging Face
 models, validating their behavior, and optimizing inference on Nebius GPUs. Use
-it from the local CLI or the Infiro web application.
+it from the local CLI or the Confiron web application.
 
 ## Run jobs on Nebius
 
