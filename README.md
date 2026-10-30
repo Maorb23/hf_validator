@@ -379,8 +379,8 @@ credentials from saved connections; root `.env` credentials are not imported.
 | --- | --- | --- |
 | Nebius inference | `NEBIUS_API_KEY`, `NEBIUS_API_BASE_URL`; optional `NEMOTRON_MODEL` | Token Factory API key and HTTPS inference endpoint |
 | Nebius jobs | `NB_PROJECT_ID` and controller authentication described above | Project ID, service-account ID, public-key ID, private key (PEM/base64 PEM); alternatively a temporary IAM token |
-| Hugging Face | `HF_TOKEN` | HF read token; accept required gated model/dataset terms in HF |
-| Object storage | AWS access key/secret and endpoint; validation bucket/prefix in `config/storage.yaml`, optimizer bucket in execution settings | Permanent access key ID, secret key, bucket, region, HTTPS endpoint, worker secret reference |
+| Hugging Face | `HF_TOKEN` | HF read token, Nebius SecretStash with field HF_TOKEN; accept required gated model/dataset terms in HF |
+| Object storage | AWS access key/secret and endpoint; validation bucket/prefix in `config/storage.yaml`, optimizer bucket in execution settings | Permanent access key ID, secret key, bucket, region, HTTPS endpoint, Nebius SecretStash containing AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY fields |
 | Tavily | `TAVILY_API_KEY` | Research API key |
 
 The web jobs connection uses the Nebius SDK and refreshes tokens in service-account
