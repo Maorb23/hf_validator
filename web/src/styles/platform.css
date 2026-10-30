@@ -25,7 +25,11 @@
 .recommendations-operations .operation-row p { font-size:11px; line-height:1.7; overflow-wrap:anywhere; margin:8px 0 12px; }
 .recommendations-operations .operation-actions { justify-content:flex-start; gap:8px; }
 .recommendations-content .model-grid { grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); }
-.rename-recommendation { margin:0 0 18px; font-size:11px; }
+.rename-recommendation { margin:0; }
+.recommendation-actions { align-items:center; flex-wrap:wrap; }
+.recommendation-actions .rename-recommendation { color:#b8d7ff; border-color:#81b9ff66; }
+.recommendation-actions .rename-recommendation:hover:not(:disabled) { color:#d4e7ff; border-color:#81b9ff; background:#81b9ff14; }
+.recommendation-actions .button.danger:hover:not(:disabled) { color:var(--danger); border-color:#ffb4b9; background:#ffb4b914; }
 .recommendation-rename { margin-bottom:20px; flex-wrap:wrap; }
 .recommendation-rename .field { flex:1; min-width:180px; }
 @media(max-width:1100px) {

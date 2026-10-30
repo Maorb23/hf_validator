@@ -202,7 +202,8 @@ def revise_request(user, identifier, reviewed_digest, raw):
     from llm_optimizer.optimization import OptunaSearchSpace
     from llm_optimizer.predefined import SERVER_CONFIGS
 
-    for framework, args in payload["server_args"].items():
+    for framework in payload["frameworks"]:
+        args = payload["server_args"].get(framework, [])
         prior = source.payload.get("server_args", {}).get(framework, [])
         for arg in args:
             if arg in prior:
@@ -223,7 +224,11 @@ def revise_request(user, identifier, reviewed_digest, raw):
                 )
         parsed = parse_args_str(";".join(args), ArgScope.SERVER, SERVER_CONFIGS[framework], False)
         OptunaSearchSpace(tuple(parsed))  # Reject duplicate/overlapping dimensions natively.
-        if choices["speculative_decoding"] == "require" and any(
+        required_speculation = (
+            choices["speculative_decoding"] == "require"
+            or choices.get("speculative_method") == "dspark"
+        )
+        if required_speculation and any(
             arg not in args for arg in prior if "speculative" in arg or "draft" in arg
         ):
             raise ValueError("Required speculative settings cannot be removed.")

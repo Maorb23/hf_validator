@@ -64,6 +64,7 @@ def child_environment(job):
         "INFIRO_PRIVATE_ROOT": str(settings.INFIRO_PRIVATE_ROOT),
         "INFIRO_PROVIDER_FACTORY": settings.INFIRO_PROVIDER_FACTORY,
         "INFIRO_SERVING_IMAGES": json.dumps(settings.INFIRO_SERVING_IMAGES),
+        "INFIRO_DSPARK_COMPATIBILITY": json.dumps(settings.INFIRO_DSPARK_COMPATIBILITY),
         "INFIRO_IMAGE_ALIASES": json.dumps(settings.INFIRO_IMAGE_ALIASES),
         "INFIRO_WANDB": json.dumps(settings.INFIRO_WANDB),
         "INFIRO_LIVE_ENABLED": "1" if settings.INFIRO_LIVE_ENABLED else "0",
@@ -167,7 +168,12 @@ def fail(job, message):
         ),
         flush=True,
     )
-    invalid_configuration = has_validation_failure(job.progress.get("diagnostics", {}))
+    diagnostics = job.progress.get("diagnostics", {})
+    invalid_configuration = has_validation_failure(diagnostics) or any(
+        item.get("type") == "DSparkConfigurationError"
+        and item.get("module") == "hf_model_watch.optimization.dspark"
+        for item in diagnostics.get("exceptions", [])
+    )
     if job.kind == "study" and job.controller_run:
         # Never forget a provider-side job after polling errors or credential
         # deletion. Keep it visible as attention_required for operator recovery.

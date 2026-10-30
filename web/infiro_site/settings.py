@@ -1,4 +1,5 @@
 """Public Astro pages and the private, session-authenticated Infiro platform."""
+import json
 import os
 import secrets
 from pathlib import Path
@@ -41,8 +42,8 @@ INFIRO_PRIVATE_ROOT = Path(os.environ.get("INFIRO_PRIVATE_ROOT", BASE_DIR / "pri
 INFIRO_PRIVATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
 INFIRO_CREDENTIAL_KEYS = os.environ.get("INFIRO_CREDENTIAL_KEYS", "")
 INFIRO_PROJECT_ROOT = BASE_DIR.parent
+INFIRO_DSPARK_COMPATIBILITY = json.loads(os.environ.get("INFIRO_DSPARK_COMPATIBILITY", "[]"))
 INFIRO_PROVIDER_FACTORY = os.environ.get("INFIRO_PROVIDER_FACTORY", "infiro_platform.nebius_provider:factory")
-import json
 INFIRO_SERVING_IMAGES = json.loads(
     os.environ["INFIRO_SERVING_IMAGES"]
     if "INFIRO_SERVING_IMAGES" in os.environ

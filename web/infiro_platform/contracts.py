@@ -99,6 +99,7 @@ class DatasetConfig(Input):
 
 
 class Choices(Input):
+    speculative_method: Literal['auto', 'dspark'] = 'auto'
     workload_mode: Literal["sharegpt"] = "sharegpt"
     gpu_type: Literal["gpu-h100-sxm", "gpu-h200-sxm", "gpu-l40s-d"] = "gpu-h100-sxm"
     gpu_count: Literal[1, 8] = 1
@@ -132,6 +133,16 @@ class Choices(Input):
     @model_validator(mode="after")
     def limits(self):
         from hf_model_watch.optimization.contracts import StudyContext, Workload
+
+        if self.speculative_method == 'dspark':
+            if self.speculative_decoding == 'off':
+                raise ValueError(
+                    'Select a speculative verification policy to enable DeepSeek DSpark.'
+                )
+            if 'trtllm' in self.frameworks:
+                raise ValueError(
+                    'DeepSeek DSpark is available through vLLM or SGLang; deselect TensorRT-LLM.'
+                )
 
         # Keep saved mean-based requests valid; new web requests use p95.
         if not self.objectives:

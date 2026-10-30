@@ -66,6 +66,8 @@ def main():
         details = failure_details(exc)
         # Provider exception strings can contain secrets, signed URLs or prompts.
         # Only static messages for errors controlled by our boundary are exposed.
+        from hf_model_watch.optimization.dspark import DSparkConfigurationError
+
         from .workload_cache import CACHE_FULL, CACHE_INVALID
         from .workloads import FORMAT_ERROR, MEMORY_ERROR
 
@@ -94,7 +96,10 @@ def main():
         }
         message = (
             str(exc)
-            if isinstance(exc, ValueError) and str(exc) in safe
+            if (
+                isinstance(exc, DSparkConfigurationError)
+                or isinstance(exc, ValueError) and str(exc) in safe
+            )
             else failure_summary(details)
         )
         job.progress["diagnostics"] = details

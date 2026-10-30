@@ -328,6 +328,7 @@ def job_view(j):
 
 @api(["GET"])
 def bootstrap(request):
+    from hf_model_watch.optimization.dspark import capabilities
     from hf_model_watch.optimization.objectives import objective_options
 
     user = request.user
@@ -357,6 +358,9 @@ def bootstrap(request):
                 .order_by("-created_at")[:100]
             ],
             "live_enabled": bool(settings.INFIRO_LIVE_ENABLED and settings.INFIRO_PROVIDER_FACTORY),
+            "dspark": capabilities(
+                settings.INFIRO_DSPARK_COMPATIBILITY, settings.INFIRO_SERVING_IMAGES
+            ),
             "tracking_configuration": {
                 "project": settings.INFIRO_WANDB.get("project"),
                 "entity": settings.INFIRO_WANDB.get("entity"),
@@ -588,6 +592,13 @@ def create_prepared(request):
     if not rec.selected:
         raise ValueError("Select a recommended model first.")
     choices = Choices.model_validate(data.get("choices", {})).model_dump()
+    if choices.get("speculative_method") == "dspark":
+        from hf_model_watch.optimization.dspark import resolve
+
+        resolve(
+            rec.selected["model_id"], rec.selected["revision"], choices["frameworks"],
+            settings.INFIRO_SERVING_IMAGES, settings.INFIRO_DSPARK_COMPATIBILITY,
+        )
     dataset = owned(Dataset, request.user, data["dataset_id"]) if data.get("dataset_id") else None
     if dataset and dataset.status != "ready":
         raise ValueError("Validate and freeze the dataset first.")

@@ -8,6 +8,7 @@ import re
 import shlex
 from uuid import uuid4
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 
@@ -32,6 +33,7 @@ class PreparationInputs(RunStatusInputs):
     dataset: HFDataset | None = None
     seed: int | None = None
     frameworks: list[str] | None = None
+    speculative_method: Literal['auto', 'dspark'] = 'auto'
 
 
 def research(model: str, revision: str, directory: Path, settings_path: Path, serving_images: dict) -> dict:
@@ -143,6 +145,16 @@ def prepare(run: dict, preferences: dict, execution: dict, directory: Path,
         return {'status': 'needs_input', 'needs_input': ['gpu_hourly_cost_usd', 'budget_usd_per_hour'],
                 'reason': 'Potential concurrent framework GPU cost exceeds saved hourly budget; confirm the per-GPU hourly price and total budget', 'requires_explicit_approval': True}
     intent = NewStudyIntent(context=context, frameworks=frameworks, idempotency_key=run['run_id'] + '-optimization-' + uuid4().hex)
+    dspark = values.get('speculative_method') == 'dspark'
+    explicit_args, explicit_heads = {}, []
+    if dspark:
+        from hf_model_watch.optimization.dspark import DSparkConfigurationError, resolve
+        if values.get('speculative_decoding') == 'off':
+            raise DSparkConfigurationError(
+                'Select a speculative verification policy to enable DeepSeek DSpark.')
+        explicit_args, explicit_heads = resolve(
+            model, revision, frameworks, execution.get('images', {}),
+            execution.get('dspark_compatibility', []))
     report_path = directory / 'research.json'
     report = json.loads(report_path.read_text()) if report_path.exists() else {}
     images = {f: execution.get('images', {}).get(f) for f in frameworks}
@@ -154,12 +166,15 @@ def prepare(run: dict, preferences: dict, execution: dict, directory: Path,
                 and h.get('target_revision') == revision
                 and h.get('runtime') in images and h.get('serving_image') == images[h['runtime']]]
     spec_args, heads = serving_arguments(model, frameworks, report['sources'], verified)
+    if dspark:
+        spec_args, heads = explicit_args, explicit_heads
     if values.get('speculative_decoding') == 'require' and any(f not in spec_args for f in frameworks):
         return {'status': 'insufficient_evidence', 'requires_explicit_approval': True,
                 'reason': 'Required speculative decoding lacks verified revision/runtime evidence',
                 'research_file': str(report_path)}
     # Unverified speculative defaults must not survive preparation.
-    configured = {k: v for k, v in execution.items() if k != 'speculative_heads'}
+    configured = {k: v for k, v in execution.items()
+                  if k not in {'speculative_heads', 'dspark_compatibility'}}
     configured['optuna_by_framework'] = {f: c for f, c in execution.get('optuna_by_framework', {}).items() if f in frameworks}
     configured['server_args'] = {f: list(execution.get('server_args', {}).get(f, [])) for f in frameworks}
     for args in [*configured['server_args'].values(), configured.get('optuna', {}).get('server_args', []),
@@ -257,6 +272,7 @@ def prepare(run: dict, preferences: dict, execution: dict, directory: Path,
                 'follows_spot_price': payload['follows_spot_price'],
                 'gpu_hourly_cost_usd': values['gpu_hourly_cost_usd'],
                 'maximum_gpu_cost_usd': context.gpu_count * values['gpu_hourly_cost_usd'] * len(frameworks) * payload.get('timeout_minutes', 180) / 60,
+                'speculative_method': values.get('speculative_method', 'auto'),
                 'speculative_heads': heads, 'serving_settings': settings_summary},
             'next_command': shlex.join(['hf-watch', 'optimization', 'start', '--run-id', run['run_id'], '--state-root', str(directory.parent.parent.resolve()), '--request-file', str((directory / 'intent.json').resolve()), '--user-approved']),
             'next_action': 'Present this configuration and request approval before start_optimization.'}
