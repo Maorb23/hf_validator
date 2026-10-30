@@ -359,7 +359,7 @@ def bootstrap(request):
             ],
             "live_enabled": bool(settings.INFIRO_LIVE_ENABLED and settings.INFIRO_PROVIDER_FACTORY),
             "dspark": capabilities(
-                settings.INFIRO_DSPARK_COMPATIBILITY, settings.INFIRO_SERVING_IMAGES
+                settings.INFIRO_SERVING_IMAGES
             ),
             "tracking_configuration": {
                 "project": settings.INFIRO_WANDB.get("project"),
@@ -597,7 +597,7 @@ def create_prepared(request):
 
         resolve(
             rec.selected["model_id"], rec.selected["revision"], choices["frameworks"],
-            settings.INFIRO_SERVING_IMAGES, settings.INFIRO_DSPARK_COMPATIBILITY,
+            settings.INFIRO_SERVING_IMAGES,
         )
     dataset = owned(Dataset, request.user, data["dataset_id"]) if data.get("dataset_id") else None
     if dataset and dataset.status != "ready":

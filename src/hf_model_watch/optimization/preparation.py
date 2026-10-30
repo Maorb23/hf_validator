@@ -148,17 +148,19 @@ def prepare(run: dict, preferences: dict, execution: dict, directory: Path,
     dspark = values.get('speculative_method') == 'dspark'
     explicit_args, explicit_heads = {}, []
     if dspark:
-        from hf_model_watch.optimization.dspark import DSparkConfigurationError, resolve
+        from hf_model_watch.optimization.dspark import DSparkConfigurationError, resolve, pinned_draft
         if values.get('speculative_decoding') == 'off':
             raise DSparkConfigurationError(
-                'Select a speculative verification policy to enable DeepSeek DSpark.')
+                'Explicit DSpark cannot use ordinary decoding.')
+        resolve(model, revision, frameworks, execution.get('images', {}))
         explicit_args, explicit_heads = resolve(
-            model, revision, frameworks, execution.get('images', {}),
-            execution.get('dspark_compatibility', []))
+            model, revision, frameworks, execution.get('images', {}), pinned_draft(model))
     report_path = directory / 'research.json'
     report = json.loads(report_path.read_text()) if report_path.exists() else {}
     images = {f: execution.get('images', {}).get(f) for f in frameworks}
-    if report.get('model') != model or report.get('revision') != revision or report.get('serving_images') != images:
+    if dspark:
+        report = {'model': model, 'revision': revision, 'sources': [], 'inspection': {}, 'serving_images': images}
+    elif report.get('model') != model or report.get('revision') != revision or report.get('serving_images') != images:
         report = researcher(model, revision, directory, settings_path, images)
         report['serving_images'] = images
     report_path.write_text(json.dumps(report, indent=2))

@@ -42,7 +42,6 @@ class DSparkChoicesTests(SimpleTestCase):
 
 @override_settings(
     INFIRO_CREDENTIAL_KEYS=Fernet.generate_key().decode(),
-    INFIRO_DSPARK_COMPATIBILITY=[],
     ALLOWED_HOSTS=["testserver"],
 )
 class DSparkBoundaryTests(TestCase):
@@ -55,13 +54,13 @@ class DSparkBoundaryTests(TestCase):
         self.user = get_user_model().objects.create_user("dspark-user")
         self.client.force_login(self.user)
 
-    def test_browser_cannot_enable_unverified_dspark(self):
+    def test_browser_rejects_unmapped_dspark(self):
         rec = Recommendation.objects.create(
             owner=self.user,
             name="Qwen",
             requirements={},
             status="ready",
-            selected={"model_id": "Qwen/Qwen3-4B", "revision": "a" * 40},
+            selected={"model_id": "org/unmapped", "revision": "a" * 40},
         )
         response = self.client.post(
             "/app/api/prepared",
@@ -74,7 +73,7 @@ class DSparkBoundaryTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("GPU-verified compatibility record", response.json()["error"])
+        self.assertIn("No mapped speculative", response.json()["error"])
         self.assertFalse(Prepared.objects.exists())
 
     def test_editor_cannot_remove_explicit_dspark_even_with_prefer_policy(self):
@@ -91,7 +90,7 @@ class DSparkBoundaryTests(TestCase):
         with self.assertRaisesRegex(ValueError, 'Required speculative settings'):
             revise_request(self.user, source.id, source.digest, raw)
 
-    def test_missing_dspark_compatibility_is_not_retried(self):
+    def test_dspark_configuration_error_is_not_retried(self):
         source = seed_prepared(self.user)
         job = Job.objects.get(kind="prepare", target_id=source.id)
         job.attempts = 1
@@ -104,6 +103,6 @@ class DSparkBoundaryTests(TestCase):
             ]
         }
         job.save()
-        fail(job, "DSpark compatibility changed; prepare again.")
+        fail(job, "DSpark configuration invalid; prepare again.")
         job.refresh_from_db()
         self.assertEqual(job.state, "failed")

@@ -442,7 +442,6 @@ def perform_prepare(job):
         "timeout_minutes": prepared.choices["timeout_minutes"],
         "workload_manifest": manifest,
         "images": settings.INFIRO_SERVING_IMAGES,
-        "dspark_compatibility": settings.INFIRO_DSPARK_COMPATIBILITY,
         "optuna": {"trials": prepared.choices["trials"],
                    "seed": prepared.choices["seed"],
                    "sampler": prepared.choices.get("sampler", "TPESampler"),

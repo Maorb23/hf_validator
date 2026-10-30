@@ -1,5 +1,4 @@
 import ast
-import copy
 import json
 from pathlib import Path
 
@@ -19,22 +18,12 @@ DRAFT_REV = "b" * 40
 IMAGE = "registry/worker@sha256:" + "c" * 64
 
 
-def record(runtime="vllm", model=MODEL):
-    return dict(
-        target_model=model,
-        target_revision=REV,
-        draft_model=DRAFTS[model],
-        draft_revision=DRAFT_REV,
-        serving_image=IMAGE,
-        runtime=runtime,
-        verification_artifact="s3://operator-tests/dspark/benchmark.json",
-        source_urls=["https://github.com/deepseek-ai/DeepSpec"],
-        draft_path="/opt/drafts/snapshots/" + DRAFT_REV,
-    )
-
 
 @pytest.mark.parametrize("runtime", ["vllm", "sglang"])
-def test_explicit_dspark_reaches_optimizer_request_without_llm_head(runtime, tmp_path):
+@pytest.mark.parametrize("MODEL", list(DRAFTS))
+def test_explicit_dspark_reaches_optimizer_request_without_llm_head(runtime, tmp_path, monkeypatch, MODEL):
+    monkeypatch.setenv("INFIRO_DSPARK_COMPATIBILITY", "")
+    monkeypatch.setattr("hf_model_watch.optimization.dspark.pinned_draft", lambda _: DRAFT_REV)
     run = dict(
         run_id="run_dspark_test",
         selected_model_id=MODEL,
@@ -57,21 +46,12 @@ def test_explicit_dspark_reaches_optimizer_request_without_llm_head(runtime, tmp
         prefix="study",
         preset="1gpu-16vcpu-96gb",
         dry_run=True,
-        dspark_compatibility=[record(runtime)],
+        dspark_compatibility=[],
     )
 
-    # Nemotron remains responsible for research, but its unknown drafter is
-    # not allowed to replace the explicit, operator-verified DeepSeek pairing.
+    # Explicit DSpark must never call research or substitute a head.
     def researcher(*args):
-        return {
-            "model": MODEL,
-            "revision": REV,
-            "sources": [],
-            "inspection": {
-                "claims": [],
-                "heads": [{"draft_model": "other/draft", "status": "unknown"}],
-            },
-        }
+        raise AssertionError("Explicit head must skip research")
 
     result = prepare(run, {}, execution, tmp_path, Path("config/recommender.yaml"), researcher)
     payload = json.loads((tmp_path / "request.json").read_text())
@@ -117,44 +97,27 @@ def test_explicit_dspark_reaches_optimizer_request_without_llm_head(runtime, tmp
     else:
         assert ast.literal_eval(args["speculative_algorithm"]) == ["DSPARK"]
         assert ast.literal_eval(args["speculative_num_draft_tokens"]) == [8]
-        assert ast.literal_eval(args["speculative_draft_model_path"]) == [record()["draft_path"]]
+        assert ast.literal_eval(args["speculative_draft_model_path"]) == [DRAFTS[MODEL]]
+        from llm_optimizer.remote.worker import optimizer_command
+        from llm_optimizer import args as optimizer_args, predefined
+        command = optimizer_command({"request": payload, "framework": runtime}, tmp_path / "out.json")
+        for i, arg in enumerate(command):
+            if arg == '--server-args' and command[i + 1].startswith('speculative_'):
+                sets = optimizer_args.parse_args_str(command[i + 1], optimizer_args.ArgScope.SERVER,
+                                                     predefined.SERVER_CONFIGS[runtime], False)
+                assert sets[0].get_all_possible_arg_values()
+        assert "speculative_draft_model_revision=" + repr([DRAFT_REV]) in command
 
 
-@pytest.mark.parametrize("change", ["image", "revision", "drafter", "absent", "duplicate"])
-def test_wrong_or_missing_evidence_never_falls_back(change):
-    records = [record()]
-    if change == "image":
-        records[0]["serving_image"] = "registry/worker@sha256:" + "d" * 64
-    elif change == "revision":
-        records[0]["target_revision"] = "d" * 40
-    elif change == "drafter":
-        records[0]["draft_model"] = "itsmohit/Qwen3-4B-DSpark-Drafter"
-    elif change == "duplicate":
-        records.append(copy.deepcopy(records[0]))
-    else:
-        records = []
-    with pytest.raises(DSparkConfigurationError):
-        resolve(MODEL, REV, ["vllm"], {"vllm": IMAGE}, records)
 
-
-def test_unsupported_model_framework_and_unpinned_sglang():
+def test_unsupported_model_and_framework():
     with pytest.raises(DSparkConfigurationError, match="target model"):
-        resolve("Qwen/Qwen3.5-9B", REV, ["vllm"], {"vllm": IMAGE}, [])
+        resolve("google/gemma-4-12B-it", REV, ["vllm"], {"vllm": IMAGE})
     with pytest.raises(DSparkConfigurationError, match="TensorRT"):
-        resolve(MODEL, REV, ["trtllm"], {"trtllm": IMAGE}, [])
-    r = record("sglang")
-    r["draft_path"] = "/opt/drafts/main"
-    with pytest.raises(DSparkConfigurationError, match="snapshot"):
-        resolve(MODEL, REV, ["sglang"], {"sglang": IMAGE}, [r])
-
-
-def test_gemma_is_not_enabled_by_a_qwen_image_record():
-    with pytest.raises(DSparkConfigurationError):
-        resolve("google/gemma-4-12B-it", REV, ["sglang"], {"sglang": IMAGE}, [record("sglang")])
-    assert capabilities([record()], {"vllm": IMAGE})["compatible"] == [
-        {"target_model": MODEL, "target_revision": REV, "runtime": "vllm"}
-    ]
-    assert capabilities([record()], {"vllm": "different"})["compatible"] == []
+        resolve(MODEL, REV, ["trtllm"], {"trtllm": IMAGE})
+    with pytest.raises(DSparkConfigurationError, match="immutable"):
+        resolve(MODEL, REV, ["vllm"], {"vllm": "mutable:latest"})
+    assert set(capabilities({"vllm": IMAGE})["drafts"]) == set(DRAFTS)
 
 
 @pytest.mark.parametrize("runtime", ["vllm", "sglang"])
@@ -237,15 +200,15 @@ def test_remote_settings_match_optimizer_notebook_helper(runtime, tmp_path, monk
         **options,
     )
     reference = context["REAL_PREFLIGHT"][("B", runtime)]["fixed_server"]
-    r = record(runtime)
-    r["draft_path"] = str(draft)
-    arguments, _ = resolve(MODEL, REV, [runtime], {runtime: IMAGE}, [r])
+    arguments, _ = resolve(MODEL, REV, [runtime], {runtime: IMAGE}, DRAFT_REV)
     resolved = {
         key: ast.literal_eval(value)[0]
         for arg in arguments[runtime]
         for key, value in [arg.split("=", 1)]
     }
     if runtime == "sglang":
+        assert resolved.pop("speculative_draft_model_revision") == DRAFT_REV
+        reference["speculative_draft_model_path"] = DRAFTS[MODEL]
         assert resolved == reference
     else:
         config = json.loads(resolved["speculative_config"])
@@ -255,3 +218,18 @@ def test_remote_settings_match_optimizer_notebook_helper(runtime, tmp_path, monk
             == reference["speculative_config"]["num_speculative_tokens"]
         )
         assert config["revision"] == DRAFT_REV
+
+@pytest.mark.parametrize('block_size', [7, 8])
+def test_pinned_head_configuration_check(tmp_path, monkeypatch, block_size):
+    import huggingface_hub
+    from types import SimpleNamespace
+    from hf_model_watch.optimization.dspark import pinned_draft
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'block_size': block_size}))
+    monkeypatch.setattr(huggingface_hub.HfApi, 'model_info', lambda _, repo: SimpleNamespace(sha=DRAFT_REV))
+    monkeypatch.setattr(huggingface_hub, 'hf_hub_download', lambda repo, filename, revision: str(config))
+    if block_size == 7:
+        assert pinned_draft(MODEL) == DRAFT_REV
+    else:
+        with pytest.raises(DSparkConfigurationError, match='block_size'):
+            pinned_draft(MODEL)

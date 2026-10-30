@@ -169,22 +169,24 @@ try{
  await page.goto(origin+'/app/overview');
  await page.getByRole('button',{name:recommendationName,exact:true}).waitFor();
  await page.goto(origin+'/app/configure/rec');
- // Explicit DSpark uses the official draft and exact compatibility, independently of research.
+ // Explicit head selection uses fixed mappings independently of research.
  const savedSelected={...data.recommendations[0].selected};
  data.recommendations[0].selected={model_id:'Qwen/Qwen3-4B',revision:'a'.repeat(40)};
- data.dspark={drafts:{'Qwen/Qwen3-4B':'deepseek-ai/dspark_qwen3_4b_block7'},compatible:[]};
+ data.dspark={drafts:{'Qwen/Qwen3-4B':'deepseek-ai/dspark_qwen3_4b_block7'},runtimes:['vllm']};
  await page.reload();
- await page.getByLabel('Speculative method',{exact:true}).selectOption('dspark');
- assert.equal(await page.getByLabel('Draft model',{exact:true}).inputValue(),'deepseek-ai/dspark_qwen3_4b_block7');
- assert.equal(await page.getByRole('button',{name:'Prepare configuration',exact:true}).isDisabled(),true);
- for(const key of ['vllm','sglang','trtllm'])assert.equal(await page.locator(`input[name="frameworks"][value="${key}"]`).isDisabled(),true);
- data.dspark.compatible=[{target_model:'Qwen/Qwen3-4B',target_revision:'a'.repeat(40),runtime:'vllm'}];
- await page.reload();
- await page.getByLabel('Speculative method',{exact:true}).selectOption('dspark');
+ await page.getByLabel('Speculative decoding',{exact:true}).selectOption('dspark');
+ assert.equal(await page.getByLabel('Mapped head',{exact:true}).inputValue(),'deepseek-ai/dspark_qwen3_4b_block7');
+ assert.equal(await page.getByLabel('Mapped head',{exact:true}).getAttribute('readonly'),'');
  assert.equal(await page.locator('input[name="frameworks"][value="vllm"]').isChecked(),true);
- assert.equal(await page.locator('input[name="frameworks"][value="sglang"]').isDisabled(),true);
  assert.equal(await page.locator('input[name="frameworks"][value="trtllm"]').isDisabled(),true);
- assert.equal(await page.locator('input[name="speculative_decoding"]').inputValue(),'require');
+ for(const size of ['4','8','14']){
+  const model=`Qwen/Qwen3-${size}B`,head=`deepseek-ai/dspark_qwen3_${size}b_block7`;
+  data.recommendations[0].selected.model_id=model;
+  data.dspark.drafts[model]=head;
+  await page.reload();
+  await page.getByLabel('Speculative decoding',{exact:true}).selectOption('dspark');
+  assert.equal(await page.getByLabel('Mapped head',{exact:true}).inputValue(),head);
+ }
  let dsparkSubmission;
  const captureDSpark=async route=>{dsparkSubmission=route.request().postDataJSON();await route.fulfill({status:400,json:{error:'DSpark submission captured by local test'}})};
  await page.route('**/app/api/prepared',captureDSpark);
@@ -193,11 +195,18 @@ try{
  assert.equal(dsparkSubmission.choices.speculative_decoding,'require');
  assert.deepEqual(dsparkSubmission.choices.frameworks,['vllm']);
  await page.unroute('**/app/api/prepared',captureDSpark);
- await page.getByLabel('Speculative method',{exact:true}).selectOption('auto');
+ await page.getByLabel('Speculative decoding',{exact:true}).selectOption('auto');
  assert.equal(await page.locator('input[name="frameworks"][value="trtllm"]').isDisabled(),false);
+ await page.getByLabel('Speculative decoding',{exact:true}).selectOption('off');
+ assert.equal(await page.locator('input[name="speculative_method"]').inputValue(),'auto');
+ assert.equal(await page.locator('input[name="speculative_decoding"]').inputValue(),'off');
+ await page.getByLabel('Speculative decoding',{exact:true}).selectOption('auto');
+ assert.equal(await page.locator('input[name="speculative_decoding"]').inputValue(),'prefer');
  data.recommendations[0].selected=savedSelected;
  delete data.dspark;
  await page.reload();
+ assert.equal(await page.locator('select option[value="dspark"]').isDisabled(),true);
+ assert.equal(await page.getByText('No mapped speculative decoding head for this model. Off and Auto remain available.',{exact:true}).isVisible(),true);
  await page.getByRole('heading',{name:'Previous configuration files',exact:true}).waitFor();
  await page.getByRole('button',{name:'Validate a custom dataset repository and JSON file',exact:true}).click();
  assert.equal(await page.getByLabel('Hugging Face repository ID or URL').inputValue(),'');

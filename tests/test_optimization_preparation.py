@@ -928,3 +928,22 @@ def test_pending_controls_and_budget_answer_survive_fresh_adapters(tmp_path, mon
     assert result['summary']['dry_run'] is True
     assert result['summary']['optuna']['trials'] == 2
     assert ConversationAdapter(state_root=tmp_path).get_conversation_context({})['next_tool'] == 'start_optimization'
+
+@pytest.mark.parametrize('mode', ['off', 'prefer'])
+@pytest.mark.parametrize('model', ['org/target', 'Qwen/Qwen3-4B'])
+def test_baseline_modes_do_not_use_explicit_dspark(tmp_path, monkeypatch, mode, model):
+    def forbidden(*args):
+        raise AssertionError('Baseline must not resolve a mapped head')
+    monkeypatch.setattr('hf_model_watch.optimization.dspark.resolve', forbidden)
+    monkeypatch.setattr('hf_model_watch.optimization.dspark.pinned_draft', forbidden)
+    run = selected()
+    run['selected_model_id'] = model
+    run['request_spec'].update(speculative_method='auto', speculative_decoding=mode)
+    data = {'model': model, 'revision': REV, 'sources': [], 'inspection': {'heads': [], 'claims': []}}
+    researcher = Mock(return_value=data)
+    result = prepare(run, inputs(), execution(), tmp_path, tmp_path, researcher)
+    assert result['status'] == 'prepared'
+    researcher.assert_called_once()
+    payload = json.loads((tmp_path / 'request.json').read_text())
+    assert not any('speculative' in a for a in payload['server_args']['vllm'])
+    assert result['summary']['speculative_heads'] == []

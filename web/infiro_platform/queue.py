@@ -64,7 +64,6 @@ def child_environment(job):
         "INFIRO_PRIVATE_ROOT": str(settings.INFIRO_PRIVATE_ROOT),
         "INFIRO_PROVIDER_FACTORY": settings.INFIRO_PROVIDER_FACTORY,
         "INFIRO_SERVING_IMAGES": json.dumps(settings.INFIRO_SERVING_IMAGES),
-        "INFIRO_DSPARK_COMPATIBILITY": json.dumps(settings.INFIRO_DSPARK_COMPATIBILITY),
         "INFIRO_IMAGE_ALIASES": json.dumps(settings.INFIRO_IMAGE_ALIASES),
         "INFIRO_WANDB": json.dumps(settings.INFIRO_WANDB),
         "INFIRO_LIVE_ENABLED": "1" if settings.INFIRO_LIVE_ENABLED else "0",
