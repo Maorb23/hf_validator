@@ -28,6 +28,18 @@ class WorkloadLimitError(ValueError):
     """Static, safe-to-display limit rejection from the web boundary."""
 
 
+def loading_error(stage, exc):
+    """Describe the failed stage without exposing provider text or credentials."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    advice = {
+        401: "Authentication failed; check the HF read-token connection.",
+        403: "Access denied; check token permissions and gated repository terms.",
+        404: "Repository or revision not found, or not accessible with this token.",
+        429: "Hugging Face rate limit reached; retry later with an HF read-token connection.",
+    }.get(status, "Check worker network access, repository access and installed dependencies.")
+    return ValueError(f"Custom HF {stage} loading or access failed. {advice}")
+
+
 FORMAT_ERROR = (
     "Unsupported or malformed dataset JSON. Convert to a top-level JSON array of "
     "objects or JSONL (one record per line), then shard into files with "
@@ -186,15 +198,18 @@ def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None)
         info = api.dataset_info(
             config["repo_id"], revision=config.get("revision"), files_metadata=True
         )
+    except MemoryError:
+        raise WorkloadLimitError(MEMORY_ERROR) from None
+    except Exception as exc:
+        raise loading_error("dataset metadata", exc) from None
+    try:
         model = api.model_info(
             config["model"], revision=config.get("model_revision"), files_metadata=True
         )
     except MemoryError:
         raise WorkloadLimitError(MEMORY_ERROR) from None
-    except Exception:
-        raise ValueError(
-            "Custom HF dataset/tokenizer loading or access failed; check access and dependencies"
-        ) from None
+    except Exception as exc:
+        raise loading_error("tokenizer metadata", exc) from None
     if not info.sha or not model.sha:
         raise ValueError("Dataset and tokenizer commits must resolve before loading.")
     if config.get("data_file"):
@@ -334,11 +349,8 @@ def materialize(config, *, api=None, loader=None, tokenizer=None, progress=None)
             )
         except MemoryError:
             raise WorkloadLimitError(MEMORY_ERROR) from None
-        except Exception:
-            raise ValueError(
-                "Custom HF dataset/tokenizer loading or access failed; "
-                "check access and dependencies"
-            ) from None
+        except Exception as exc:
+            raise loading_error("tokenizer files", exc) from None
     original_tokenizer = tokenizer
 
     class BoundedTokenizer:

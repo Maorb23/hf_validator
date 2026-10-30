@@ -1,5 +1,6 @@
 """Format adapters share the existing frozen sampler and execution contract."""
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from django.test import SimpleTestCase
 
@@ -7,10 +8,35 @@ from .contracts import DatasetConfig
 from .demo import FixtureTokenizer, fixture_manifest
 from . import test_dataset_safety
 from .workload_runtime import verify_frozen_workload
-from .workloads import WorkloadLimitError, adapt_record, materialize
+from .workloads import WorkloadLimitError, adapt_record, loading_error, materialize
 
 
 class DatasetFormatTests(SimpleTestCase):
+    def test_loading_errors_classify_status_without_provider_details(self):
+        for status, expected in [(401, 'Authentication failed'), (403, 'Access denied'),
+                                 (404, 'not found'), (429, 'rate limit'),
+                                 (500, 'worker network access')]:
+            with self.subTest(status=status):
+                exc = RuntimeError('hf-secret-provider-detail')
+                exc.response = SimpleNamespace(status_code=status)
+                message = str(loading_error('tokenizer files', exc))
+                self.assertIn('tokenizer files', message)
+                self.assertIn(expected, message)
+                self.assertNotIn('hf-secret', message)
+
+    def test_metadata_errors_identify_failed_repository(self):
+        config, _ = fixture_manifest()
+        for stage in ('dataset', 'tokenizer'):
+            with self.subTest(stage=stage):
+                api = SimpleNamespace(
+                    dataset_info=Mock(return_value=SimpleNamespace()),
+                    model_info=Mock(return_value=SimpleNamespace()))
+                method = api.dataset_info if stage == 'dataset' else api.model_info
+                method.side_effect = RuntimeError('hf-secret-provider-detail')
+                with self.assertRaisesRegex(ValueError, f'{stage} metadata') as raised:
+                    materialize(config, api=api)
+                self.assertNotIn('hf-secret', str(raised.exception))
+
     def freeze(self, source_format, rows):
         config, _ = fixture_manifest()
         if source_format is None:
