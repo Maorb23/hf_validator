@@ -67,3 +67,5 @@ Thumbs.db
 
 # Local editor workspace
 /config/receiver_aware_comm_poc.code-workspace
+
+*.sqlite
